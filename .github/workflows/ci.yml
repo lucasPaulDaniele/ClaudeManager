@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'integration/**']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: lint + typecheck + tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Les seuils de couverture (100 % sur le coeur) sont appliques ici :
+      # une regression de couverture fait echouer la CI.
+      - name: Tests unitaires + couverture
+        run: npm run test:coverage
+
+      - name: Publier le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
