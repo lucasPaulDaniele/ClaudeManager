@@ -1,0 +1,15 @@
+{
+  "name": "@claudemanager/core",
+  "version": "0.0.0",
+  "description": "Coeur de ClaudeManager : identite de fenetre, registre, sessions, transcripts. Aucune dependance a l'API VSCode.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
