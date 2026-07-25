@@ -1,12 +1,14 @@
 # ADR-002 — Ouvrir une conversation Claude interactive dès son premier tour
 
 - **Date** : 2026-07-25
-- **Statut** : **proposé — décision en attente d'arbitrage**
+- **Statut** : **accepté** — décision arbitrée par le propriétaire du projet le **2026-07-25**
 - **Remplace** : le mécanisme retenu par [ADR-001](001-pilotage-des-conversations.md), rejeté en recette le 2026-07-25
 - **Méthode** : spike de mesure, banc d'essai **jeté** (hors dépôt), toutes les voies exécutées sur pièce
 
-> Cet ADR **ne tranche pas**. Il mesure et compare. La section « Décision » est laissée
-> ouverte : elle appartient au propriétaire du projet, au vu des mesures ci-dessous.
+> **Décision retenue : la voie V1**, avec **V5 en repli documenté**. Voir la section
+> [Décision](#décision). Les sections de mesure qui précèdent sont conservées telles qu'elles ont
+> été établies pendant le spike : elles sont la justification de l'arbitrage, et permettent de le
+> rejouer.
 
 ## Versions vérifiées
 
@@ -50,6 +52,21 @@ champ de saisie (`if (ge) a.current?.setInputText(ge)`). Le gestionnaire d'URI
    comme état **transitoire**, jamais comme surface d'interaction durable.
 
 L'isolation multi-fenêtres n'est pas touchée par ces amendements : elle reste l'invariant.
+
+> **Clôture — l'amendement n°1 a été RETIRÉ après mesure (2026-07-25).**
+>
+> Il avait été accordé pour une raison précise : ne pas écarter la voie V3 *a priori*, et la
+> juger sur pièce plutôt que sur principe. Les mesures ont rendu ce relâchement inutile — la voie
+> retenue (V1) n'emprunte **aucun** focus, fenêtre minimisée comprise. Le propriétaire du projet
+> a donc **rétabli le principe fondateur strict : aucune dépendance au focus, sans exception.**
+>
+> Cette contrainte a donc été relâchée puis reprise **sur preuve**, et non par oubli. Le récit
+> ci-dessus est conservé pour cette raison : il explique pourquoi V3 et l'exigence T ont été
+> mesurées, et pourquoi leurs résultats restent consignés alors qu'ils ne servent plus le
+> mécanisme retenu.
+>
+> L'amendement n°2 (panneau webview comme état final, terminal transitoire toléré) **reste en
+> vigueur** : c'est lui qui rend V1 recevable.
 
 ## Banc d'essai
 
@@ -335,7 +352,7 @@ souris** positionnelle sur un webview dont la mise en page n'est pas contractuel
 | 1. Interactif au tour 1 | ⚠️ le serait par construction — mais le tour 1 n'est jamais soumis |
 | 2. État final = panneau | ✅ le panneau est bien la surface |
 | 3. Autonomie | ❌ **la soumission n'a jamais lieu** |
-| 4. Focus | ❌ emprunt obligatoire (mécanique OK, réversible, ~2,6 s) |
+| 4. Focus | ❌ emprunt obligatoire (mécanique OK, réversible, ~2,6 s) — **et cet emprunt n'est plus autorisé** : l'amendement du 2026-07-25 a été retiré, le principe strict est rétabli. V3 est donc disqualifiée une seconde fois, indépendamment de son échec technique |
 | 5. Isolation | ⚠️ l'injection frappe la fenêtre au premier plan : garde-fou par handle obligatoire |
 | 6. Adhérence | ⚠️ `editor.open` + `claude-vscode.focus` + mise en page du webview |
 
@@ -414,6 +431,13 @@ subsiste néanmoins : l'humain n'a plus ni à créer la conversation, ni à retr
 | 6. Adhérence | ✅ la plus faible : une seule commande, aucun format de fichier |
 
 ## Exigence transverse T — l'avertissement visuel préalable
+
+> **Sans objet pour le mécanisme retenu.** La voie V1 n'emprunte aucun focus : la condition que
+> cette section devait éprouver ne se présente plus, et l'amendement qui l'imposait a été retiré.
+> La section est **conservée intégralement** pour deux raisons : la mesure a une valeur
+> documentaire (elle établit ce qu'une extension VSCode peut et ne peut pas afficher hors
+> premier plan), et le prototype `Topmost` pourrait resservir à d'autres fins — un avertissement
+> avant une opération longue, par exemple. **Aucune mesure n'a été supprimée.**
 
 La décision n°5 conditionne tout emprunt de focus à un avertissement visible **même quand VSCode
 est en arrière-plan**. Trois surfaces mesurées.
@@ -584,7 +608,67 @@ du terminal, puis de piloter l'enchaînement. L'essentiel de l'effort est ailleu
 
 ## Décision
 
-**À TRANCHER par le propriétaire du projet au vu des mesures ci-dessus.**
+Arbitrée par le propriétaire du projet le **2026-07-25**, au vu des mesures ci-dessus.
+
+### 1. La voie V1 est retenue
+
+Le mécanisme d'ouverture d'une conversation interactive est, dans la fenêtre cible :
+
+1. créer un terminal **masqué** — `hideFromUser: true`, `show()` **jamais** appelé — dans le
+   workspace de la fenêtre, en **neutralisant les variables d'environnement héritées** ;
+2. y jouer le tour 1 dans un vrai pty : `claude --session-id <uuid> "<prompt>"` ;
+3. attacher le panneau : `claude-vscode.editor.open(<uuid>)` ;
+4. faire disparaître le terminal : `terminal.dispose()`.
+
+Motivation, critère par critère — tous vérifiés sur exécution réelle :
+
+- **Interactivité du tour 1** (critère éliminatoire n°1) : prouvée par deux preuves
+  indépendantes — la réponse de la session, qui se déclare interactive et dont le motif de refus
+  du flux OAuth a changé de nature par rapport à ADR-001, et le fichier `sessions/<pid>.json`
+  (`entrypoint: cli`, présence de `status`).
+- **État final = panneau webview** (critère éliminatoire n°2) : l'onglet
+  `mainThreadWebview-claudeVSCodePanel` porte un libellé dérivé du contenu de la conversation,
+  donc chargé et non vide ; le terminal, jamais affiché, a une durée de visibilité **nulle** et
+  ne laisse aucune trace après `dispose()`.
+- **Autonomie complète** (critère n°3) : aucun geste humain. Les deux prérequis machine
+  (onboarding CLI, confiance du dossier) se franchissent sans focus et ne se présentent qu'une
+  fois par machine et par dossier ; `cmgr doctor` devra les vérifier.
+- **Aucun emprunt de focus** (critère n°4) : handle de premier plan **identique** avant, pendant
+  et après, fenêtre cible **minimisée** d'un bout à l'autre. C'est ce résultat qui a permis de
+  retirer l'amendement et de rétablir le principe strict.
+- **Isolation préservée** (critère n°5) : mesurée dans la configuration adverse — deux fenêtres
+  partageant le même répertoire physique et le **même processus `Code.exe` principal** ; les
+  opérations adressées à A n'ont créé dans B ni onglet, ni terminal, ni processus.
+- **Adhérence** (critère n°6) : acceptée en connaissance de cause. C'est le prix de la seule voie
+  qui satisfait les deux critères éliminatoires, et le principe fondateur n°3 s'applique —
+  échouer explicitement, déclarer chaque dépendance, la vérifier dans `cmgr doctor`.
+
+### 2. La voie V5 est retenue comme repli documenté
+
+**V5 — `claude-vscode.editor.open(null, <prompt>)` suivi d'une validation humaine — est le repli
+officiel du projet.** Si `claude-vscode.editor.open` perd son paramètre de session, si
+`--session-id` cesse d'être accepté en mode interactif, ou si toute autre évolution de
+l'extension Claude rend V1 inopérant, l'outil doit **basculer sur V5 plutôt que d'échouer sans
+recours** : la conversation est ouverte, le prompt pré-rempli, et l'humain n'a plus qu'à valider.
+
+Ce statut n'est pas un simple classement au tableau : c'est une **exigence de conception** pour
+les lots B et C. V5 est la voie de moindre adhérence mesurée (une commande, aucun format de
+fichier, aucun réglage) — c'est précisément ce qui en fait un repli robuste. Sa perte d'autonomie
+est assumée : mieux vaut un geste humain qu'une conversation non ouverte.
+
+### 3. L'amendement sur l'emprunt de focus est retiré
+
+L'amendement du 2026-07-25 autorisant l'emprunt de focus sous conditions est **retiré**. Il avait
+été accordé pour permettre de juger V3 sur pièce ; les mesures l'ont rendu inutile.
+
+**Le principe fondateur redevient strict : aucune dépendance au focus, sans exception.** Aucune
+opération de ClaudeManager ne doit activer une fenêtre, la restaurer, ni exiger qu'un élément ait
+le focus. Conséquences directes :
+
+- V3 est disqualifiée une seconde fois, indépendamment de son échec technique ;
+- l'exigence transverse T devient **sans objet** — sa mesure reste consignée à titre documentaire ;
+- le `CLAUDE.md` et les documents qui décrivent l'ancienne règle seront réalignés par
+  l'incrément A2, avec sa propre PR.
 
 ## Options écartées, et le motif prouvé de leur écartement
 
