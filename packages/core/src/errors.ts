@@ -31,6 +31,8 @@ export const ERROR_CODES = {
   PROCESS_TABLE_UNAVAILABLE: 'PROCESS_TABLE_UNAVAILABLE',
   /** Le repertoire du registre des fenetres existe mais ne peut pas etre liste. */
   REGISTRY_UNREADABLE: 'REGISTRY_UNREADABLE',
+  /** L'entree d'une fenetre n'a pas pu etre ecrite dans le registre. */
+  REGISTRY_UNWRITABLE: 'REGISTRY_UNWRITABLE',
   /** Tentative de publication d'une entree de registre qui ne passe pas la validation. */
   REGISTRY_ENTRY_INVALID: 'REGISTRY_ENTRY_INVALID',
   /** La fenetre cible est en Restricted Mode : les extensions y sont desactivees. */
@@ -57,6 +59,8 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     "L'inventaire des processus du systeme n'a pas pu etre lu. Sous Windows, verifier que `powershell.exe` est accessible et que la strategie d'execution ne bloque pas `-Command` ; ailleurs, que `ps` est installe (paquet procps). Sans cet inventaire, aucune fenetre ne peut etre identifiee.",
   [ERROR_CODES.REGISTRY_UNREADABLE]:
     "Le repertoire du registre des fenetres (~/.claudemanager/windows) existe mais n'a pas pu etre liste. Verifier qu'il s'agit bien d'un repertoire et que les droits de lecture sont accordes ; sans lui, aucune fenetre ne peut etre joignable.",
+  [ERROR_CODES.REGISTRY_UNWRITABLE]:
+    "L'entree de cette fenetre n'a pas pu etre ecrite dans le registre (~/.claudemanager/windows). Verifier que le chemin est bien un repertoire et non un fichier, que les droits d'ecriture sont accordes, et qu'aucun antivirus ni indexeur ne verrouille le repertoire ; sans cette entree, la fenetre n'est joignable par personne.",
   [ERROR_CODES.REGISTRY_ENTRY_INVALID]:
     "L'entree de fenetre proposee ne respecte pas le schema du registre et n'a pas ete publiee. Une entree qu'on refuserait de relire ne doit jamais etre ecrite : consulter le motif dans les details.",
   [ERROR_CODES.WORKSPACE_NOT_TRUSTED]:

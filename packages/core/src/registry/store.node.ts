@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -24,7 +25,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeManagerError, ERROR_CODES } from '../errors.js';
+import { ClaudeManagerError, ERROR_CODES, systemErrorCode } from '../errors.js';
 import type { ProcessSnapshot } from '../identity/processTable.js';
 import { parseWindowEntry, type EntryIdentity, type WindowEntry } from './entry.js';
 
@@ -109,6 +110,32 @@ export interface WriteWindowEntryOptions {
 }
 
 const ENTRY_EXTENSION = '.json';
+const TEMPORARY_EXTENSION = '.tmp';
+
+/**
+ * Temporaire d'ecriture atomique : `<pid>.<uuid>.tmp`.
+ *
+ * Le pid en prefixe n'est pas decoratif — c'est ce qui rend un temporaire ORPHELIN
+ * identifiable, donc effacable. Le motif est strict : un fichier qui ne le respecte pas
+ * n'a pas ete ecrit par nous et n'est jamais touche.
+ */
+const TEMPORARY_FILE = /^(\d+)\.[0-9a-f-]+\.tmp$/;
+
+/**
+ * Droits du repertoire du registre et de ses entrees.
+ *
+ * Une entree porte le JETON PORTEUR de sa fenetre en clair. Sans `mode`, Node applique
+ * `0o777 & ~umask` au repertoire et `0o666 & ~umask` au fichier — soit 0755 et 0644 sous
+ * l'umask par defaut : sur un poste POSIX multi-utilisateurs, n'importe quel autre compte
+ * lit le jeton et le port de chaque fenetre. Les deux modes sont necessaires, le
+ * temporaire portant exactement le meme secret que l'entree definitive.
+ *
+ * Sous Windows ces bits n'ont pas de sens — `chmod` n'y pilote que l'attribut « lecture
+ * seule » — et c'est l'ACL heritee de `C:\\Users\\<compte>` qui protege deja. Les poser
+ * n'y coute rien et n'y echoue pas.
+ */
+const REGISTRY_DIR_MODE = 0o700;
+const ENTRY_FILE_MODE = 0o600;
 
 /** Racine par defaut, sous le repertoire personnel : jamais de separateur code en dur. */
 export function resolveRegistryDir(dir?: string): string {
@@ -360,7 +387,38 @@ export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResul
     removed.push(file);
   }
 
-  return { removed, removedTemporaries: [], kept };
+  return { removed, removedTemporaries: purgeOrphanTemporaries(dir, options.snapshot), kept };
+}
+
+/**
+ * Efface les temporaires d'ecriture abandonnes.
+ *
+ * Ils portent le JETON COMPLET et n'ont pas l'extension des entrees : ni la lecture, ni la
+ * purge des entrees, ni `cmgr doctor` ne les voient. Un `renameSync` interrompu par une
+ * mort brutale du processus en laisse un derriere lui — indefiniment, et avec un secret
+ * dedans. `writeWindowEntry` efface les siens ; celui-ci ramasse ceux que personne n'a pu
+ * effacer.
+ *
+ * Seul le pid en prefixe decide : un temporaire dont le processus VIT peut etre une
+ * ecriture en cours, on n'y touche pas. Fenetre residuelle assumee et bornee : un
+ * processus ne APRES la capture de l'instantane est absent de la table, et si la purge
+ * passe pendant les quelques microsecondes qui separent son `write` de son `rename`, son
+ * temporaire disparait. Il en resulte une erreur NOMMEE cote ecrivain — jamais une
+ * publication silencieusement fausse.
+ */
+function purgeOrphanTemporaries(dir: string, snapshot: ProcessSnapshot): readonly string[] {
+  const removed: string[] = [];
+
+  for (const file of listFiles(dir)) {
+    const match = TEMPORARY_FILE.exec(file);
+    if (match === null) continue;
+    if (snapshot.table.has(Number.parseInt(match[1] as string, 10))) continue;
+
+    rmSync(path.join(dir, file), { force: true });
+    removed.push(file);
+  }
+
+  return removed;
 }
 
 /**
@@ -387,14 +445,41 @@ export function writeWindowEntry(entry: WindowEntry, options: WriteWindowEntryOp
   }
 
   const dir = resolveRegistryDir(options.dir);
-  mkdirSync(dir, { recursive: true });
-
   const file = path.join(dir, `${parsed.entry.extHostPid}${ENTRY_EXTENSION}`);
-  const temporary = path.join(dir, `${parsed.entry.extHostPid}.${randomUUID()}.tmp`);
-  // On ecrit l'entree RECONSTRUITE : un champ inconnu tolere a la lecture n'est jamais
-  // reecrit, sans quoi le registre accumulerait des champs que plus personne ne comprend.
-  writeFileSync(temporary, `${JSON.stringify(parsed.entry, null, 2)}\n`, 'utf8');
-  renameSync(temporary, file);
+  const temporary = path.join(
+    dir,
+    `${parsed.entry.extHostPid}.${randomUUID()}${TEMPORARY_EXTENSION}`
+  );
+
+  try {
+    mkdirSync(dir, { recursive: true, mode: REGISTRY_DIR_MODE });
+    // RATTRAPAGE DE L'EXISTANT (principe fondateur n.7) : le `mode` de `mkdirSync` ne
+    // s'applique qu'a la CREATION, et l'umask le rogne. Un repertoire cree par une version
+    // anterieure — il en existe sur des postes en service — resterait donc en 0755. Ce
+    // `chmod` est idempotent : il resserre a chaque publication, sans rien exiger de plus.
+    chmodSync(dir, REGISTRY_DIR_MODE);
+    // On ecrit l'entree RECONSTRUITE : un champ inconnu tolere a la lecture n'est jamais
+    // reecrit, sans quoi le registre accumulerait des champs que plus personne ne comprend.
+    writeFileSync(temporary, `${JSON.stringify(parsed.entry, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: ENTRY_FILE_MODE,
+    });
+    renameSync(temporary, file);
+  } catch (cause) {
+    // Un temporaire abandonne porte le JETON COMPLET, et son nom ne se termine pas par
+    // `.json` : il echappe a la lecture, donc a l'inventaire, donc a l'utilisateur. Chaque
+    // echec ulterieur en ajouterait un. On l'efface ici, ou la purge le ramassera.
+    rmSync(temporary, { force: true });
+    // Erreur NOMMEE, symetrique de `REGISTRY_UNREADABLE` cote lecture : un `mkdirSync` sur
+    // un chemin qui existe deja en fichier, un `renameSync` bloque par un antivirus ou un
+    // indexeur sont des defaillances previsibles. Sans detail hors du code systeme : le
+    // message porterait le chemin du registre, donc le nom de l'utilisateur.
+    throw new ClaudeManagerError(
+      ERROR_CODES.REGISTRY_UNWRITABLE,
+      'The window registry entry could not be written',
+      { cause: systemErrorCode(cause) }
+    );
+  }
 
   return file;
 }

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -354,5 +354,119 @@ describe('writeWindowEntry', () => {
 
     expect(failure.code).toBe(ERROR_CODES.REGISTRY_ENTRY_INVALID);
     expect(failure.details).toEqual({ reason: 'foreign-schema', extHostPid: HOST });
+  });
+});
+
+describe('writeWindowEntry — defaillance du systeme de fichiers', () => {
+  /** Anomalie systeme REELLE, la meme qu en lecture : le registre existe, en FICHIER. */
+  function registryPathHeldByAFile(): string {
+    const asFile = path.join(dir, 'registre-qui-est-un-fichier');
+    writeFileSync(asFile, 'pas un repertoire', 'utf8');
+    return asFile;
+  }
+
+  it('nomme l echec, comme le fait deja la lecture', () => {
+    // La lecture nomme cet etat depuis B2 (`REGISTRY_UNREADABLE`) et lui offre une
+    // remediation. L ecriture, elle, laissait remonter l erreur systeme nue — la
+    // convention du projet n etait donc tenue que d un cote.
+    const failure = catchFailure(() => writeWindowEntry(currentSchemaEntry(HOST), { dir: registryPathHeldByAFile() }));
+
+    expect(isClaudeManagerError(failure)).toBe(true);
+    expect(failure.code).toBe(ERROR_CODES.REGISTRY_UNWRITABLE);
+    expect(failure.remediation.length).toBeGreaterThan(0);
+  });
+
+  it('ne fait fuiter ni chemin ni message systeme dans son erreur', () => {
+    const asFile = registryPathHeldByAFile();
+
+    const failure = catchFailure(() => writeWindowEntry(currentSchemaEntry(HOST), { dir: asFile }));
+
+    expect(failure.message).not.toContain(asFile);
+    expect(JSON.stringify(failure.toJSON())).not.toContain(os.homedir());
+    // Le code systeme, lui, reste : il diagnostique sans rien reveler du poste.
+    expect(failure.details).toEqual({ cause: 'EEXIST' });
+  });
+
+  it('ne laisse derriere elle aucun temporaire porteur du jeton', () => {
+    // Le temporaire porte le jeton COMPLET et n a pas l extension des entrees : il
+    // echappe a la lecture, donc a l inventaire, donc a l utilisateur.
+    const readOnlyEntry = path.join(dir, `${HOST}${'.json'}`);
+    mkdirSync(readOnlyEntry);
+
+    catchFailure(() => writeWindowEntry(currentSchemaEntry(HOST), { dir }));
+
+    expect(readdirSync(dir)).toEqual([`${HOST}.json`]);
+  });
+});
+
+describe('registre sur disque — droits', () => {
+  // Sous Windows ces bits n ont pas de sens : `chmod` n y pilote que l attribut « lecture
+  // seule », et c est l ACL heritee de C:\\Users\\<compte> qui protege. La verification a
+  // donc lieu la ou elle veut dire quelque chose — et elle tourne en CI, sous Linux.
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+  posixOnly('n expose le jeton a aucun autre compte de la machine', () => {
+    const file = writeWindowEntry(currentSchemaEntry(HOST), { dir });
+
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  posixOnly('resserre un repertoire laisse ouvert par une version anterieure', () => {
+    // Rattrapage de l existant : le `mode` de `mkdirSync` ne s applique qu a la creation.
+    chmodSync(dir, 0o755);
+
+    writeWindowEntry(currentSchemaEntry(HOST), { dir });
+
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it('publie sans defaillir, quelle que soit la plateforme', () => {
+    // Le pendant du precedent : poser ces modes ne doit jamais empecher de publier.
+    const file = writeWindowEntry(currentSchemaEntry(HOST), { dir });
+
+    expect(readdirSync(dir)).toEqual([`${HOST}.json`]);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(currentSchemaEntry(HOST));
+  });
+});
+
+describe('purgeStaleEntries — temporaires orphelins', () => {
+  /** Temporaire tel que l ecriture atomique le nomme : `<pid>.<uuid>.tmp`. */
+  function writeOrphanTemporary(extHostPid: number): string {
+    const file = `${extHostPid}.3f2b1c8a-0000-4000-8000-000000000000.tmp`;
+    writeRaw(dir, file, JSON.stringify(currentSchemaEntry(HOST)));
+    return file;
+  }
+
+  it('efface le temporaire abandonne par un processus mort', () => {
+    // Il porte le jeton complet, il n a pas l extension des entrees : rien ne le lit, donc
+    // rien ne le comptait ni ne l effacait. Il survivait a toutes les purges.
+    const orphan = writeOrphanTemporary(HOST);
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
+
+    expect(result.removedTemporaries).toEqual([orphan]);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('ne touche PAS a celui d un processus vivant : son ecriture est peut-etre en cours', () => {
+    const inFlight = writeOrphanTemporary(HOST);
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir });
+
+    expect(result.removedTemporaries).toEqual([]);
+    expect(readdirSync(dir)).toEqual([inFlight]);
+  });
+
+  it('ne touche a aucun fichier qu elle n a pas ecrit elle-meme', () => {
+    // Le motif est strict : sans pid en prefixe et sans uuid, ce n est pas notre temporaire.
+    writeRaw(dir, 'notes.txt', 'rien a voir');
+    writeRaw(dir, `${HOST}.json.tmp`, '{');
+    writeRaw(dir, 'sauvegarde.tmp', 'pas la notre');
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
+
+    expect(result.removedTemporaries).toEqual([]);
+    expect(readdirSync(dir).sort()).toEqual([`${HOST}.json.tmp`, 'notes.txt', 'sauvegarde.tmp']);
   });
 });
