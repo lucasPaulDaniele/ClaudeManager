@@ -9,7 +9,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 
-/** Reponse de `GET /health`. Elle ne porte JAMAIS le jeton (principe n.6). */
+/** Ce que la FENETRE dit d'elle-meme. Elle ne porte JAMAIS le jeton (principe n.6). */
 export interface HealthPayload {
   readonly ok: true;
   readonly schemaVersion: number;
@@ -18,10 +18,42 @@ export interface HealthPayload {
   readonly mainPid: number;
   readonly isTrusted: boolean;
   readonly workspaceFolders: readonly string[];
+  /**
+   * Repertoire de journal de l'extension DANS CETTE FENETRE.
+   *
+   * Le canal de journal (`{ log: true }`) est designe comme la source de diagnostic de
+   * `cmgr doctor` (lot D), mais son chemin comporte deux segments qu'aucun consommateur ne
+   * peut deviner — l'horodatage de la session et l'index `window<N>` — et rien ne relie cet
+   * index a un `extHostPid`. Le journal etait donc introuvable de l'exterieur : capacite
+   * annoncee, inatteignable avec ce qui etait livre (finding R5 du gate).
+   *
+   * La fenetre, elle, le connait (`context.logUri`). Elle le publie ici, sur la route
+   * authentifiee — et pas dans l'entree de registre, dont le contenu est un contrat entre
+   * versions qu'on n'elargit pas pour un besoin de diagnostic.
+   *
+   * Le fichier du canal se trouve DANS ce repertoire — mesure par le harnais d'integration
+   * (`<...>/window<N>/exthost/claudemanager.claudemanager-vscode/ClaudeManager.log`), et non
+   * suppose : c'est une assertion de la suite, pas un commentaire.
+   */
+  readonly logDirectory: string;
+}
+
+/**
+ * Ce que le SERVEUR ajoute a ce que la fenetre dit — mesure, jamais redit.
+ *
+ * `listenAddress` est relu sur la socket reellement ouverte (`server.address()`), pas
+ * recopie de la constante d'ecoute. C'est ce qui rend la liaison a la boucle locale
+ * VERIFIABLE de l'exterieur : sans elle, un client ne peut que constater qu'il n'obtient pas
+ * de reponse ailleurs — ce qu'un pare-feu produit tout aussi bien (finding C6 du gate).
+ */
+export interface HealthResponse extends HealthPayload {
+  readonly listenAddress: string;
 }
 
 export interface ServerHandle {
   readonly port: number;
+  /** Adresse REELLEMENT liee, relevee sur la socket. */
+  readonly address: string;
   close(): Promise<void>;
 }
 
@@ -91,6 +123,10 @@ function routeOf(request: IncomingMessage): string {
 }
 
 export function startServer(options: StartServerOptions): Promise<ServerHandle> {
+  // Relevee dans le rappel d'ecoute, donc AVANT que la moindre requete puisse arriver : une
+  // socket ne recoit rien tant qu'elle n'ecoute pas. La chaine vide n'est jamais servie.
+  let boundAddress = '';
+
   const server: Server = createServer((request, response) => {
     // Le corps est draine meme s'il n'est pas lu : une requete non consommee laisserait
     // la socket en suspens.
@@ -112,7 +148,8 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
       return;
     }
 
-    send(response, 200, options.health());
+    const payload: HealthResponse = { ...options.health(), listenAddress: boundAddress };
+    send(response, 200, payload);
   });
 
   return new Promise<ServerHandle>((resolve, reject) => {
@@ -133,8 +170,11 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
         return;
       }
 
+      boundAddress = address.address;
+
       resolve({
         port: address.port,
+        address: address.address,
         close: () =>
           new Promise<void>((done) => {
             // Les sockets en vie n'empechent pas la fermeture : `close` cesse d'accepter,
