@@ -1,0 +1,32 @@
+{
+  // Configuration d'EMISSION du harnais d'integration. Comme celle de l'extension, elle
+  // n'etend pas le tsconfig racine : celui-ci decrit un paquet ESM, alors que VSCode charge
+  // le module de test par `require`.
+  //
+  // `rootDir` est la RACINE DU DEPOT parce que la suite consomme le coeur, qui est compile
+  // avec elle plutot que recopie. La profondeur de sortie s'en deduit :
+  //   tests/integration/dist/tests/integration/src/runTests.js
+  //   tests/integration/dist/packages/core/src/index.js
+  // Les chemins relatifs entre les deux sont donc preserves a l'emission.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "types": ["node", "vscode"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    "rootDir": "../..",
+    "outDir": "./dist",
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "../../packages/core/src/**/*.ts"]
+}
