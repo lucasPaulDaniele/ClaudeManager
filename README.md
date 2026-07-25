@@ -34,16 +34,16 @@ L'humain fait deux clics et colle un prompt. Aucune valeur ajoutée, mais la bou
 cmgr open --prompt-file ./amorce.md --wait
 ```
 
-Une nouvelle conversation apparaît dans la fenêtre, son premier tour déjà joué. La fenêtre peut être **minimisée, masquée, sur un autre bureau virtuel** : rien ne bouge à l'écran, rien ne prend le focus — c'est [mesuré](docs/adr/002-ouverture-interactive.md), pas espéré. Avec `--wait`, la commande rend la main avec la réponse du premier tour, qu'elle relit dans le transcript de la session.
+Une nouvelle conversation apparaît dans la fenêtre, son premier tour déjà joué. La fenêtre peut être **minimisée** : rien ne bouge à l'écran, rien ne prend le focus — c'est [mesuré](docs/adr/002-ouverture-interactive.md), pas espéré. *(L'état minimisé est le seul mesuré à ce jour. Masquée, sur un autre bureau virtuel ou derrière d'autres applications : ce sont des **exigences** du projet, pas encore des relevés.)* Avec `--wait`, la commande rend la main avec la réponse du premier tour, qu'elle relit dans le transcript de la session.
 
 | Opération | État |
 |---|---|
 | Ouvrir une conversation avec un prompt d'amorçage | ✅ mécanisme **mesuré** — [voie V1](docs/adr/002-ouverture-interactive.md) |
-| Fermer une conversation | ✅ mécanisme **mesuré** — `tabGroups.close` sur l'onglet `claudeVSCodePanel` |
+| Fermer une conversation | ✅ mécanisme **mesuré** — `tabGroups.close` sur l'onglet `claudeVSCodePanel` : c'est le point d'[ADR-001](docs/adr/001-pilotage-des-conversations.md) (§3) que le nouveau mécanisme **conserve** |
 | Cibler la bonne fenêtre parmi plusieurs, même identiques | ✅ mécanisme **mesuré** en configuration adverse — [deux fenêtres, même répertoire physique, même `Code.exe` principal](docs/adr/002-ouverture-interactive.md) |
 | Lire une réponse / attendre la fin d'un tour | 🚧 **conçu, pas encore mesuré** — c'est la condition d'obtention de la réponse du tour 1, et elle relève du lot D |
 | Écrire dans une conversation déjà ouverte | ❌ hors périmètre — [pourquoi](docs/adr/002-ouverture-interactive.md) |
-| Arrêter un prompt en cours | ❌ hors périmètre — [pourquoi](docs/adr/001-pilotage-des-conversations.md) |
+| Arrêter un prompt en cours | ❌ hors périmètre — **décision**, pas impossibilité mesurée : aucune primitive propre identifiée, et aucun spike ne l'a exploré |
 
 « Mesuré » qualifie le **mécanisme**, pas la livraison : aucun paquet n'est encore publié. Voir la [feuille de route](#feuille-de-route).
 
@@ -76,7 +76,7 @@ Le résultat est une conversation normale, visible, reprenable à la main — do
 
 ### Pourquoi une extension compagnon
 
-Parce que c'est la seule voie. L'extension Claude n'exporte rien depuis `activate()`, et ses commandes ne sont appelables que **depuis l'intérieur de VSCode** — tout comme la création d'un terminal **dans une fenêtre désignée**. C'est aussi ce qui rend le pilotage indépendant du focus : `executeCommand` et `createTerminal` n'ont jamais besoin qu'une fenêtre soit visible, là où toute automatisation clavier l'exige.
+Parce que c'est la seule voie. L'extension Claude n'exporte rien depuis `activate()`. Un appel venu de l'extérieur n'est pas strictement impossible — elle enregistre un gestionnaire d'URI, `vscode://anthropic.claude-code/open?session=&prompt=` — mais ses deux paramètres sont une session et un prompt : **rien qui désigne une fenêtre**, et il retombe sur le même `primaryEditor.open` (lu au source, [ADR-002](docs/adr/002-ouverture-interactive.md)). Or c'est exactement ce dont on a besoin : **désigner la fenêtre** qui exécute l'ouverture, et y **créer un terminal**. Ces deux gestes exigent de tourner *dans* la fenêtre. C'est aussi ce qui rend le pilotage indépendant du focus : `executeCommand` et `createTerminal` n'ont jamais besoin qu'une fenêtre soit visible, là où toute automatisation clavier l'exige.
 
 ### Comment on ne se trompe pas de fenêtre
 
@@ -93,7 +93,9 @@ claude.exe  →  extension host  →  processus principal VSCode
 
 Chaque instance de l'extension compagnon connaît son propre extension host et peut donc répondre avec certitude : « ce processus est-il un des miens ? »
 
-Ce n'est pas une intuition d'architecture : c'est mesuré dans la configuration la plus adverse possible — deux fenêtres pointant sur le **même répertoire physique** et partageant le **même `Code.exe` principal**. Les opérations adressées à l'une n'ont créé dans l'autre ni onglet, ni terminal, ni processus. Relevés dans [l'ADR-002](docs/adr/002-ouverture-interactive.md).
+Ce n'est pas une intuition d'architecture : c'est mesuré en configuration adverse — deux fenêtres pointant sur le **même répertoire physique** et partageant le **même `Code.exe` principal**. Les opérations adressées à l'une n'ont créé dans l'autre ni onglet, ni terminal, ni processus. Relevés dans [l'ADR-002](docs/adr/002-ouverture-interactive.md).
+
+Une réserve, portée par le montage : VSCode refusant d'ouvrir un même dossier dans deux fenêtres, le cas se construit par **jonction de répertoire** — les deux fenêtres ont donc bien le même répertoire physique, mais des **chemins de workspace distincts**. Cet angle mort est nommé dans [`docs/compatibilite.md`](docs/compatibilite.md) ; le lot C doit le couvrir par un test dédié.
 
 ## Installation
 
@@ -122,7 +124,7 @@ cmgr doctor                              # diagnostiquer l'environnement
 
 Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain.
 
-Le prompt passe **toujours par fichier**, jamais en argument — l'échappement des prompts longs en shell (a fortiori PowerShell) est une source de bugs inépuisable.
+Le prompt passe **toujours par fichier**, jamais en argument — l'échappement des prompts longs en shell (a fortiori PowerShell) est une source de bugs inépuisable. Cette règle porte sur **l'interface de `cmgr` vis-à-vis de son appelant**, et seulement sur elle : le **transport interne** vers le pty est aujourd'hui un prompt positionnel — c'est la forme mesurée — et il **reste à trancher au lot C**, la ligne de commande Windows plafonnant autour de 32 Ko quand un prompt d'orchestration en pèse couramment 15 à 25.
 
 `--wait` relit la réponse du premier tour dans le transcript de la session : il dépend du lot D (voir la [feuille de route](#feuille-de-route)).
 
@@ -144,11 +146,12 @@ Outils exposés : `claude_whoami`, `claude_list_conversations`, `claude_open_con
 
 Ce projet repose sur des **API internes non documentées** de l'extension Claude Code. C'est un choix assumé, pas un angle mort : il n'existe aucune API publique pour ce besoin.
 
-- **Une mise à jour de l'extension peut tout casser.** Chaque point d'adhérence est recensé dans [`docs/compatibilite.md`](docs/compatibilite.md) avec la version sur laquelle il a été vérifié. `cmgr doctor` vérifie les présupposés et **échoue explicitement** — jamais de dégradation silencieuse.
+- **Une mise à jour de l'extension peut tout casser.** Chaque point d'adhérence est recensé dans [`docs/compatibilite.md`](docs/compatibilite.md), avec la trace de sa vérification — ou un `— non vérifié` explicite quand aucune mesure ne l'étaie encore. `cmgr doctor` vérifie les présupposés et **échoue explicitement** — jamais de dégradation silencieuse.
 - **Le tour d'amorçage se joue dans un terminal invisible.** La session est **réellement interactive** — c'est mesuré, pas déduit — mais le terminal n'est jamais affiché : vous ne voyez le premier tour qu'une fois le panneau attaché.
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.
-- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck, tests unitaires et packaging ; les preuves d'exécution locale sont jointes aux PR.
+- **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : `cmgr doctor` les vérifie et les nomme plutôt que de les franchir à l'aveugle.
+- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture ; le build et le packaging VSIX ne sont pas encore outillés et relèvent du lot E. Les preuves d'exécution locale sont jointes aux PR.
 
 ## Architecture
 

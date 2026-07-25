@@ -18,7 +18,12 @@
 >
 > **Ce qui reste valide**, et sur quoi le projet continue de s'appuyer :
 >
-> - `initialPrompt` **pré-remplit sans soumettre** (§1) — reconfirmé au source *et* par mesure ;
+> - `initialPrompt` **pré-remplit sans soumettre** (§1) — reconfirmé au source *et* par mesure.
+>   **Incise (2026-07-25)** : §1 se conclut par « Cette voie est écartée » — cette conclusion-là
+>   ne vaut plus telle quelle. Le constat technique reste intact, mais la voie qu'il décrit —
+>   ouvrir avec un prompt pré-rempli et laisser l'humain valider — est depuis devenue le **repli
+>   officiel du projet** (voie V5 d'[ADR-002](002-ouverture-interactive.md)). Elle est écartée
+>   comme voie **nominale**, retenue comme voie de **repli** ;
 > - la **fermeture** par `vscode.window.tabGroups.close(tab)` sur l'onglet dont le `viewType`
 >   contient `claudeVSCodePanel` ;
 > - l'**indépendance au focus** de `editor.open` et de `tabGroups.close` (§3) ;
