@@ -26,8 +26,18 @@ export interface WindowsRoles {
   readonly extensionHosts: readonly {
     readonly pid: number;
     readonly ppid: number;
+    readonly createdAt: number;
     readonly inCallerChain: boolean;
   }[];
+  /**
+   * Processus REEL de la capture, enfant du meme processus principal que l'extension host
+   * mais ne bien apres lui : le contre-exemple de la garde par le seul `ppid`.
+   */
+  readonly pidRecycledUnderTheSameParent: {
+    readonly pid: number;
+    readonly ppid: number;
+    readonly createdAt: number;
+  };
 }
 
 /** Provenance et reperes de la capture POSIX. */

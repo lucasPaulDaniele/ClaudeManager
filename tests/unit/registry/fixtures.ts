@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   parseWindowsProcessTable,
   WINDOW_ENTRY_SCHEMA_VERSION,
+  type ProcessSnapshot,
   type ProcessTable,
   type WindowEntry,
 } from '../../../packages/core/src/index.js';
@@ -40,6 +41,28 @@ export function tableWithoutExtensionHosts(): ProcessTable {
   table.delete(WINDOWS_ROLES.owningExtHostPid);
   for (const pid of WINDOWS_ROLES.otherExtHostPids) table.delete(pid);
   return table;
+}
+
+/**
+ * Marge separant les ecritures d'un test de la date de son instantane.
+ *
+ * L'horodatage d'un fichier et `Date.now()` ne viennent PAS de la meme horloge : mesure
+ * sur ce poste, `mtimeMs` NTFS precede `Date.now()` de jusqu'a 5 ms. Un test qui ecrit
+ * puis capture dans la milliseconde suivante est donc ambigu par construction, et la purge
+ * — conservatrice — epargnerait au hasard ce qu'elle devait supprimer.
+ */
+const WRITES_SETTLED_MS = 1_000;
+
+/**
+ * Instantane date, tel que `readProcessTable()` le rend.
+ *
+ * `capturedAt` est releve A L'APPEL puis decale de la marge ci-dessus : c'est le cas
+ * NOMINAL, celui ou le registre a ete ecrit bien avant l'inventaire. Le cas inverse —
+ * entree publiee APRES la capture — est construit explicitement la ou il est eprouve,
+ * jamais subi au hasard de l'horloge.
+ */
+export function snapshotOf(table: ProcessTable): ProcessSnapshot {
+  return { table, capturedAt: Date.now() + WRITES_SETTLED_MS };
 }
 
 /** Repertoire de registre neuf, sur un VRAI systeme de fichiers temporaire. */
@@ -82,13 +105,13 @@ export function readLegacyEntry(extHostPid: number): LegacyEntry {
  */
 export function currentSchemaEntry(extHostPid: number): WindowEntry {
   const legacy = readLegacyEntry(extHostPid);
-  const mainPid = REAL_TABLE.get(extHostPid);
-  if (mainPid === undefined) throw new Error(`${extHostPid} absent de la table capturee`);
+  const host = REAL_TABLE.get(extHostPid);
+  if (host === undefined) throw new Error(`${extHostPid} absent de la table capturee`);
 
   return {
     schemaVersion: WINDOW_ENTRY_SCHEMA_VERSION,
     extHostPid: legacy.extHostPid,
-    mainPid,
+    mainPid: host.ppid,
     port: legacy.port,
     token: legacy.token,
     workspaceFolders: legacy.workspaceFolders,

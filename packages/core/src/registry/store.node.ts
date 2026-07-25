@@ -8,27 +8,36 @@
  * fait de la purge une simple suppression.
  *
  * Ce module ne fait AUCUN reseau et ne parle a personne : il lit et ecrit des fichiers. Le
- * serveur local vit dans l'extension compagnon, le client HTTP dans `core/client`.
+ * serveur local vit dans l'extension compagnon, le client HTTP vivra dans `core/client`.
  */
 
 import { randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeManagerError, ERROR_CODES } from '../errors.js';
-import type { ProcessTable } from '../identity/processTable.js';
+import { ClaudeManagerError, ERROR_CODES, systemErrorCode } from '../errors.js';
+import type { ProcessSnapshot } from '../identity/processTable.js';
 import { parseWindowEntry, type EntryIdentity, type WindowEntry } from './entry.js';
 
 /** Motif pour lequel un fichier du registre n'a pas donne de fenetre pilotable. */
-export type SkipReason = 'unreadable' | 'unparsable' | 'invalid' | 'foreign-schema' | 'dead' | 'pid-reused';
+export type SkipReason =
+  | 'unreadable'
+  | 'unparsable'
+  | 'invalid'
+  | 'foreign-schema'
+  | 'identity-mismatch'
+  | 'dead'
+  | 'pid-reused';
 
 export interface SkippedEntry {
   /**
@@ -49,18 +58,50 @@ export interface RegistryReadResult {
   readonly skipped: readonly SkippedEntry[];
 }
 
+/**
+ * Motif pour lequel la purge a LAISSE un fichier qu'elle avait ecarte de la lecture.
+ *
+ * `younger-than-snapshot` n'existe qu'ici : la lecture classe sur la table, la purge ajoute
+ * la seule question qui n'a de sens que pour elle — ce fichier a-t-il pu naitre APRES
+ * l'instantane qui le condamne ?
+ */
+export type KeptReason = SkipReason | 'younger-than-snapshot';
+
+export interface KeptEntry {
+  readonly file: string;
+  readonly reason: KeptReason;
+}
+
+export interface PurgeResult {
+  /** Entrees effectivement supprimees. */
+  readonly removed: readonly string[];
+  /** Temporaires d'ecriture abandonnes, effaces : ils portaient un jeton en clair. */
+  readonly removedTemporaries: readonly string[];
+  /**
+   * Ecartees de la lecture mais NON supprimees, avec le motif exact.
+   *
+   * C'est ce qui empeche la purge conservatrice d'etre une disparition silencieuse : une
+   * entree heritee dont le pid est recycle n'est ni pilotable ni purgeable — elle est donc
+   * immortelle, et `cmgr doctor` doit pouvoir la montrer a l'utilisateur plutot que de la
+   * taire.
+   */
+  readonly kept: readonly KeptEntry[];
+}
+
 export interface ReadRegistryOptions {
   /**
-   * Fournie par l'appelant, jamais relue ici : `readProcessTable()` coute de 700 ms a
-   * 1,25 s sur un poste reel. Le coeur ne garde volontairement aucun etat — la mise en
-   * cache appartient a l'appelant, qui sait seul quand son instantane a vieilli.
+   * Fourni par l'appelant, jamais releve ici : `readProcessTable()` coute de 700 ms a
+   * 1,3 s sur un poste reel. Le coeur ne garde volontairement aucun etat — la mise en
+   * cache appartient a l'appelant, qui sait seul quand son instantane a vieilli. C'est
+   * precisement pourquoi l'instantane porte sa date : lire sur une table perimee est
+   * reparable, mais la purge, elle, ne peut pas se le permettre.
    */
-  readonly table: ProcessTable;
+  readonly snapshot: ProcessSnapshot;
   readonly dir?: string;
 }
 
 export interface PurgeStaleEntriesOptions {
-  readonly table: ProcessTable;
+  readonly snapshot: ProcessSnapshot;
   readonly dir?: string;
 }
 
@@ -69,6 +110,32 @@ export interface WriteWindowEntryOptions {
 }
 
 const ENTRY_EXTENSION = '.json';
+const TEMPORARY_EXTENSION = '.tmp';
+
+/**
+ * Temporaire d'ecriture atomique : `<pid>.<uuid>.tmp`.
+ *
+ * Le pid en prefixe n'est pas decoratif — c'est ce qui rend un temporaire ORPHELIN
+ * identifiable, donc effacable. Le motif est strict : un fichier qui ne le respecte pas
+ * n'a pas ete ecrit par nous et n'est jamais touche.
+ */
+const TEMPORARY_FILE = /^(\d+)\.[0-9a-f-]+\.tmp$/;
+
+/**
+ * Droits du repertoire du registre et de ses entrees.
+ *
+ * Une entree porte le JETON PORTEUR de sa fenetre en clair. Sans `mode`, Node applique
+ * `0o777 & ~umask` au repertoire et `0o666 & ~umask` au fichier — soit 0755 et 0644 sous
+ * l'umask par defaut : sur un poste POSIX multi-utilisateurs, n'importe quel autre compte
+ * lit le jeton et le port de chaque fenetre. Les deux modes sont necessaires, le
+ * temporaire portant exactement le meme secret que l'entree definitive.
+ *
+ * Sous Windows ces bits n'ont pas de sens — `chmod` n'y pilote que l'attribut « lecture
+ * seule » — et c'est l'ACL heritee de `C:\\Users\\<compte>` qui protege deja. Les poser
+ * n'y coute rien et n'y echoue pas.
+ */
+const REGISTRY_DIR_MODE = 0o700;
+const ENTRY_FILE_MODE = 0o600;
 
 /** Racine par defaut, sous le repertoire personnel : jamais de separateur code en dur. */
 export function resolveRegistryDir(dir?: string): string {
@@ -76,7 +143,7 @@ export function resolveRegistryDir(dir?: string): string {
 }
 
 /**
- * Liste les fichiers candidats du registre.
+ * Liste les fichiers du registre.
  *
  * Un repertoire absent est l'etat NOMINAL d'un poste ou aucune fenetre ne s'est encore
  * enregistree : resultat vide, aucune erreur. Un repertoire present mais illisible est en
@@ -88,11 +155,11 @@ export function resolveRegistryDir(dir?: string): string {
  * Prix assume : un repertoire supprime entre le sondage et la lecture sera signale comme
  * illisible plutot que comme absent. C'est une anomalie de concurrence, la nommer est juste.
  */
-function listEntryFiles(dir: string): readonly string[] {
+function listFiles(dir: string): readonly string[] {
   if (!existsSync(dir)) return [];
 
   try {
-    return readdirSync(dir).filter((name) => name.endsWith(ENTRY_EXTENSION));
+    return readdirSync(dir);
   } catch {
     // Sans detail : le message systeme porterait le chemin du registre dans les journaux.
     throw new ClaudeManagerError(
@@ -105,7 +172,7 @@ function listEntryFiles(dir: string): readonly string[] {
 type Liveness = 'alive' | 'dead' | 'pid-reused' | 'unknown';
 
 /**
- * Juge si la fenetre decrite par une entree existe encore.
+ * Juge si la fenetre decrite par une entree DU SCHEMA COURANT existe encore.
  *
  * GARDE ANTI-REEMPLOI DE PID : un pid vivant ne prouve pas que la fenetre l'est. Un pid
  * libere puis reattribue par le systeme designerait un processus quelconque — et le
@@ -113,34 +180,101 @@ type Liveness = 'alive' | 'dead' | 'pid-reused' | 'unknown';
  * l'invariant d'isolation. Le `ppid` releve a l'enregistrement le detecte : un processus
  * reattribue n'a quasiment jamais le meme parent que l'extension host qu'il remplace.
  *
- * Sans `extHostPid` lisible, on ne CONCLUT pas : on ne sait pas si l'entree est morte, et
- * la purge devra s'en abstenir.
+ * SECONDE GARDE, PAR LA DATE DE CREATION : la premiere se franchit. Sous Windows le
+ * parent enregistre est le `Code.exe` principal, qui engendre des enfants en permanence —
+ * ptyHost, shared process, file watchers, installateurs, autres extension hosts. Un pid
+ * recycle par n'importe lequel d'entre eux a EXACTEMENT le meme parent, et passe. Un
+ * processus ne APRES l'ecriture de l'entree, en revanche, n'a jamais pu etre la fenetre
+ * qui l'a ecrite : la comparaison est sans appel.
+ *
+ * Elle est stricte, sans marge, et c'est deliberе : la marge est structurelle. Un
+ * extension host est cree bien avant que l'extension qui publie son entree ne s'active —
+ * l'activation se compte en centaines de millisecondes, la ou les deux horloges du systeme
+ * ne divergent que de quelques unites. Y ajouter une tolerance serait une intuition non
+ * mesuree, ce que ce projet s'interdit.
+ *
+ * `mainPid` n'a ce sens QUE dans le schema courant, d'ou cette fonction distincte : voir
+ * `judgeForeignLiveness` pour ce qu'on s'autorise face a une entree qu'on ne comprend pas.
  */
-function judgeLiveness(identity: EntryIdentity, table: ProcessTable): Liveness {
-  const { extHostPid, mainPid } = identity;
-  if (extHostPid === undefined) return 'unknown';
-
-  const parentPid = table.get(extHostPid);
-  if (parentPid === undefined) return 'dead';
-  // `mainPid` manque aux entrees anterieures au schema 1 : leur vivacite se juge alors sur
-  // la seule presence du pid, faute de mieux. Elles ne sont de toute facon jamais pilotees.
-  if (mainPid !== undefined && parentPid !== mainPid) return 'pid-reused';
+function judgeCurrentSchemaLiveness(entry: WindowEntry, snapshot: ProcessSnapshot): Liveness {
+  const host = snapshot.table.get(entry.extHostPid);
+  if (host === undefined) return 'dead';
+  if (host.ppid !== entry.mainPid) return 'pid-reused';
+  // Date inconnue : la garde ne s'applique pas, elle ne se devine pas non plus.
+  if (host.createdAt !== undefined && host.createdAt > Date.parse(entry.startedAt)) {
+    return 'pid-reused';
+  }
 
   return 'alive';
+}
+
+/**
+ * CONTRAT INTER-VERSIONS — ce que la version 1 a le droit de supposer d'une entree qu'elle
+ * n'a pas ecrite, et rien de plus :
+ *
+ *   - `schemaVersion` designe la version du schema de l'entree ;
+ *   - `extHostPid` designe le pid de l'extension host de la fenetre.
+ *
+ * Ces DEUX champs seulement, une version ulterieure s'engage a ne pas les deplacer. Tous
+ * les autres — `mainPid` au premier chef — peuvent changer de sens sans preavis : une
+ * version 2 pourrait y mettre un identifiant de fenetre, un `ppid` releve a distance, ou
+ * le parent releve a un autre instant.
+ *
+ * La consequence est stricte : la seule question qu'on s'autorise ici est « ce pid
+ * existe-t-il encore ? ». Un pid absent ⇒ `dead`, et un processus mort ne revient pas,
+ * quelle que soit la version qui l'a inscrit. Tout le reste ⇒ INTOUCHABLE. Appliquer la
+ * semantique v1 de `mainPid` a un schema qu'on ne possede pas reviendrait a supprimer
+ * l'entree VIVANTE d'une version ulterieure — exactement ce que `schemaVersion` existe
+ * pour empecher.
+ *
+ * Sans `extHostPid` lisible, on ne CONCLUT pas : on ignore si l'entree est morte, et la
+ * purge devra s'en abstenir.
+ */
+function judgeForeignLiveness(identity: EntryIdentity, snapshot: ProcessSnapshot): Liveness {
+  if (identity.extHostPid === undefined) return 'unknown';
+  return snapshot.table.has(identity.extHostPid) ? 'unknown' : 'dead';
 }
 
 type Classification =
   | { readonly kind: 'window'; readonly entry: WindowEntry }
   | { readonly kind: 'skip'; readonly reason: SkipReason };
 
-function classifyFile(file: string, table: ProcessTable): Classification {
-  let content: string;
-  try {
-    content = readFileSync(file, 'utf8');
-  } catch {
-    return { kind: 'skip', reason: 'unreadable' };
-  }
+/**
+ * Fichier du registre, classe et DATE.
+ *
+ * `modifiedAt` est releve dans le MEME `try` que la lecture : un `stat` separe ajouterait
+ * un chemin d'echec propre, la ou un fichier qu'on ne sait pas dater est deja un fichier
+ * qu'on ne sait pas lire.
+ */
+interface ScannedFile {
+  readonly file: string;
+  readonly classification: Classification;
+  readonly modifiedAt: number;
+}
 
+/**
+ * L'ecriture NOMME le fichier d'apres le pid — la lecture doit donc le VERIFIER.
+ *
+ * Sans ce controle, rien ne rattache un fichier a l'identite qu'il revendique : n'importe
+ * quel processus tournant sous le compte de l'utilisateur peut deposer un `0000.json`
+ * declarant l'`extHostPid` et le `mainPid` REELS d'une fenetre. L'entree passe alors toute
+ * la validation, est jugee vivante, et gagne l'arbitrage a egalite de profondeur par le
+ * seul ordre alphabetique de `readdir` — le client s'adresse au serveur de l'attaquant en
+ * croyant parler a sa propre fenetre.
+ *
+ * Le nom du fichier est la seule chose qu'un intrus ne controle pas librement : deux
+ * fichiers ne peuvent pas porter le meme nom, donc un pid ne peut etre revendique qu'une
+ * fois. Exiger l'egalite fait de cette contrainte du systeme de fichiers une contrainte
+ * d'identite.
+ */
+function claimsItsOwnName(file: string, identity: EntryIdentity): boolean {
+  // Pid illisible : l'entree sera de toute facon rejetee, et jamais purgee faute de savoir
+  // si sa fenetre vit. Rien a confronter ici.
+  if (identity.extHostPid === undefined) return true;
+  return file === `${identity.extHostPid}${ENTRY_EXTENSION}`;
+}
+
+function classifyContent(file: string, content: string, snapshot: ProcessSnapshot): Classification {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -149,13 +283,48 @@ function classifyFile(file: string, table: ProcessTable): Classification {
   }
 
   const parsed = parseWindowEntry(value);
-  // La vivacite se juge AVANT le schema : la version d'une fenetre morte n'a plus d'objet,
-  // et c'est ce qui rend une entree etrangere perimee purgeable un jour.
-  const liveness = judgeLiveness(parsed.identity, table);
+  if (!claimsItsOwnName(file, parsed.identity)) return { kind: 'skip', reason: 'identity-mismatch' };
+  // Le SCHEMA d'abord, la vivacite ensuite — et jamais l'inverse : juger la vivacite d'une
+  // entree avant de savoir de quelle version elle est, c'est lui appliquer une semantique
+  // qu'on ne lui connait pas. Une entree morte reste purgeable dans les deux cas, mais par
+  // la seule question qui vaut pour toutes les versions : son pid existe-t-il encore ?
+  const liveness = parsed.ok
+    ? judgeCurrentSchemaLiveness(parsed.entry, snapshot)
+    : judgeForeignLiveness(parsed.identity, snapshot);
   if (liveness === 'dead' || liveness === 'pid-reused') return { kind: 'skip', reason: liveness };
 
   if (!parsed.ok) return { kind: 'skip', reason: parsed.reason };
   return { kind: 'window', entry: parsed.entry };
+}
+
+/** Parcours unique du registre : la lecture et la purge en derivent toutes deux. */
+function scanRegistry(dir: string, snapshot: ProcessSnapshot): readonly ScannedFile[] {
+  const scanned: ScannedFile[] = [];
+
+  for (const file of listFiles(dir)) {
+    // Un fichier hors convention n'est pas rapporte : il ne pretend pas etre une entree.
+    if (!file.endsWith(ENTRY_EXTENSION)) continue;
+
+    const absolute = path.join(dir, file);
+    let modifiedAt: number;
+    let content: string;
+    try {
+      // Tronque a la MILLISECONDE : `mtimeMs` porte des fractions de milliseconde sur NTFS
+      // quand `Date.now()` n'en a jamais. Sans cette troncature, un fichier ecrit dans la
+      // milliseconde de la capture s'en trouverait « plus recent » — et une entree morte
+      // deviendrait indestructible une fois sur deux, au hasard de l'horloge.
+      modifiedAt = Math.floor(statSync(absolute).mtimeMs);
+      content = readFileSync(absolute, 'utf8');
+    } catch {
+      // Un fichier qu'on ne sait ni dater ni lire ne sera de toute facon jamais supprime.
+      scanned.push({ file, classification: { kind: 'skip', reason: 'unreadable' }, modifiedAt: 0 });
+      continue;
+    }
+
+    scanned.push({ file, classification: classifyContent(file, content, snapshot), modifiedAt });
+  }
+
+  return scanned;
 }
 
 /**
@@ -176,10 +345,9 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
   const windows: WindowEntry[] = [];
   const skipped: SkippedEntry[] = [];
 
-  for (const file of listEntryFiles(dir)) {
-    const classification = classifyFile(path.join(dir, file), options.table);
-    if (classification.kind === 'window') windows.push(classification.entry);
-    else skipped.push({ file, reason: classification.reason });
+  for (const scanned of scanRegistry(dir, options.snapshot)) {
+    if (scanned.classification.kind === 'window') windows.push(scanned.classification.entry);
+    else skipped.push({ file: scanned.file, reason: scanned.classification.reason });
   }
 
   return { windows, skipped };
@@ -192,28 +360,79 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
  * supprimees que les entrees jugees `dead` ou `pid-reused`, quel que soit leur schema : un
  * processus mort ne revient pas, sa version importe peu. Une entree etrangere dont le pid
  * est VIVANT n'est jamais touchee : elle appartient probablement a une version ulterieure
- * de ClaudeManager, et il est hors de question que la version 1 detruise ses entrees.
+ * de ClaudeManager, et il est hors de question que la version 1 detruise ses entrees. Ce
+ * que « vivant » veut dire pour une entree qu'on ne comprend pas est fixe par le contrat
+ * inter-versions — voir `judgeForeignLiveness`.
  *
  * Contre-intuitif mais volontaire : une entree illisible ou corrompue dont on n'a pas pu
  * lire le pid n'est PAS supprimable non plus — on ignore si sa fenetre est morte, et
  * supprimer par defaut reviendrait a nettoyer a l'aveugle le registre d'autrui.
  *
+ * FRAICHEUR DE L'INSTANTANE — contrainte propre a la purge, que la lecture n'a pas :
+ * `dead` ne veut dire que « absent de CET instantane ». Une entree publiee apres sa capture
+ * en est absente par construction, sans etre morte pour autant — et c'est le cas nominal au
+ * demarrage de deux fenetres a quelques centaines de ms d'ecart. Un fichier plus recent que
+ * `capturedAt` n'est donc jamais supprime : il est rapporte, jamais escamote. Lire a tort
+ * est reparable, supprimer a tort ne l'est pas.
+ *
  * Operation explicite, appelee a l'activation de l'extension compagnon. JAMAIS depuis
  * `readRegistry`.
  */
-export function purgeStaleEntries(options: PurgeStaleEntriesOptions): readonly string[] {
+export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResult {
   const dir = resolveRegistryDir(options.dir);
   // La purge rejoue exactement la classification de la lecture : les deux ne peuvent pas
   // diverger, donc la purge ne peut pas supprimer ce que la lecture aurait retenu.
-  const { skipped } = readRegistry({ table: options.table, dir });
+  const scanned = scanRegistry(dir, options.snapshot);
 
   const removed: string[] = [];
-  for (const entry of skipped) {
-    if (entry.reason !== 'dead' && entry.reason !== 'pid-reused') continue;
+  const kept: KeptEntry[] = [];
+  for (const { file, classification, modifiedAt } of scanned) {
+    if (classification.kind === 'window') continue;
+    const reason = classification.reason;
+
+    if (reason !== 'dead' && reason !== 'pid-reused') {
+      kept.push({ file, reason });
+      continue;
+    }
+    if (modifiedAt > options.snapshot.capturedAt) {
+      kept.push({ file, reason: 'younger-than-snapshot' });
+      continue;
+    }
     // `force` : deux fenetres peuvent purger en meme temps. Un fichier deja disparu n'est
     // pas une defaillance, c'est le resultat recherche. Les autres erreurs, elles, remontent.
-    rmSync(path.join(dir, entry.file), { force: true });
-    removed.push(entry.file);
+    rmSync(path.join(dir, file), { force: true });
+    removed.push(file);
+  }
+
+  return { removed, removedTemporaries: purgeOrphanTemporaries(dir, options.snapshot), kept };
+}
+
+/**
+ * Efface les temporaires d'ecriture abandonnes.
+ *
+ * Ils portent le JETON COMPLET et n'ont pas l'extension des entrees : ni la lecture, ni la
+ * purge des entrees, ni `cmgr doctor` ne les voient. Un `renameSync` interrompu par une
+ * mort brutale du processus en laisse un derriere lui — indefiniment, et avec un secret
+ * dedans. `writeWindowEntry` efface les siens ; celui-ci ramasse ceux que personne n'a pu
+ * effacer.
+ *
+ * Seul le pid en prefixe decide : un temporaire dont le processus VIT peut etre une
+ * ecriture en cours, on n'y touche pas. Fenetre residuelle assumee et bornee : un
+ * processus ne APRES la capture de l'instantane est absent de la table, et si la purge
+ * passe pendant les quelques microsecondes qui separent son `write` de son `rename`, son
+ * temporaire disparait. Il en resulte une erreur NOMMEE cote ecrivain — jamais une
+ * publication silencieusement fausse.
+ */
+function purgeOrphanTemporaries(dir: string, snapshot: ProcessSnapshot): readonly string[] {
+  const removed: string[] = [];
+
+  for (const file of listFiles(dir)) {
+    const match = TEMPORARY_FILE.exec(file);
+    if (match === null) continue;
+    if (snapshot.table.has(Number.parseInt(match[1] as string, 10))) continue;
+
+    rmSync(path.join(dir, file), { force: true });
+    removed.push(file);
   }
 
   return removed;
@@ -243,14 +462,47 @@ export function writeWindowEntry(entry: WindowEntry, options: WriteWindowEntryOp
   }
 
   const dir = resolveRegistryDir(options.dir);
-  mkdirSync(dir, { recursive: true });
-
   const file = path.join(dir, `${parsed.entry.extHostPid}${ENTRY_EXTENSION}`);
-  const temporary = path.join(dir, `${parsed.entry.extHostPid}.${randomUUID()}.tmp`);
-  // On ecrit l'entree RECONSTRUITE : un champ inconnu tolere a la lecture n'est jamais
-  // reecrit, sans quoi le registre accumulerait des champs que plus personne ne comprend.
-  writeFileSync(temporary, `${JSON.stringify(parsed.entry, null, 2)}\n`, 'utf8');
-  renameSync(temporary, file);
+  const temporary = path.join(
+    dir,
+    `${parsed.entry.extHostPid}.${randomUUID()}${TEMPORARY_EXTENSION}`
+  );
+
+  // Le nettoyage du temporaire ne doit JAMAIS masquer la defaillance qu'il accompagne : on
+  // ne tente de l'effacer que s'il a reellement ete cree. Sinon `rmSync` sonde un chemin
+  // situe SOUS un repertoire qui n'en est pas un — `ENOTDIR`, que `force` ne rattrape pas,
+  // contrairement a `ENOENT` — et c'est cette erreur nue qui remonterait a la place.
+  let temporaryExists = false;
+  try {
+    mkdirSync(dir, { recursive: true, mode: REGISTRY_DIR_MODE });
+    // RATTRAPAGE DE L'EXISTANT (principe fondateur n.7) : le `mode` de `mkdirSync` ne
+    // s'applique qu'a la CREATION, et l'umask le rogne. Un repertoire cree par une version
+    // anterieure — il en existe sur des postes en service — resterait donc en 0755. Ce
+    // `chmod` est idempotent : il resserre a chaque publication, sans rien exiger de plus.
+    chmodSync(dir, REGISTRY_DIR_MODE);
+    // On ecrit l'entree RECONSTRUITE : un champ inconnu tolere a la lecture n'est jamais
+    // reecrit, sans quoi le registre accumulerait des champs que plus personne ne comprend.
+    writeFileSync(temporary, `${JSON.stringify(parsed.entry, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: ENTRY_FILE_MODE,
+    });
+    temporaryExists = true;
+    renameSync(temporary, file);
+  } catch (cause) {
+    // Un temporaire abandonne porte le JETON COMPLET, et son nom ne se termine pas par
+    // `.json` : il echappe a la lecture, donc a l'inventaire, donc a l'utilisateur. Chaque
+    // echec ulterieur en ajouterait un. On l'efface ici, ou la purge le ramassera.
+    if (temporaryExists) rmSync(temporary, { force: true });
+    // Erreur NOMMEE, symetrique de `REGISTRY_UNREADABLE` cote lecture : un `mkdirSync` sur
+    // un chemin qui existe deja en fichier, un `renameSync` bloque par un antivirus ou un
+    // indexeur sont des defaillances previsibles. Sans detail hors du code systeme : le
+    // message porterait le chemin du registre, donc le nom de l'utilisateur.
+    throw new ClaudeManagerError(
+      ERROR_CODES.REGISTRY_UNWRITABLE,
+      'The window registry entry could not be written',
+      { cause: systemErrorCode(cause) }
+    );
+  }
 
   return file;
 }
