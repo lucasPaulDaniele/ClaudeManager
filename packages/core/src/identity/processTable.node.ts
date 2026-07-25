@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ClaudeManagerError, ERROR_CODES } from '../errors.js';
+import { ClaudeManagerError, ERROR_CODES, systemErrorCode } from '../errors.js';
 import {
   parsePosixProcessTable,
   parseWindowsProcessTable,
@@ -81,7 +81,9 @@ export async function readProcessTable(
     throw new ClaudeManagerError(
       ERROR_CODES.PROCESS_TABLE_UNAVAILABLE,
       `Failed to run the process inventory command on ${platform}`,
-      { platform, cause: cause instanceof Error ? cause.message : String(cause) }
+      // Le CODE, jamais le message : celui d'un `execFile` en echec recopie le stderr du
+      // processus, qui n'est contraint par rien et part vers un agent et vers un journal.
+      { platform, cause: systemErrorCode(cause) }
     );
   }
 

@@ -63,6 +63,33 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     "La fenetre cible est en Restricted Mode. Accorder la confiance au dossier dans VSCode ('Do you trust the authors of the files in this folder?').",
 };
 
+/**
+ * Reduit une defaillance systeme a son CODE, et jette le texte libre.
+ *
+ * Les `details` d'une erreur nommee partent vers un agent ET vers un journal persiste,
+ * lui-meme joint en preuve a des PR d'un depot PUBLIC. Or les erreurs `fs` de Node
+ * embarquent systematiquement le chemin — donc le nom de compte et l'arborescence
+ * personnelle : `EPERM: operation not permitted, rename 'C:\\Users\\<compte>\\...'`. Et le
+ * message d'un `execFile` en echec recopie le stderr du processus, que rien ne contraint.
+ *
+ * Le code seul — `EPERM`, `ENOENT`, un statut de sortie, un signal — suffit au diagnostic
+ * et ne porte rien de personnel. C'est la meme discipline que `listEntryFiles`, qui sonde
+ * l'existence plutot que d'interpreter un message systeme.
+ */
+export function systemErrorCode(cause: unknown): string {
+  if (typeof cause === 'object' && cause !== null) {
+    const { code, signal } = cause as { readonly code?: unknown; readonly signal?: unknown };
+    // `fs` et un `execFile` introuvable rendent un code textuel ; un processus qui sort en
+    // erreur rend son statut ; un processus tue rend son signal.
+    if (typeof code === 'string' && code.length > 0) return code;
+    if (typeof code === 'number') return `EXIT_${code}`;
+    if (typeof signal === 'string' && signal.length > 0) return signal;
+  }
+  // Tout le reste — une chaine levee, un objet sans code — n'est pas dit, faute de pouvoir
+  // garantir ce qu'il contient.
+  return 'UNKNOWN';
+}
+
 /** Forme serialisable d'une erreur, rendue telle quelle par la CLI et le serveur MCP. */
 export interface SerializedError {
   readonly code: ErrorCode;

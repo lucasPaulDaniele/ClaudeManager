@@ -121,6 +121,14 @@ describe('readProcessTable — instantane date', () => {
 });
 
 describe('readProcessTable — defaillances', () => {
+  /** Rejoue un echec systeme REEL et rend la cause telle que l'erreur nommee la porte. */
+  async function causeOf(run: CommandRunner): Promise<unknown> {
+    const failure = await catchFailure(() => readProcessTable({ platform: 'linux', run }));
+
+    expect(failure.code).toBe(ERROR_CODES.PROCESS_TABLE_UNAVAILABLE);
+    return failure.details?.['cause'];
+  }
+
   it('nomme l echec quand la commande d inventaire ne peut pas s executer', async () => {
     // Echec systeme reel et identique sur toutes les plateformes : le binaire n'existe pas.
     const failure = await catchFailure(() =>
@@ -139,20 +147,52 @@ describe('readProcessTable — defaillances', () => {
     expect(failure.code).toBe(ERROR_CODES.PROCESS_TABLE_UNAVAILABLE);
     expect(failure.remediation.length).toBeGreaterThan(0);
     expect(failure.details?.['platform']).toBe('linux');
-    expect(String(failure.details?.['cause']).length).toBeGreaterThan(0);
+    expect(failure.details?.['cause']).toBe('ENOENT');
   });
 
-  it('rend la cause meme quand ce qui est leve n est pas une Error', async () => {
-    const failure = await catchFailure(() =>
-      readProcessTable({
-        platform: 'win32',
-        run: () => {
-          throw 'acces refuse';
-        },
-      })
-    );
+  it('ne laisse passer que le CODE de la defaillance, jamais le message systeme', async () => {
+    // Le message d'un `execFile` en echec recopie le stderr du processus — que rien ne
+    // contraint — et les erreurs `fs` y ajoutent le chemin absolu, donc le nom de compte.
+    // Ces details partent vers un agent et vers un journal joint a une PR publique.
+    const noisy = await causeOf(async () => {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['-e', 'process.stderr.write(process.env.HOME ?? process.env.USERPROFILE ?? "?"); process.exit(3)'],
+        { encoding: 'utf8' }
+      );
+      return stdout;
+    });
 
-    expect(failure.details?.['cause']).toBe('acces refuse');
+    expect(noisy).toBe('EXIT_3');
+  });
+
+  it('rend le signal quand le processus a ete tue plutot que sorti', async () => {
+    const killed = await causeOf(async () => {
+      const { stdout } = await execFileAsync(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+        encoding: 'utf8',
+        timeout: 200,
+      });
+      return stdout;
+    });
+
+    expect(killed).toBe('SIGTERM');
+  });
+
+  it('ne dit rien quand il n y a pas de code a dire', async () => {
+    // Une defaillance sans code : on prefere ne rien affirmer plutot que recopier un texte
+    // dont on ne sait pas ce qu'il contient.
+    expect(
+      await causeOf(() => {
+        throw new Error('un message dont on ignore la provenance');
+      })
+    ).toBe('UNKNOWN');
+
+    // Et ce qui est leve n'est meme pas toujours une Error.
+    expect(
+      await causeOf(() => {
+        throw 'acces refuse';
+      })
+    ).toBe('UNKNOWN');
   });
 
   it('refuse une table vide : un processus se lit toujours au moins lui-meme', async () => {
