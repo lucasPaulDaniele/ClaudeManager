@@ -8,7 +8,7 @@ import {
   type WindowEntry,
 } from '../../../packages/core/src/index.js';
 import { WINDOWS_ROLES } from '../identity/fixtures.js';
-import { currentSchemaEntry, makeRegistryDir, REAL_TABLE } from './fixtures.js';
+import { currentSchemaEntry, makeRegistryDir, REAL_TABLE, snapshotOf } from './fixtures.js';
 
 /**
  * L'invariant du produit, verifie de bout en bout DANS LE COEUR : du registre sur disque
@@ -42,7 +42,7 @@ describe('registre + identite — deux fenetres sur le meme dossier', () => {
     writeWindowEntry(entryOn(HOST), { dir });
     writeWindowEntry(entryOn(SIBLING), { dir });
 
-    const { windows } = readRegistry({ table: REAL_TABLE, dir });
+    const { windows } = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(windows).toHaveLength(2);
     expect(windows.map((window) => window.workspaceFolders)).toEqual([
@@ -58,7 +58,7 @@ describe('registre + identite — deux fenetres sur le meme dossier', () => {
     writeWindowEntry(entryOn(SIBLING), { dir });
     writeWindowEntry(entryOn(HOST), { dir });
 
-    const { windows } = readRegistry({ table: REAL_TABLE, dir });
+    const { windows } = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(resolveOwningWindow(CALLER, REAL_TABLE, windows)?.extHostPid).toBe(HOST);
   });
@@ -66,7 +66,7 @@ describe('registre + identite — deux fenetres sur le meme dossier', () => {
   it('ne revendique rien quand seule la voisine est enregistree', () => {
     writeWindowEntry(entryOn(SIBLING), { dir });
 
-    const { windows } = readRegistry({ table: REAL_TABLE, dir });
+    const { windows } = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(windows).toHaveLength(1);
     expect(resolveOwningWindow(CALLER, REAL_TABLE, windows)).toBeUndefined();
@@ -80,7 +80,7 @@ describe('registre + identite — deux fenetres sur le meme dossier', () => {
     writeWindowEntry(host, { dir });
     writeWindowEntry(sibling, { dir });
 
-    const { windows } = readRegistry({ table: REAL_TABLE, dir });
+    const { windows } = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(windows).toHaveLength(2);
     expect(resolveOwningWindow(CALLER, REAL_TABLE, windows)?.extHostPid).toBe(HOST);

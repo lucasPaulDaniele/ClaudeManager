@@ -10,6 +10,7 @@ export { ancestorsOf } from './identity/ancestry.js';
 export {
   parsePosixProcessTable,
   parseWindowsProcessTable,
+  type ProcessSnapshot,
   type ProcessTable,
 } from './identity/processTable.js';
 export {
@@ -40,6 +41,9 @@ export {
   readRegistry,
   resolveRegistryDir,
   writeWindowEntry,
+  type KeptEntry,
+  type KeptReason,
+  type PurgeResult,
   type PurgeStaleEntriesOptions,
   type ReadRegistryOptions,
   type RegistryReadResult,

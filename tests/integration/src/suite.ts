@@ -181,9 +181,9 @@ export async function run(): Promise<void> {
   }
 
   // ---- Point 6 : isolation ------------------------------------------------------------
-  const table = readProcessTable();
-  const registry = readRegistry({ table });
-  const owner = resolveOwningWindow(extHostPid, table, registry.windows);
+  const snapshot = await readProcessTable();
+  const registry = readRegistry({ snapshot });
+  const owner = resolveOwningWindow(extHostPid, snapshot.table, registry.windows);
   assert.ok(owner, 'this window must claim its own extension host');
   assert.equal(owner.extHostPid, extHostPid, 'resolveOwningWindow must return THIS window');
 

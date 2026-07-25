@@ -13,6 +13,7 @@ import {
   makeRegistryDir,
   readLegacyEntry,
   REAL_TABLE,
+  snapshotOf,
   tableWithoutExtensionHosts,
 } from './fixtures.js';
 
@@ -63,13 +64,13 @@ describe('entrees heritees 0.1.0 — pourquoi elles sont dangereuses', () => {
 
 describe('readRegistry face aux entrees heritees', () => {
   it("ne les pilote JAMAIS, alors meme que leurs pid sont vivants", () => {
-    const result = readRegistry({ table: REAL_TABLE, dir });
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(result.windows).toEqual([]);
   });
 
   it('les rapporte comme foreign-schema, jamais escamotees', () => {
-    const result = readRegistry({ table: REAL_TABLE, dir });
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect([...result.skipped].sort((a, b) => a.file.localeCompare(b.file))).toEqual([
       { file: '11172.json', reason: 'foreign-schema' },
@@ -84,7 +85,7 @@ describe('readRegistry face aux entrees heritees', () => {
     const mine = currentSchemaEntry(HOST);
     writeWindowEntry(mine, { dir });
 
-    const result = readRegistry({ table: REAL_TABLE, dir });
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(result.windows).toEqual([mine]);
     expect(result.skipped).toEqual([{ file: `${SIBLING}.json`, reason: 'foreign-schema' }]);
@@ -95,13 +96,21 @@ describe('purgeStaleEntries face aux entrees heritees — purge conservatrice', 
   it('ne les supprime PAS tant que leurs pid sont vivants', () => {
     // Une version ULTERIEURE de ClaudeManager ecrira un schemaVersion 2 : il est hors de
     // question que la version 1 detruise ses entrees.
-    expect(purgeStaleEntries({ table: REAL_TABLE, dir })).toEqual([]);
+    const result = purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir });
+
+    expect(result.removed).toEqual([]);
     expect(readdirSync(dir).sort()).toEqual([...LEGACY_FILES].sort());
+    // Immortelles tant que leur pid vit : c est le prix assume de la purge conservatrice,
+    // et il doit etre RAPPORTE, pas subi en silence.
+    expect([...result.kept].sort((a, b) => a.file.localeCompare(b.file))).toEqual([
+      { file: '11172.json', reason: 'foreign-schema' },
+      { file: '17544.json', reason: 'foreign-schema' },
+    ]);
   });
 
   it('les supprime des que leurs pid ont disparu', () => {
     // Un processus mort ne revient pas : sa version importe peu.
-    const removed = purgeStaleEntries({ table: tableWithoutExtensionHosts(), dir });
+    const { removed } = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
 
     expect([...removed].sort()).toEqual([...LEGACY_FILES].sort());
     expect(readdirSync(dir)).toEqual([]);
@@ -111,7 +120,7 @@ describe('purgeStaleEntries face aux entrees heritees — purge conservatrice', 
     const table = new Map(REAL_TABLE);
     table.delete(HOST);
 
-    expect(purgeStaleEntries({ table, dir })).toEqual([`${HOST}.json`]);
+    expect(purgeStaleEntries({ snapshot: snapshotOf(table), dir }).removed).toEqual([`${HOST}.json`]);
     expect(readdirSync(dir)).toEqual([`${SIBLING}.json`]);
   });
 });

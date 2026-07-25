@@ -8,6 +8,27 @@
 /** Table des processus du systeme : pid -> pid du parent. */
 export type ProcessTable = ReadonlyMap<number, number>;
 
+/**
+ * Table des processus AVEC la date de sa capture.
+ *
+ * Une table nue ne dit pas de QUAND elle date, et c'est precisement ce qui manquait : le
+ * coeur ne garde aucun etat, l'appelant est donc invite a mettre son inventaire en cache —
+ * usage nominal, pas un abus. Une purge qui detruit sur la foi d'une table sans age
+ * supprime alors les entrees publiees APRES sa capture, c'est-a-dire des fenetres bien
+ * vivantes. L'horodatage rend cette borne opposable : voir `purgeStaleEntries`.
+ */
+export interface ProcessSnapshot {
+  readonly table: ProcessTable;
+  /**
+   * Millisecondes depuis l'epoque, relevees AVANT le lancement de la commande
+   * d'inventaire — jamais apres. C'est une borne INFERIEURE de l'age de l'instantane :
+   * l'enumeration dure de 700 ms a 1,3 s, et un processus ne pendant ce laps peut lui
+   * avoir echappe. Dater l'instantane de sa fin le declarerait plus frais qu'il ne l'est,
+   * et rendrait supprimable exactement ce qu'il a manque.
+   */
+  readonly capturedAt: number;
+}
+
 /** Sortie de `Get-CimInstance Win32_Process`, guillemets et espaces toleres. */
 const WINDOWS_ENTRY = /^\s*"?(\d+)"?\s*,\s*"?(\d+)"?\s*$/;
 

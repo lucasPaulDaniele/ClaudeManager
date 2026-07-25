@@ -8,7 +8,7 @@
  * fait de la purge une simple suppression.
  *
  * Ce module ne fait AUCUN reseau et ne parle a personne : il lit et ecrit des fichiers. Le
- * serveur local vit dans l'extension compagnon, le client HTTP dans `core/client`.
+ * serveur local vit dans l'extension compagnon, le client HTTP vivra dans `core/client`.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -19,12 +19,13 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaudeManagerError, ERROR_CODES } from '../errors.js';
-import type { ProcessTable } from '../identity/processTable.js';
+import type { ProcessSnapshot } from '../identity/processTable.js';
 import { parseWindowEntry, type EntryIdentity, type WindowEntry } from './entry.js';
 
 /** Motif pour lequel un fichier du registre n'a pas donne de fenetre pilotable. */
@@ -49,18 +50,50 @@ export interface RegistryReadResult {
   readonly skipped: readonly SkippedEntry[];
 }
 
+/**
+ * Motif pour lequel la purge a LAISSE un fichier qu'elle avait ecarte de la lecture.
+ *
+ * `younger-than-snapshot` n'existe qu'ici : la lecture classe sur la table, la purge ajoute
+ * la seule question qui n'a de sens que pour elle — ce fichier a-t-il pu naitre APRES
+ * l'instantane qui le condamne ?
+ */
+export type KeptReason = SkipReason | 'younger-than-snapshot';
+
+export interface KeptEntry {
+  readonly file: string;
+  readonly reason: KeptReason;
+}
+
+export interface PurgeResult {
+  /** Entrees effectivement supprimees. */
+  readonly removed: readonly string[];
+  /** Temporaires d'ecriture abandonnes, effaces : ils portaient un jeton en clair. */
+  readonly removedTemporaries: readonly string[];
+  /**
+   * Ecartees de la lecture mais NON supprimees, avec le motif exact.
+   *
+   * C'est ce qui empeche la purge conservatrice d'etre une disparition silencieuse : une
+   * entree heritee dont le pid est recycle n'est ni pilotable ni purgeable — elle est donc
+   * immortelle, et `cmgr doctor` doit pouvoir la montrer a l'utilisateur plutot que de la
+   * taire.
+   */
+  readonly kept: readonly KeptEntry[];
+}
+
 export interface ReadRegistryOptions {
   /**
-   * Fournie par l'appelant, jamais relue ici : `readProcessTable()` coute de 700 ms a
-   * 1,25 s sur un poste reel. Le coeur ne garde volontairement aucun etat — la mise en
-   * cache appartient a l'appelant, qui sait seul quand son instantane a vieilli.
+   * Fourni par l'appelant, jamais releve ici : `readProcessTable()` coute de 700 ms a
+   * 1,3 s sur un poste reel. Le coeur ne garde volontairement aucun etat — la mise en
+   * cache appartient a l'appelant, qui sait seul quand son instantane a vieilli. C'est
+   * precisement pourquoi l'instantane porte sa date : lire sur une table perimee est
+   * reparable, mais la purge, elle, ne peut pas se le permettre.
    */
-  readonly table: ProcessTable;
+  readonly snapshot: ProcessSnapshot;
   readonly dir?: string;
 }
 
 export interface PurgeStaleEntriesOptions {
-  readonly table: ProcessTable;
+  readonly snapshot: ProcessSnapshot;
   readonly dir?: string;
 }
 
@@ -76,7 +109,7 @@ export function resolveRegistryDir(dir?: string): string {
 }
 
 /**
- * Liste les fichiers candidats du registre.
+ * Liste les fichiers du registre.
  *
  * Un repertoire absent est l'etat NOMINAL d'un poste ou aucune fenetre ne s'est encore
  * enregistree : resultat vide, aucune erreur. Un repertoire present mais illisible est en
@@ -88,11 +121,11 @@ export function resolveRegistryDir(dir?: string): string {
  * Prix assume : un repertoire supprime entre le sondage et la lecture sera signale comme
  * illisible plutot que comme absent. C'est une anomalie de concurrence, la nommer est juste.
  */
-function listEntryFiles(dir: string): readonly string[] {
+function listFiles(dir: string): readonly string[] {
   if (!existsSync(dir)) return [];
 
   try {
-    return readdirSync(dir).filter((name) => name.endsWith(ENTRY_EXTENSION));
+    return readdirSync(dir);
   } catch {
     // Sans detail : le message systeme porterait le chemin du registre dans les journaux.
     throw new ClaudeManagerError(
@@ -116,11 +149,11 @@ type Liveness = 'alive' | 'dead' | 'pid-reused' | 'unknown';
  * Sans `extHostPid` lisible, on ne CONCLUT pas : on ne sait pas si l'entree est morte, et
  * la purge devra s'en abstenir.
  */
-function judgeLiveness(identity: EntryIdentity, table: ProcessTable): Liveness {
+function judgeLiveness(identity: EntryIdentity, snapshot: ProcessSnapshot): Liveness {
   const { extHostPid, mainPid } = identity;
   if (extHostPid === undefined) return 'unknown';
 
-  const parentPid = table.get(extHostPid);
+  const parentPid = snapshot.table.get(extHostPid);
   if (parentPid === undefined) return 'dead';
   // `mainPid` manque aux entrees anterieures au schema 1 : leur vivacite se juge alors sur
   // la seule presence du pid, faute de mieux. Elles ne sont de toute facon jamais pilotees.
@@ -133,14 +166,20 @@ type Classification =
   | { readonly kind: 'window'; readonly entry: WindowEntry }
   | { readonly kind: 'skip'; readonly reason: SkipReason };
 
-function classifyFile(file: string, table: ProcessTable): Classification {
-  let content: string;
-  try {
-    content = readFileSync(file, 'utf8');
-  } catch {
-    return { kind: 'skip', reason: 'unreadable' };
-  }
+/**
+ * Fichier du registre, classe et DATE.
+ *
+ * `modifiedAt` est releve dans le MEME `try` que la lecture : un `stat` separe ajouterait
+ * un chemin d'echec propre, la ou un fichier qu'on ne sait pas dater est deja un fichier
+ * qu'on ne sait pas lire.
+ */
+interface ScannedFile {
+  readonly file: string;
+  readonly classification: Classification;
+  readonly modifiedAt: number;
+}
 
+function classifyContent(content: string, snapshot: ProcessSnapshot): Classification {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -151,11 +190,41 @@ function classifyFile(file: string, table: ProcessTable): Classification {
   const parsed = parseWindowEntry(value);
   // La vivacite se juge AVANT le schema : la version d'une fenetre morte n'a plus d'objet,
   // et c'est ce qui rend une entree etrangere perimee purgeable un jour.
-  const liveness = judgeLiveness(parsed.identity, table);
+  const liveness = judgeLiveness(parsed.identity, snapshot);
   if (liveness === 'dead' || liveness === 'pid-reused') return { kind: 'skip', reason: liveness };
 
   if (!parsed.ok) return { kind: 'skip', reason: parsed.reason };
   return { kind: 'window', entry: parsed.entry };
+}
+
+/** Parcours unique du registre : la lecture et la purge en derivent toutes deux. */
+function scanRegistry(dir: string, snapshot: ProcessSnapshot): readonly ScannedFile[] {
+  const scanned: ScannedFile[] = [];
+
+  for (const file of listFiles(dir)) {
+    // Un fichier hors convention n'est pas rapporte : il ne pretend pas etre une entree.
+    if (!file.endsWith(ENTRY_EXTENSION)) continue;
+
+    const absolute = path.join(dir, file);
+    let modifiedAt: number;
+    let content: string;
+    try {
+      // Tronque a la MILLISECONDE : `mtimeMs` porte des fractions de milliseconde sur NTFS
+      // quand `Date.now()` n'en a jamais. Sans cette troncature, un fichier ecrit dans la
+      // milliseconde de la capture s'en trouverait « plus recent » — et une entree morte
+      // deviendrait indestructible une fois sur deux, au hasard de l'horloge.
+      modifiedAt = Math.floor(statSync(absolute).mtimeMs);
+      content = readFileSync(absolute, 'utf8');
+    } catch {
+      // Un fichier qu'on ne sait ni dater ni lire ne sera de toute facon jamais supprime.
+      scanned.push({ file, classification: { kind: 'skip', reason: 'unreadable' }, modifiedAt: 0 });
+      continue;
+    }
+
+    scanned.push({ file, classification: classifyContent(content, snapshot), modifiedAt });
+  }
+
+  return scanned;
 }
 
 /**
@@ -176,10 +245,9 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
   const windows: WindowEntry[] = [];
   const skipped: SkippedEntry[] = [];
 
-  for (const file of listEntryFiles(dir)) {
-    const classification = classifyFile(path.join(dir, file), options.table);
-    if (classification.kind === 'window') windows.push(classification.entry);
-    else skipped.push({ file, reason: classification.reason });
+  for (const scanned of scanRegistry(dir, options.snapshot)) {
+    if (scanned.classification.kind === 'window') windows.push(scanned.classification.entry);
+    else skipped.push({ file: scanned.file, reason: scanned.classification.reason });
   }
 
   return { windows, skipped };
@@ -198,25 +266,43 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
  * lire le pid n'est PAS supprimable non plus — on ignore si sa fenetre est morte, et
  * supprimer par defaut reviendrait a nettoyer a l'aveugle le registre d'autrui.
  *
+ * FRAICHEUR DE L'INSTANTANE — contrainte propre a la purge, que la lecture n'a pas :
+ * `dead` ne veut dire que « absent de CET instantane ». Une entree publiee apres sa capture
+ * en est absente par construction, sans etre morte pour autant — et c'est le cas nominal au
+ * demarrage de deux fenetres a quelques centaines de ms d'ecart. Un fichier plus recent que
+ * `capturedAt` n'est donc jamais supprime : il est rapporte, jamais escamote. Lire a tort
+ * est reparable, supprimer a tort ne l'est pas.
+ *
  * Operation explicite, appelee a l'activation de l'extension compagnon. JAMAIS depuis
  * `readRegistry`.
  */
-export function purgeStaleEntries(options: PurgeStaleEntriesOptions): readonly string[] {
+export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResult {
   const dir = resolveRegistryDir(options.dir);
   // La purge rejoue exactement la classification de la lecture : les deux ne peuvent pas
   // diverger, donc la purge ne peut pas supprimer ce que la lecture aurait retenu.
-  const { skipped } = readRegistry({ table: options.table, dir });
+  const scanned = scanRegistry(dir, options.snapshot);
 
   const removed: string[] = [];
-  for (const entry of skipped) {
-    if (entry.reason !== 'dead' && entry.reason !== 'pid-reused') continue;
+  const kept: KeptEntry[] = [];
+  for (const { file, classification, modifiedAt } of scanned) {
+    if (classification.kind === 'window') continue;
+    const reason = classification.reason;
+
+    if (reason !== 'dead' && reason !== 'pid-reused') {
+      kept.push({ file, reason });
+      continue;
+    }
+    if (modifiedAt > options.snapshot.capturedAt) {
+      kept.push({ file, reason: 'younger-than-snapshot' });
+      continue;
+    }
     // `force` : deux fenetres peuvent purger en meme temps. Un fichier deja disparu n'est
     // pas une defaillance, c'est le resultat recherche. Les autres erreurs, elles, remontent.
-    rmSync(path.join(dir, entry.file), { force: true });
-    removed.push(entry.file);
+    rmSync(path.join(dir, file), { force: true });
+    removed.push(file);
   }
 
-  return removed;
+  return { removed, removedTemporaries: [], kept };
 }
 
 /**

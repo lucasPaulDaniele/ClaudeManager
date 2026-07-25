@@ -153,18 +153,20 @@ async function shutdown(reason: string): Promise<void> {
 /**
  * Balaie les entrees dont la fenetre n'existe plus.
  *
- * DIFFERE HORS DE L'ACTIVATION, ET C'EST ESSENTIEL : `readProcessTable` coute de 700 ms a
- * 1,25 s (PowerShell + `Get-CimInstance`) et s'execute de facon SYNCHRONE — pendant tout ce
- * temps l'extension host est bloque, donc toutes les autres extensions de la fenetre avec
- * lui. Le programmer apres le retour d'`activate()` garde l'activation instantanee.
+ * L'INVENTAIRE EST ASYNCHRONE, ET C'EST CE QUI REND LA MAIN A L'EDITEUR :
+ * `readProcessTable` coute de 700 ms a 1,3 s (PowerShell + `Get-CimInstance`), et
+ * l'extension host n'a qu'UNE boucle d'evenements, partagee par toutes les extensions de
+ * la fenetre. Un appel synchrone la bloquait pendant tout ce temps — et le differer d'un
+ * tick n'y changeait rien, la tache repartant sur la meme boucle. Attendre reellement une
+ * commande asynchrone est la seule forme qui ne fige personne.
  *
  * Son echec n'empeche jamais la publication : publier est la fonction vitale, balayer n'est
  * que de l'hygiene. L'erreur est nommee et journalisee, puis l'extension continue.
  */
-function sweepStaleEntries(): void {
+async function sweepStaleEntries(): Promise<void> {
   const start = performance.now();
   try {
-    const removed = purgeStaleEntries({ table: readProcessTable() });
+    const { removed } = purgeStaleEntries({ snapshot: await readProcessTable() });
     const elapsed = Math.round(performance.now() - start);
     const detail = removed.length > 0 ? ` (${removed.join(', ')})` : '';
     log(`sweep completed in ${elapsed} ms: ${removed.length} stale entries removed${detail}`);
@@ -226,8 +228,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  const sweep = setTimeout(sweepStaleEntries, 0);
-  context.subscriptions.push(new vscode.Disposable(() => clearTimeout(sweep)));
+  // Lance sans etre attendu : `activate` rend la main immediatement, et le balayage — qui
+  // ne bloque plus rien — rapporte sa ligne de journal quand il aboutit.
+  void sweepStaleEntries();
 
   log(`activation completed in ${(performance.now() - activationStart).toFixed(1)} ms`);
 }

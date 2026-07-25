@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   ClaudeManagerError,
@@ -9,6 +10,8 @@ import {
 } from '../../../packages/core/src/index.js';
 import { POSIX_CAPTURE, POSIX_ROLES, WINDOWS_CAPTURE, WINDOWS_ROLES } from './fixtures.js';
 
+const execFileAsync = promisify(execFile);
+
 interface Call {
   readonly command: string;
   readonly args: readonly string[];
@@ -18,17 +21,20 @@ interface Call {
  * Rejoue une capture reelle a la place de l'appel systeme, en enregistrant la commande
  * effectivement demandee. Ce n'est pas un faux systeme : la sortie rendue a ete produite
  * par la vraie commande sur une vraie machine (voir tests/fixtures/identity/README.md).
+ *
+ * ASYNCHRONE comme l'est la vraie : un inventaire qui bloque la boucle d'evenements bloque
+ * avec elle toutes les extensions de la fenetre.
  */
 function replay(capture: string, calls: Call[]): CommandRunner {
-  return (command, args) => {
+  return async (command, args) => {
     calls.push({ command, args });
     return capture;
   };
 }
 
-function catchFailure(operation: () => unknown): ClaudeManagerError {
+async function catchFailure(operation: () => Promise<unknown>): Promise<ClaudeManagerError> {
   try {
-    operation();
+    await operation();
   } catch (error) {
     return error as ClaudeManagerError;
   }
@@ -36,11 +42,11 @@ function catchFailure(operation: () => unknown): ClaudeManagerError {
 }
 
 describe('readProcessTable — branche win32', () => {
-  it('emet EXACTEMENT la commande avec laquelle la capture a ete prise', () => {
+  it('emet EXACTEMENT la commande avec laquelle la capture a ete prise', async () => {
     // Ce test ferme la boucle : si la commande de production derive de celle documentee
     // dans la provenance de la fixture, la fixture cesse de prouver quoi que ce soit.
     const calls: Call[] = [];
-    readProcessTable({ platform: 'win32', run: replay(WINDOWS_CAPTURE, calls) });
+    await readProcessTable({ platform: 'win32', run: replay(WINDOWS_CAPTURE, calls) });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.command).toBe('powershell.exe');
@@ -52,8 +58,11 @@ describe('readProcessTable — branche win32', () => {
     ]);
   });
 
-  it('rend une table coherente avec les roles releves', () => {
-    const table = readProcessTable({ platform: 'win32', run: replay(WINDOWS_CAPTURE, []) });
+  it('rend une table coherente avec les roles releves', async () => {
+    const { table } = await readProcessTable({
+      platform: 'win32',
+      run: replay(WINDOWS_CAPTURE, []),
+    });
 
     expect(table.size).toBeGreaterThan(0);
     expect(table.get(WINDOWS_ROLES.owningExtHostPid)).toBe(WINDOWS_ROLES.mainCodePid);
@@ -61,30 +70,68 @@ describe('readProcessTable — branche win32', () => {
 });
 
 describe('readProcessTable — branche POSIX', () => {
-  it('emet EXACTEMENT la commande avec laquelle la capture a ete prise', () => {
+  it('emet EXACTEMENT la commande avec laquelle la capture a ete prise', async () => {
     const calls: Call[] = [];
-    readProcessTable({ platform: 'linux', run: replay(POSIX_CAPTURE, calls) });
+    await readProcessTable({ platform: 'linux', run: replay(POSIX_CAPTURE, calls) });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.command).toBe(POSIX_ROLES.provenance.command);
     expect(calls[0]?.args).toEqual(POSIX_ROLES.provenance.args);
   });
 
-  it('rend la table exploitable relevee a la capture', () => {
-    const table = readProcessTable({ platform: 'linux', run: replay(POSIX_CAPTURE, []) });
+  it('rend la table exploitable relevee a la capture', async () => {
+    const { table } = await readProcessTable({ platform: 'linux', run: replay(POSIX_CAPTURE, []) });
 
     expect(table.size).toBe(POSIX_ROLES.usableEntryCount);
   });
 });
 
+describe('readProcessTable — instantane date', () => {
+  it("n'analyse la sortie qu'une fois la commande REELLEMENT terminee", async () => {
+    // Bascule asynchrone : tant que la lecture etait synchrone, un runner asynchrone lui
+    // livrait une promesse a analyser, jamais une sortie.
+    let finished = false;
+    const deferred: CommandRunner = async () => {
+      await new Promise((done) => setTimeout(done, 20));
+      finished = true;
+      return WINDOWS_CAPTURE;
+    };
+
+    const { table } = await readProcessTable({ platform: 'win32', run: deferred });
+
+    expect(finished).toBe(true);
+    expect(table.get(WINDOWS_ROLES.owningExtHostPid)).toBe(WINDOWS_ROLES.mainCodePid);
+  });
+
+  it("date l'instantane AVANT de lancer la commande, jamais apres", async () => {
+    // La date est une borne INFERIEURE de l'age de l'instantane : c'est ce qui autorise la
+    // purge a epargner tout fichier plus recent qu'elle. La dater de la FIN de l'enumeration
+    // declarerait frais un instantane qui a deja manque les processus nes entre-temps.
+    const before = Date.now();
+    const slow: CommandRunner = async () => {
+      await new Promise((done) => setTimeout(done, 50));
+      return WINDOWS_CAPTURE;
+    };
+
+    const snapshot = await readProcessTable({ platform: 'win32', run: slow });
+
+    expect(snapshot.capturedAt).toBeGreaterThanOrEqual(before);
+    expect(snapshot.capturedAt).toBeLessThanOrEqual(Date.now() - 50);
+  });
+});
+
 describe('readProcessTable — defaillances', () => {
-  it('nomme l echec quand la commande d inventaire ne peut pas s executer', () => {
+  it('nomme l echec quand la commande d inventaire ne peut pas s executer', async () => {
     // Echec systeme reel et identique sur toutes les plateformes : le binaire n'existe pas.
-    const failure = catchFailure(() =>
+    const failure = await catchFailure(() =>
       readProcessTable({
         platform: 'linux',
-        run: (_command, _args) =>
-          execFileSync('claudemanager-no-such-inventory-binary', [], { encoding: 'utf8' }),
+        run: async (_command, _args) => {
+          const { stdout } = await execFileAsync('claudemanager-no-such-inventory-binary', [], {
+            encoding: 'utf8',
+          });
+          return stdout;
+        },
       })
     );
 
@@ -95,8 +142,8 @@ describe('readProcessTable — defaillances', () => {
     expect(String(failure.details?.['cause']).length).toBeGreaterThan(0);
   });
 
-  it('rend la cause meme quand ce qui est leve n est pas une Error', () => {
-    const failure = catchFailure(() =>
+  it('rend la cause meme quand ce qui est leve n est pas une Error', async () => {
+    const failure = await catchFailure(() =>
       readProcessTable({
         platform: 'win32',
         run: () => {
@@ -108,9 +155,9 @@ describe('readProcessTable — defaillances', () => {
     expect(failure.details?.['cause']).toBe('acces refuse');
   });
 
-  it('refuse une table vide : un processus se lit toujours au moins lui-meme', () => {
-    const failure = catchFailure(() =>
-      readProcessTable({ platform: 'linux', run: () => 'PID PPID\n' })
+  it('refuse une table vide : un processus se lit toujours au moins lui-meme', async () => {
+    const failure = await catchFailure(() =>
+      readProcessTable({ platform: 'linux', run: async () => 'PID PPID\n' })
     );
 
     expect(failure.code).toBe(ERROR_CODES.PROCESS_TABLE_UNAVAILABLE);
@@ -121,11 +168,12 @@ describe('readProcessTable — defaillances', () => {
 describe('readProcessTable — systeme reel, sans aucune injection', () => {
   // Seule verification qui garantit que les analyseurs collent encore a la realite de
   // chaque plateforme. Elle tourne sur Windows en local ET sur Linux en CI, jamais ignoree.
-  it('inventorie le processus courant et son parent', () => {
-    const table = readProcessTable();
+  it('inventorie le processus courant et son parent', async () => {
+    const { table, capturedAt } = await readProcessTable();
 
     expect(table.size).toBeGreaterThan(1);
     expect(table.has(process.pid)).toBe(true);
     expect(table.get(process.pid)).toBe(process.ppid);
+    expect(capturedAt).toBeLessThanOrEqual(Date.now());
   }, 30_000);
 });

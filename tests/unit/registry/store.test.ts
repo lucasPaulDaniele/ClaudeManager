@@ -15,7 +15,13 @@ import {
   type WindowEntry,
 } from '../../../packages/core/src/index.js';
 import { WINDOWS_ROLES } from '../identity/fixtures.js';
-import { currentSchemaEntry, makeRegistryDir, REAL_TABLE, tableWithoutExtensionHosts } from './fixtures.js';
+import {
+  currentSchemaEntry,
+  makeRegistryDir,
+  REAL_TABLE,
+  snapshotOf,
+  tableWithoutExtensionHosts,
+} from './fixtures.js';
 
 function catchFailure(operation: () => unknown): ClaudeManagerError {
   try {
@@ -35,7 +41,7 @@ function writeRaw(dir: string, file: string, content: string): void {
 }
 
 function reasonFor(dir: string, table: ProcessTable, file: string): SkipReason | undefined {
-  return readRegistry({ table, dir }).skipped.find((entry) => entry.file === file)?.reason;
+  return readRegistry({ snapshot: snapshotOf(table), dir }).skipped.find((entry) => entry.file === file)?.reason;
 }
 
 let dir: string;
@@ -63,7 +69,7 @@ describe('readRegistry — repertoire', () => {
     // Un poste ou aucune fenetre ne s est encore enregistree n est pas en anomalie.
     const absent = path.join(dir, 'jamais-cree');
 
-    expect(readRegistry({ table: REAL_TABLE, dir: absent })).toEqual({ windows: [], skipped: [] });
+    expect(readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir: absent })).toEqual({ windows: [], skipped: [] });
   });
 
   it('nomme l echec quand le repertoire existe mais ne peut pas etre liste', () => {
@@ -71,7 +77,7 @@ describe('readRegistry — repertoire', () => {
     const asFile = path.join(dir, 'registre-qui-est-un-fichier');
     writeFileSync(asFile, 'pas un repertoire', 'utf8');
 
-    const failure = catchFailure(() => readRegistry({ table: REAL_TABLE, dir: asFile }));
+    const failure = catchFailure(() => readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir: asFile }));
 
     expect(isClaudeManagerError(failure)).toBe(true);
     expect(failure.code).toBe(ERROR_CODES.REGISTRY_UNREADABLE);
@@ -84,7 +90,7 @@ describe('readRegistry — repertoire', () => {
     const asFile = path.join(dir, 'registre-qui-est-un-fichier');
     writeFileSync(asFile, 'pas un repertoire', 'utf8');
 
-    const failure = catchFailure(() => readRegistry({ table: REAL_TABLE, dir: asFile }));
+    const failure = catchFailure(() => readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir: asFile }));
 
     expect(failure.message).not.toContain(dir);
     expect(JSON.stringify(failure.toJSON())).not.toContain(os.homedir());
@@ -96,7 +102,7 @@ describe('readRegistry — repertoire', () => {
     writeRaw(dir, '11172.json.tmp', '{');
     writeWindowEntry(currentSchemaEntry(HOST), { dir });
 
-    const result = readRegistry({ table: REAL_TABLE, dir });
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(result.windows).toHaveLength(1);
     expect(result.skipped).toEqual([]);
@@ -107,7 +113,7 @@ describe('readRegistry — classement des entrees', () => {
   it('retient une entree valide dont la fenetre est vivante', () => {
     writeWindowEntry(currentSchemaEntry(HOST), { dir });
 
-    const result = readRegistry({ table: REAL_TABLE, dir });
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(result.windows).toEqual([currentSchemaEntry(HOST)]);
     expect(result.skipped).toEqual([]);
@@ -154,7 +160,7 @@ describe('readRegistry — classement des entrees', () => {
     writeRaw(dir, 'tronque.json', 'pas du json');
     mkdirSync(path.join(dir, 'illisible.json'));
 
-    const result = readRegistry({ table: REAL_TABLE, dir });
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
 
     expect(result.windows.map((entry) => entry.extHostPid)).toEqual([HOST]);
     expect([...result.skipped].map((entry) => entry.file).sort()).toEqual([
@@ -166,7 +172,7 @@ describe('readRegistry — classement des entrees', () => {
   it('ne rapporte QUE des noms de fichiers, jamais des chemins absolus', () => {
     writeRaw(dir, 'tronque.json', 'pas du json');
 
-    for (const skipped of readRegistry({ table: REAL_TABLE, dir }).skipped) {
+    for (const skipped of readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir }).skipped) {
       expect(path.isAbsolute(skipped.file)).toBe(false);
       expect(skipped.file).not.toContain(path.sep);
     }
@@ -177,7 +183,7 @@ describe('readRegistry — classement des entrees', () => {
     writeWindowEntry(currentSchemaEntry(HOST), { dir });
     const before = readdirSync(dir).sort();
 
-    readRegistry({ table: tableWithoutExtensionHosts(), dir });
+    readRegistry({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
 
     expect(readdirSync(dir).sort()).toEqual(before);
   });
@@ -188,7 +194,7 @@ describe('purgeStaleEntries', () => {
     writeWindowEntry(currentSchemaEntry(HOST), { dir });
     writeWindowEntry(currentSchemaEntry(SIBLING), { dir });
 
-    const removed = purgeStaleEntries({ table: tableWithoutExtensionHosts(), dir });
+    const { removed } = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
 
     expect([...removed].sort()).toEqual([`${HOST}.json`, `${SIBLING}.json`]);
     expect(readdirSync(dir)).toEqual([]);
@@ -198,13 +204,15 @@ describe('purgeStaleEntries', () => {
     const reused: WindowEntry = { ...currentSchemaEntry(HOST), mainPid: WINDOWS_ROLES.callerClaudePid };
     writeWindowEntry(reused, { dir });
 
-    expect(purgeStaleEntries({ table: REAL_TABLE, dir })).toEqual([`${HOST}.json`]);
+    expect(purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir }).removed).toEqual([
+      `${HOST}.json`,
+    ]);
   });
 
   it('ne touche JAMAIS a une entree vivante', () => {
     writeWindowEntry(currentSchemaEntry(HOST), { dir });
 
-    expect(purgeStaleEntries({ table: REAL_TABLE, dir })).toEqual([]);
+    expect(purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir }).removed).toEqual([]);
     expect(readdirSync(dir)).toEqual([`${HOST}.json`]);
   });
 
@@ -215,20 +223,71 @@ describe('purgeStaleEntries', () => {
     writeRaw(dir, 'sans-pid.json', JSON.stringify({ schemaVersion: 1 }));
     mkdirSync(path.join(dir, 'illisible.json'));
 
-    expect(purgeStaleEntries({ table: tableWithoutExtensionHosts(), dir })).toEqual([]);
+    const result = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
+
+    expect(result.removed).toEqual([]);
     expect(readdirSync(dir).sort()).toEqual(['illisible.json', 'sans-pid.json', 'tronque.json']);
+  });
+
+  it('RAPPORTE tout ce qu elle a laisse, avec son motif exact', () => {
+    // Principe fondateur n.3 : la purge conservatrice ne doit pas etre une disparition
+    // silencieuse. Ce que la version 1 s interdit de detruire, elle le nomme — sans quoi
+    // `cmgr doctor` n aurait aucun moyen de montrer a l utilisateur ce qui s accumule.
+    writeRaw(dir, 'tronque.json', 'pas du json');
+    mkdirSync(path.join(dir, 'illisible.json'));
+
+    const { kept } = purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir });
+
+    expect([...kept].sort((a, b) => a.file.localeCompare(b.file))).toEqual([
+      { file: 'illisible.json', reason: 'unreadable' },
+      { file: 'tronque.json', reason: 'unparsable' },
+    ]);
   });
 
   it('supprime une entree corrompue dont le pid, lui, est bien mort', () => {
     writeRaw(dir, `${HOST}.json`, JSON.stringify({ schemaVersion: 1, extHostPid: HOST }));
 
-    expect(purgeStaleEntries({ table: tableWithoutExtensionHosts(), dir })).toEqual([
+    expect(purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir }).removed).toEqual([
       `${HOST}.json`,
     ]);
   });
 
   it('reste sans effet sur un registre inexistant', () => {
-    expect(purgeStaleEntries({ table: REAL_TABLE, dir: path.join(dir, 'absent') })).toEqual([]);
+    const absent = path.join(dir, 'absent');
+
+    expect(purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir: absent })).toEqual({
+      removed: [],
+      removedTemporaries: [],
+      kept: [],
+    });
+  });
+});
+
+describe('purgeStaleEntries — fraicheur de l instantane', () => {
+  it('ne supprime JAMAIS une entree publiee APRES la capture de l instantane', () => {
+    // Le cas de production : deux fenetres demarrent a quelques centaines de ms d ecart.
+    // A inventorie les processus, B nait et publie, PUIS A lit le registre. `dead` ne veut
+    // dire ici que « absent de CET instantane » — pas « morte ».
+    const capturedAt = Date.now();
+    writeWindowEntry(currentSchemaEntry(HOST), { dir });
+    // L instantane precede l ecriture d une seconde pleine : la comparaison ne depend
+    // d aucune granularite d horodatage du systeme de fichiers.
+    const stale = { table: tableWithoutExtensionHosts(), capturedAt: capturedAt - 1_000 };
+
+    const result = purgeStaleEntries({ snapshot: stale, dir });
+
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([{ file: `${HOST}.json`, reason: 'younger-than-snapshot' }]);
+    expect(readdirSync(dir)).toEqual([`${HOST}.json`]);
+  });
+
+  it('supprime la meme entree des que l instantane est plus recent qu elle', () => {
+    // Contre-epreuve : c est bien la fraicheur qui a retenu la purge, et rien d autre.
+    writeWindowEntry(currentSchemaEntry(HOST), { dir });
+    const fresh = { table: tableWithoutExtensionHosts(), capturedAt: Date.now() + 1_000 };
+
+    expect(purgeStaleEntries({ snapshot: fresh, dir }).removed).toEqual([`${HOST}.json`]);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });
 
@@ -240,7 +299,7 @@ describe('writeWindowEntry', () => {
 
     expect(file).toBe(path.join(dir, `${HOST}.json`));
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(entry);
-    expect(readRegistry({ table: REAL_TABLE, dir }).windows).toEqual([entry]);
+    expect(readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir }).windows).toEqual([entry]);
   });
 
   it('cree l arborescence du registre si elle manque', () => {
