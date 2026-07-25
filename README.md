@@ -146,7 +146,7 @@ Outils exposés : `claude_whoami`, `claude_list_conversations`, `claude_open_con
 
 Ce projet repose sur des **API internes non documentées** de l'extension Claude Code. C'est un choix assumé, pas un angle mort : il n'existe aucune API publique pour ce besoin.
 
-- **Une mise à jour de l'extension peut tout casser.** Chaque point d'adhérence est recensé dans [`docs/compatibilite.md`](docs/compatibilite.md) avec la version sur laquelle il a été vérifié. `cmgr doctor` vérifie les présupposés et **échoue explicitement** — jamais de dégradation silencieuse.
+- **Une mise à jour de l'extension peut tout casser.** Chaque point d'adhérence est recensé dans [`docs/compatibilite.md`](docs/compatibilite.md), avec la trace de sa vérification — ou un `— non vérifié` explicite quand aucune mesure ne l'étaie encore. `cmgr doctor` vérifie les présupposés et **échoue explicitement** — jamais de dégradation silencieuse.
 - **Le tour d'amorçage se joue dans un terminal invisible.** La session est **réellement interactive** — c'est mesuré, pas déduit — mais le terminal n'est jamais affiché : vous ne voyez le premier tour qu'une fois le panneau attaché.
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.

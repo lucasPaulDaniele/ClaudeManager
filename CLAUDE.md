@@ -26,7 +26,7 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 
 3. **Adhérence assumée à des API internes.** L'outil s'appuie sur des commandes (`claude-vscode.*`) et des formats de fichiers (`~/.claude/**`) **non documentés et non contractuels**, qui peuvent disparaître à toute mise à jour de l'extension Claude. Conséquences impératives :
    - **Échouer explicitement, jamais dégrader en silence.** Une commande absente est une erreur nommée, pas un `no-op`.
-   - Toute dépendance à une API interne est **déclarée dans `docs/compatibilite.md`** avec la version d'extension sur laquelle elle a été vérifiée.
+   - Toute dépendance à une API interne est **déclarée dans `docs/compatibilite.md`** avec la trace de sa vérification : **où** elle a été établie — ADR et voie — ou, quand rien ne l'étaie, un **`— non vérifié` assumé**. Un blanc honnête vaut mieux qu'un tampon global qui date des lignes jamais mesurées.
    - `cmgr doctor` vérifie les présupposés et le dit à l'utilisateur.
    - Avant toute évolution, se demander : « que se passe-t-il si l'extension change ce comportement ? »
 
@@ -185,6 +185,6 @@ Seul `npm run ci` existe à ce jour ; les deux autres commandes décrivent la ci
 ## Documentation obligatoire
 
 - **Toute décision structurante donne un ADR daté** dans `docs/adr/`, numéroté, qui énonce le contexte, les options écartées et la décision.
-- **Toute dépendance nouvelle à une API interne de l'écosystème Claude** est inscrite dans `docs/compatibilite.md` avec la version vérifiée et la façon dont l'absence est détectée.
+- **Toute dépendance nouvelle à une API interne de l'écosystème Claude** est inscrite dans `docs/compatibilite.md` avec sa traçabilité ligne à ligne (colonne « Vérifié en / sur », ou `— non vérifié`) et la façon dont l'absence est détectée. L'environnement de référence — versions d'extension, de CLI et de VSCode — est en tête du fichier.
 - **Le README est la vitrine du projet** : il expose le problème, la démonstration, l'installation, les limites et les risques. Il est mis à jour à chaque changement de périmètre.
 - **Ne jamais considérer une tâche comme terminée sans avoir mis à jour la documentation.**
