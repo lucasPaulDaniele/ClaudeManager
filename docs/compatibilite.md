@@ -108,4 +108,8 @@ Une fenêtre peut rouvrir automatiquement un panneau Claude à son lancement. Ne
 
 VSCode 1.122.1 **refuse** d'ouvrir un même dossier dans deux fenêtres. Trois mécanismes ont été essayés, tous refusés : `code --new-window --folder-uri` (ouvre une fenêtre **sans workspace**), `vscode.openFolder(uri, { forceNewWindow: false })` (route vers la fenêtre existante) et `workbench.action.duplicateWorkspaceInNewWindow` (sans effet).
 
-Conséquence directe pour les tests E2E : le cas adverse « deux fenêtres, même dossier » se construit par **jonction de répertoire**. Le cas ainsi obtenu est **plus exigeant** que celui visé — les deux fenêtres partagent alors le **même processus `Code.exe` principal**, ce qui prouve directement qu'un PID ne discrimine pas une fenêtre (voir aussi « `VSCODE_PID` n'identifie pas une fenêtre » ci-dessus).
+Conséquence directe pour les tests E2E : le cas adverse « deux fenêtres, même dossier » se construit par **jonction de répertoire**. C'est le **seul montage possible**, les trois autres étant refusés.
+
+**Ce que le montage couvre** : le **répertoire physique commun** et le **processus `Code.exe` principal commun**. Ce dernier n'est pas un effet de la jonction — deux fenêtres quelconques d'une même instance le partagent déjà ([ADR-001](adr/001-pilotage-des-conversations.md), §4 : cinq extension hosts distincts, tous de `ppid` 16196). Il n'en reste pas moins la preuve directe qu'un PID ne discrimine pas une fenêtre (voir « `VSCODE_PID` n'identifie pas une fenêtre » ci-dessus).
+
+**Ce que le montage ne couvre pas** : l'identité de **chemin de workspace**. Les deux fenêtres du relevé d'[ADR-002](adr/002-ouverture-interactive.md) portent des chemins distincts (`ws-a` et `ws-same`). C'est un **angle mort explicite** du scénario E2E : une implémentation qui indexerait l'identité sur le chemin du workspace y passerait sans être correcte pour autant. Le scénario du lot C doit donc l'exclure explicitement.

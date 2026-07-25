@@ -93,7 +93,9 @@ claude.exe  →  extension host  →  processus principal VSCode
 
 Chaque instance de l'extension compagnon connaît son propre extension host et peut donc répondre avec certitude : « ce processus est-il un des miens ? »
 
-Ce n'est pas une intuition d'architecture : c'est mesuré dans la configuration la plus adverse possible — deux fenêtres pointant sur le **même répertoire physique** et partageant le **même `Code.exe` principal**. Les opérations adressées à l'une n'ont créé dans l'autre ni onglet, ni terminal, ni processus. Relevés dans [l'ADR-002](docs/adr/002-ouverture-interactive.md).
+Ce n'est pas une intuition d'architecture : c'est mesuré en configuration adverse — deux fenêtres pointant sur le **même répertoire physique** et partageant le **même `Code.exe` principal**. Les opérations adressées à l'une n'ont créé dans l'autre ni onglet, ni terminal, ni processus. Relevés dans [l'ADR-002](docs/adr/002-ouverture-interactive.md).
+
+Une réserve, portée par le montage : VSCode refusant d'ouvrir un même dossier dans deux fenêtres, le cas se construit par **jonction de répertoire** — les deux fenêtres ont donc bien le même répertoire physique, mais des **chemins de workspace distincts**. Cet angle mort est nommé dans [`docs/compatibilite.md`](docs/compatibilite.md) ; le lot C doit le couvrir par un test dédié.
 
 ## Installation
 
