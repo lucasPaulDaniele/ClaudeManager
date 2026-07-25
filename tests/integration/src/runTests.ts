@@ -37,6 +37,14 @@ const CACHE_DIRECTORY = ['node_modules', '.cache', 'vscode-test'];
 function say(line: string): void {
   // TOUTE sortie du lanceur passe par le masque, y compris le rapport rendu par la suite —
   // qui l'applique deja de son cote, la double application etant sans effet (finding S7).
+  //
+  // LIMITE ASSUMEE, ET DITE : ce masque ne couvre que ce que NOUS ecrivons. VSCode et
+  // `@vscode/test-electron` ecrivent sur la meme sortie standard, en direct, et y laissent
+  // trois lignes portant des chemins absolus (« Found existing install in… »,
+  // « Loading development extension at… », la trace du mutex Inno Setup). Les intercepter
+  // supposerait de detourner la sortie d'un processus fils, ce qui priverait la preuve de
+  // son immediatete. Le harnais l'annonce donc explicitement au debut de chaque execution,
+  // plutot que de laisser croire que tout est masque.
   process.stdout.write(`${mask(line)}\n`);
 }
 
@@ -133,6 +141,10 @@ async function main(): Promise<void> {
       : `[runTests] environnement assaini, ${neutralized.length} variables heritees supprimees : ${neutralized.join(', ')}`
   );
 
+  say(
+    '[runTests] AVANT DE COLLER CE LOG DANS UNE PR : les lignes [runTests] et le rapport sont ' +
+      'masques ; celles emises par VSCode lui-meme ne le sont pas et portent des chemins absolus.'
+  );
   say(`[runTests] version VSCode epinglee : ${VSCODE_VERSION}`);
   say(`[runTests] extension            : ${path.relative(repoRoot, extensionDevelopmentPath)}`);
   say(`[runTests] workspace de test    : ${workspace}`);
