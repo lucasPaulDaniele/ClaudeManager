@@ -148,7 +148,7 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 - **Le tour d'amorçage se joue dans un terminal invisible.** La session est **réellement interactive** — c'est mesuré, pas déduit — mais le terminal n'est jamais affiché : vous ne voyez le premier tour qu'une fois le panneau attaché.
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.
-- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck, tests unitaires et packaging ; les preuves d'exécution locale sont jointes aux PR.
+- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture ; le build et le packaging VSIX ne sont pas encore outillés et relèvent du lot E. Les preuves d'exécution locale sont jointes aux PR.
 
 ## Architecture
 

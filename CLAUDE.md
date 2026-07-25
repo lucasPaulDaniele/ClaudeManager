@@ -15,7 +15,7 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 - **Tests d'extension** : `@vscode/test-electron` (vraie instance VSCode)
 - **Couverture** : `@vitest/coverage-v8` (**100 % sur `core`, 90 % global**)
 - **Lint** : ESLint flat config + `typescript-eslint`
-- **CI** : GitHub Actions (lint, typecheck, tests unitaires, build, packaging VSIX)
+- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** et le **packaging VSIX** ne sont pas encore outillés : ils relèvent du **lot E**.
 
 ## Principes fondateurs
 
@@ -175,7 +175,9 @@ npm run test:integration   # vraie instance VSCode               (local + CI sou
 npm run test:e2e           # multi-fenêtres, extension Claude     (LOCAL UNIQUEMENT)
 ```
 
-**Limite assumée** : les tests E2E exigent l'extension Claude propriétaire **authentifiée**. Ils sont **impossibles en CI publique**. La CI GitHub couvre lint, typecheck, tests unitaires, build et packaging VSIX. Les résultats E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
+Seul `npm run ci` existe à ce jour ; les deux autres commandes décrivent la cible et seront outillées aux lots B et C.
+
+**Limite assumée** : les tests E2E exigent l'extension Claude propriétaire **authentifiée**. Ils sont **impossibles en CI publique**. La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus** : il n'existe à ce jour ni script `build` ni étape de packaging VSIX, l'un et l'autre relevant du **lot E**. Les résultats E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
 
 ## Documentation obligatoire
 
