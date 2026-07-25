@@ -1,0 +1,22 @@
+{
+  "provenance": {
+    "command": "ps",
+    "args": ["-Ao", "pid=,ppid="],
+    "capturedOn": "2026-07-25",
+    "platform": "linux",
+    "ps": "procps-ng 4.0.4",
+    "host": "conteneur ubuntu:24.04 lance avec --pid=host sous Docker Desktop 29.5.3 : la table est celle de la VM LinuxKit hote, pas celle d'un conteneur vide",
+    "lineCount": 162,
+    "notes": [
+      "La meme syntaxe a ete verifiee contre le ps de BusyBox v1.37.0 (image Alpine) : il l'accepte et rend le meme format. Aucun repli n'est necessaire a ce jour.",
+      "pid 1 porte ppid 0 : l'entree est rejetee par l'analyseur, ce qui laisse 161 entrees exploitables. La chaine d'un descendant s'arrete donc proprement sur pid 1."
+    ]
+  },
+
+  "rootPid": 1,
+  "usableEntryCount": 161,
+  "longestChain": {
+    "from": 75935,
+    "ancestors": [75934, 75854, 75821, 75820, 75741, 75698, 75673, 1]
+  }
+}
