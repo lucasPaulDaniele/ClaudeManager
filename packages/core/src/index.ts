@@ -22,3 +22,28 @@ export {
   resolveOwningWindow,
   type WindowLike,
 } from './identity/owningWindow.js';
+
+export {
+  parseWindowEntry,
+  redactWindowEntry,
+  WINDOW_ENTRY_SCHEMA_VERSION,
+  type EntryIdentity,
+  type EntryRejectionReason,
+  type ParseResult,
+  type RedactedWindowEntry,
+  type WindowEntry,
+  type WindowEntryAccepted,
+  type WindowEntryRejected,
+} from './registry/entry.js';
+export {
+  purgeStaleEntries,
+  readRegistry,
+  resolveRegistryDir,
+  writeWindowEntry,
+  type PurgeStaleEntriesOptions,
+  type ReadRegistryOptions,
+  type RegistryReadResult,
+  type SkipReason,
+  type SkippedEntry,
+  type WriteWindowEntryOptions,
+} from './registry/store.node.js';
