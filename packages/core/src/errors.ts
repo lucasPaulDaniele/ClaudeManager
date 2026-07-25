@@ -5,7 +5,9 @@
  * Quand un presuppose tombe, il echoue avec un code stable et une remediation lisible,
  * il ne degrade JAMAIS en silence.
  *
- * Chaque code correspond a une ligne de `docs/compatibilite.md`.
+ * Chaque code portant sur une API interne de l'ecosysteme Claude correspond a une ligne de
+ * `docs/compatibilite.md`. Les codes portant sur une dependance au systeme d'exploitation
+ * — `PROCESS_TABLE_UNAVAILABLE` — n'y figurent pas : ils ne dependent d'aucune API interne.
  */
 
 export const ERROR_CODES = {
@@ -19,6 +21,8 @@ export const ERROR_CODES = {
   TRANSCRIPT_UNREADABLE: 'TRANSCRIPT_UNREADABLE',
   /** Aucune fenetre enregistree ne revendique le processus appelant. */
   OWNING_WINDOW_NOT_FOUND: 'OWNING_WINDOW_NOT_FOUND',
+  /** La table des processus du systeme est illisible, ou vide — ce qui est impossible. */
+  PROCESS_TABLE_UNAVAILABLE: 'PROCESS_TABLE_UNAVAILABLE',
   /** La fenetre cible est en Restricted Mode : les extensions y sont desactivees. */
   WORKSPACE_NOT_TRUSTED: 'WORKSPACE_NOT_TRUSTED',
 } as const;
@@ -37,6 +41,8 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     'Le transcript de la session est introuvable ou illisible. La conversation existe peut-etre sans avoir encore produit de tour.',
   [ERROR_CODES.OWNING_WINDOW_NOT_FOUND]:
     "Aucune fenetre VSCode enregistree ne revendique ce processus. Verifier que l'extension compagnon ClaudeManager est installee et active dans la fenetre appelante.",
+  [ERROR_CODES.PROCESS_TABLE_UNAVAILABLE]:
+    "L'inventaire des processus du systeme n'a pas pu etre lu. Sous Windows, verifier que `powershell.exe` est accessible et que la strategie d'execution ne bloque pas `-Command` ; ailleurs, que `ps` est installe (paquet procps). Sans cet inventaire, aucune fenetre ne peut etre identifiee.",
   [ERROR_CODES.WORKSPACE_NOT_TRUSTED]:
     "La fenetre cible est en Restricted Mode. Accorder la confiance au dossier dans VSCode ('Do you trust the authors of the files in this folder?').",
 };
