@@ -81,6 +81,37 @@ function neutralizeInnoSetupInterlock(executable: string): string | undefined {
   return file;
 }
 
+/**
+ * Familles de variables qu'une session Claude propage a tout ce qu'elle lance.
+ *
+ * Les huit `CLAUDE*` sont celles de l'alerte n.6 ; s'y ajoutent les `VSCODE_*`, `ELECTRON_*`
+ * et `CHROME_*` de l'extension host hote — dix-neuf en tout sur le poste de reference.
+ */
+const INHERITED_ENVIRONMENT = /^(CLAUDECODE|CLAUDE_|VSCODE_|ELECTRON_|CHROME_)/;
+
+/**
+ * Assainit l'environnement du lanceur AVANT de demarrer le VSCode de test.
+ *
+ * SANS CELA, LE HARNAIS NE FONCTIONNE PAS LA OU IL COMPTE. Lance depuis une session Claude
+ * — la configuration de PRODUCTION de ClaudeManager, pas un cas limite —, il herite
+ * d'`ELECTRON_RUN_AS_NODE=1` : le binaire VSCode demarre alors en Node et traite le premier
+ * argument de lancement comme un script, d'ou un `Cannot find module <dossier de travail>`
+ * dont rien n'indique la cause. Mesure a l'appui : identique, l'appel passe depuis un shell
+ * propre et echoue depuis un shell contamine.
+ *
+ * On SUPPRIME les variables, on ne les vide pas : Electron teste leur PRESENCE, une chaine
+ * vide serait toujours vue comme definie. C'est la meme regle qui vaudra pour le terminal
+ * masque du lot C.
+ *
+ * On DIT ce qu'on a retire, plutot que d'assainir en silence : l'environnement d'execution
+ * fait partie de ce qu'une preuve doit exposer (principe fondateur n.3).
+ */
+function neutralizeInheritedEnvironment(): readonly string[] {
+  const inherited = Object.keys(process.env).filter((name) => INHERITED_ENVIRONMENT.test(name));
+  for (const name of inherited) delete process.env[name];
+  return inherited.sort();
+}
+
 async function main(): Promise<void> {
   const here = __dirname;
   // `here` vaut <racine>/tests/integration/dist/tests/integration/src, soit SIX segments
@@ -96,6 +127,13 @@ async function main(): Promise<void> {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cmgr-b3-ws-'));
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmgr-b3-uds-'));
   const reportPath = path.join(os.tmpdir(), `cmgr-b3-report-${process.pid}.json`);
+
+  const neutralized = neutralizeInheritedEnvironment();
+  say(
+    neutralized.length === 0
+      ? '[runTests] environnement : deja propre, aucune variable heritee.'
+      : `[runTests] environnement assaini, ${neutralized.length} variables heritees supprimees : ${neutralized.join(', ')}`
+  );
 
   say(`[runTests] version VSCode epinglee : ${VSCODE_VERSION}`);
   say(`[runTests] extension            : ${path.relative(repoRoot, extensionDevelopmentPath)}`);
