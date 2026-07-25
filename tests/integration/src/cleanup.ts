@@ -28,6 +28,10 @@ const HARNESS_LEFTOVERS: readonly RegExp[] = [
   /^cmgr-b3-ws-[A-Za-z0-9]{6}$/,
   /^cmgr-b3-uds-[A-Za-z0-9]{6}$/,
   /^cmgr-b3-report-\d+\.json$/,
+  // Un rapport PAR SCENARIO depuis B5 : `cmgr-b3-report-<pid>-<scenario>.json`. La forme
+  // sans scenario est conservee — le repertoire temporaire du poste en porte encore, laisses
+  // par les executions anterieures, et ne plus les reconnaitre les rendrait immortels.
+  /^cmgr-b3-report-\d+-[a-z][a-z0-9-]*\.json$/,
   /^cmgr-b3-current\.json$/,
 ];
 

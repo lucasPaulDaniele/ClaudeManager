@@ -101,12 +101,16 @@ describe('removeQuietly', () => {
 });
 
 describe('findHarnessLeftovers', () => {
-  it('reconnait les quatre formes que le harnais depose', () => {
+  it('reconnait les cinq formes que le harnais depose', () => {
     const dir = makeDir();
     const ours = [
       'cmgr-b3-ws-aB3xZ9',
       'cmgr-b3-uds-jsU8Xe',
+      // La forme d'avant B5, encore presente sur le poste : ne plus la reconnaitre rendrait
+      // ces rapports immortels.
       'cmgr-b3-report-17900.json',
+      // La forme de B5 : un rapport par scenario.
+      'cmgr-b3-report-17900-empty-workspace.json',
       'cmgr-b3-current.json',
     ];
     for (const name of ours) writeFileSync(path.join(dir, name), '{}', 'utf8');
@@ -123,6 +127,9 @@ describe('findHarnessLeftovers', () => {
     const others = [
       'cmgr-b3-report-.json',
       'cmgr-b3-report-17900.json.bak',
+      'cmgr-b3-report-17900-.json',
+      'cmgr-b3-report--nominal.json',
+      'cmgr-b3-report-17900-Nominal.json',
       'prefixe-cmgr-b3-current.json',
       'cmgr-b3-current.json.tmp',
       'cmgr-diag-ACS2CX',
