@@ -6,6 +6,14 @@ Ce fichier recense **chaque** point d'adhérence, **où il a été vérifié** �
 
 **Règle** : quand un présupposé tombe, ClaudeManager **échoue avec un message nommé**. Il ne dégrade jamais en silence.
 
+**Périmètre — ce fichier ne recense QUE l'écosystème Claude.** Les API `vscode` employées par
+l'extension compagnon sont **publiques, documentées et versionnées** par un plancher
+`engines.vscode` : elles ne relèvent pas de cette matrice, et les y forcer diluerait ce qu'elle
+sert à dire. Elles sont recensées avec leur plancher dans
+[ADR-003](adr/003-registre-et-serveur-local.md). Même partage pour les codes d'erreur : ceux qui
+portent sur le système d'exploitation ou sur le format du registre — qui est le nôtre — ne
+figurent pas ici, `packages/core/src/errors.ts` le dit en tête.
+
 ## Environnement de référence
 
 | | Version vérifiée |
@@ -17,7 +25,17 @@ Ce fichier recense **chaque** point d'adhérence, **où il a été vérifié** �
 | Node | **24.13.0** (socle exigé par le projet : ≥ 20) |
 
 Ce tableau décrit la machine sur laquelle le spike A1 a été conduit
-([ADR-002](adr/002-ouverture-interactive.md)).
+([ADR-002](adr/002-ouverture-interactive.md)) : ce sont les versions **sur lesquelles les lignes
+ci-dessous ont été mesurées**, pas l'état courant du poste.
+
+> **Le poste de référence a bougé depuis — signalé plutôt que passé sous silence (2026-07-25).** L'extension
+> `Anthropic.claude-code` et son CLI embarqué y sont désormais en **2.1.220**
+> (`~/.vscode/extensions/extensions.json` ne référence plus que cette version ;
+> `resources/native-binary/claude.exe --version` → `2.1.220 (Claude Code)`). **Aucune ligne de la
+> matrice n'a été re-mesurée sur 2.1.220** : leurs traces valent pour 2.1.219. VSCode
+> (**1.122.1**, même empreinte) et Node (**24.13.0**) n'ont pas bougé.
+> Le lot B n'a de toute façon touché **aucune** dépendance de cette matrice : son code n'appelle
+> ni le CLI `claude`, ni une commande `claude-vscode.*`, ni un fichier de `~/.claude/**`.
 
 **Dernier passage sur ce fichier : 2026-07-25.** Cette date n'atteste rien par elle-même — elle ne
 date qu'une relecture. La traçabilité de chaque dépendance est portée **ligne par ligne** par la
@@ -39,7 +57,7 @@ par défaut, relocalisable par `CLAUDE_CONFIG_DIR` (D17).
 | D6 | `<CONFIG>/projects/<cwd-slug>/<sessionId>.jsonl` (par défaut `~/.claude/projects/`) | Transcript interne | Lire une réponse, détecter la fin de tour | ADR-002 (V1) — lu sous la racine **par défaut**, voir D17 | Fichier introuvable ou lignes non parsables → repli sur le hook `Stop`, sinon erreur `TRANSCRIPT_UNREADABLE` |
 | D7 | Slugification du cwd (`:` et `\` → `-`) | Convention de nommage interne | Localiser le transcript d'une session | ADR-002 (V1) — observée sur le chemin du transcript relevé | Aucun répertoire ne correspond → balayage complet de `projects/`, puis erreur |
 | D8 | Hook `Stop` de `~/.claude/settings.json` | Point d'extension documenté | Signal de fin de tour | **— non vérifié.** Aucune mesure ne l'étaie : ADR-001 ne le cite qu'au titre de ce dont le mécanisme d'alors se passait, ADR-002 pas du tout. **Dette du lot D** | Optionnel — repli automatique sur D6 |
-| D9 | `claude.exe.ppid` = PID de l'extension host de sa fenêtre | Comportement du système d'exploitation | Résoudre « ma fenêtre » | ADR-001 §4 · ADR-002 (isolation multi-fenêtres) | Aucune fenêtre enregistrée ne revendique le PID → erreur `OWNING_WINDOW_NOT_FOUND` |
+| D9 | L'extension host de la fenêtre figure dans la **chaîne d'ancêtres** du processus appelant, **à une profondeur non contractuelle** | Comportement du système d'exploitation | Résoudre « ma fenêtre » | **B1** · `tests/fixtures/identity/windows-process-table.roles.json` (capture du 2026-07-25, trois sauts mesurés) · ADR-002 (isolation multi-fenêtres) | **Remonter toute la chaîne**, jamais le seul `ppid`. Aucune fenêtre enregistrée ne figure dans la chaîne du processus appelant → erreur `OWNING_WINDOW_NOT_FOUND` ; deux fenêtres à la même profondeur → erreur `DUPLICATE_WINDOW_IDENTITY` |
 | D10 | Le `cwd` de la session doit correspondre au workspace de la fenêtre | Comportement non documenté de `editor.open` | Garantir que le panneau attache bien **la** session visée | ADR-002 (V1) — **cas nominal seul** : le cas d'échec est rapporté comme écueil connu, il n'a pas été rejoué | **Aucune erreur n'est levée** : `editor.open` **réussit** en ouvrant un panneau **vide**. L'absence d'erreur ne prouve jamais l'attachement — diffuser l'état des onglets avant/après et vérifier le libellé, dérivé du contenu de la conversation → erreur `PANEL_ATTACHED_EMPTY` |
 | D11 | `initialPrompt` de `editor.open` **pré-remplit sans soumettre** | Comportement de la webview | **Rien dans la voie nominale** — recensé comme comportement sur lequel on ne peut pas s'appuyer ; c'est en revanche le socle du repli V5 | ADR-001 §1 · ADR-002 (lecture du source, puis V5) | Prouvé au source (`setInputText`, rien d'autre) et par mesure. S'il se mettait à soumettre, le repli V5 deviendrait autonome : changement à détecter, jamais à supposer |
 | D12 | Commande `claude-vscode.terminal.open(command?, args[]?, location?)` | Commande VSCode interne | **Non utilisée par la voie retenue** — recensée comme voie de repli technique connue | ADR-002 (V2) | `vscode.commands.getCommands(true)` ne la contient pas |
@@ -74,6 +92,23 @@ moyens de détection :
 > options ainsi restreintes le disent explicitement dans l'aide du CLI, pas celle-ci.
 > **Conséquence** : le JSON de sortie du mode `--print` n'est plus disponible, et la réponse du
 > tour 1 ne s'obtient plus que par D6 (transcript) ou D8 (hook `Stop`).
+
+> **D9 a changé de nature le 2026-07-25.** Il énonçait « `claude.exe.ppid` = PID de l'extension
+> host de sa fenêtre », sur la trace `ADR-001 §4`. Cet énoncé est **faux dans la configuration de
+> production**, et c'est le lot B qui l'a mesuré : entre le `claude.exe` appelant et l'extension
+> host de sa fenêtre, la capture versionnée compte **trois sauts**, pas un —
+> `claude.exe 18408 → pwsh.exe 16016 → claude.exe 22352 → extHost 11172 → Code.exe 16196`
+> (`tests/fixtures/identity/windows-process-table.roles.json`, qui l'écrit en toutes lettres :
+> « il faut **remonter la chaîne**, pas se contenter du `ppid` »).
+> **Ce qui s'est passé** : ADR-001 §4 décrivait une **autre topologie** — un `claude.exe` attaché
+> au panneau, donc enfant direct de l'extension host. Le relevé était juste ; c'est sa
+> **généralisation en règle** qui ne l'était pas, et c'est cette matrice qui l'a généralisée.
+> ADR-001 reste un document historique, non réécrit.
+> **Conséquence** : la profondeur n'est **pas contractuelle** — elle dépend de la façon dont la
+> session appelante a été lancée (terminal intégré, shell intermédiaire, agent enfant). Une
+> implémentation qui comparerait le seul `ppid` reproduirait exactement le défaut que B1 a évité ;
+> `resolveOwningWindow` parcourt donc toute la chaîne et retient la fenêtre **la plus proche** de
+> l'appelant.
 
 ### `kind` n'est pas un discriminant d'interactivité
 
