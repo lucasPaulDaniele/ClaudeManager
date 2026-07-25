@@ -85,11 +85,13 @@ C'est l'invariant du produit. Une commande émise depuis une fenêtre ne doit **
 L'ancrage n'est ni le titre de la fenêtre, ni le dossier, ni `VSCODE_PID` (un seul processus principal héberge toutes les fenêtres, cette variable ne discrimine rien). C'est la **chaîne d'ancêtres du processus** :
 
 ```
-claude.exe  →  extension host  →  processus principal VSCode
-   17816          11172                  16196
-                    ↑
-        unique par fenêtre : voilà la clé
+claude.exe  →  pwsh.exe  →  claude.exe  →  extension host  →  Code.exe principal
+   18408         16016         22352            11172               16196
+                                                  ↑
+                                  unique par fenêtre : voilà la clé
 ```
+
+Relevé sur une machine réelle et versionné dans le dépôt (`tests/fixtures/identity/`). **La profondeur n'est pas contractuelle** : ici trois sauts séparent le processus appelant de son extension host, et rien ne garantit ce nombre — il dépend de la façon dont la session a été lancée. On remonte donc **toute la chaîne**, jamais le seul parent, et l'on retient la fenêtre la plus proche de l'appelant.
 
 Chaque instance de l'extension compagnon connaît son propre extension host et peut donc répondre avec certitude : « ce processus est-il un des miens ? »
 
@@ -151,7 +153,8 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.
 - **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : `cmgr doctor` les vérifie et les nomme plutôt que de les franchir à l'aveugle.
-- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture ; le build et le packaging VSIX ne sont pas encore outillés et relèvent du lot E. Les preuves d'exécution locale sont jointes aux PR.
+- **L'extension compagnon écrit dans votre répertoire personnel et ouvre une écoute locale.** Chaque fenêtre publie un fichier `~/.claudemanager/windows/<pid>.json` décrivant ce qu'elle est, et ouvre un serveur HTTP sur `127.0.0.1`, port éphémère, protégé par un **jeton porteur** que ce fichier porte en clair. Le répertoire est en `0700`, l'entrée en `0600`, le jeton n'est jamais journalisé ni rendu par `/health`, et il ne survit pas à un rechargement de fenêtre. Rien n'est joignable depuis le réseau. Le détail, et les raisons de chaque choix, sont dans [l'ADR-003](docs/adr/003-registre-et-serveur-local.md).
+- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture. Les tests d'intégration — une **vraie fenêtre VSCode**, via `@vscode/test-electron` — existent et tournent, mais **localement** : la CI publique devrait télécharger un éditeur complet et disposer d'un affichage. Leurs logs sont joints en preuve aux PR. Seul le **packaging VSIX** n'est pas encore outillé et relève du lot E.
 
 ## Architecture
 
@@ -159,8 +162,8 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 packages/core      logique pure — identité, registre, sessions, transcripts
                    (n'importe jamais `vscode` : c'est ce qui la rend testable)
 packages/vscode    extension compagnon — attache et ferme, rien de plus
-packages/cli       binaire `cmgr`
-packages/mcp       serveur MCP
+packages/cli       binaire `cmgr`                          (lot B, pas encore livré)
+packages/mcp       serveur MCP                             (lot E, pas encore livré)
 ```
 
 Deux règles gouvernent ce découpage : **le cœur ne connaît pas VSCode**, et **aucune opération ne dépend du focus**. Elles sont détaillées, avec leurs justifications, dans [`CLAUDE.md`](CLAUDE.md).
