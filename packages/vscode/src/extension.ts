@@ -37,11 +37,24 @@ interface WindowState {
   readonly server: ServerHandle;
 }
 
-let output: vscode.OutputChannel | undefined;
+let output: vscode.LogOutputChannel | undefined;
 let state: WindowState | undefined;
 
+/**
+ * Journalise dans le canal de journal de la fenetre.
+ *
+ * CANAL DE JOURNAL (`{ log: true }`) et non canal de sortie ordinaire : VSCode en
+ * PERSISTE le contenu dans un fichier, sous
+ * `<user-data-dir>/logs/<horodatage>/window<N>/exthost/`. Deux consequences voulues :
+ * l'activation devient mesurable de l'EXTERIEUR — sans quoi les durees d'activation et de
+ * balayage ne seraient lisibles que dans l'UI, donc inverifiables par un agent —, et
+ * `cmgr doctor` (lot D) pourra lire ce journal pour diagnostiquer une fenetre muette.
+ *
+ * `show()` reste INTERDIT (principe fondateur n.1) : le support change, pas la regle.
+ * L'horodatage est fourni par VSCode, il n'est pas redit ici.
+ */
 function log(message: string): void {
-  output?.appendLine(`[${new Date().toISOString()}] ${message}`);
+  output?.info(message);
 }
 
 /**
@@ -164,7 +177,7 @@ function sweepStaleEntries(): void {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const activationStart = performance.now();
 
-  const channel = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
+  const channel = vscode.window.createOutputChannel(OUTPUT_CHANNEL, { log: true });
   // `show()` n'est JAMAIS appele : reveler le panneau de sortie volerait le focus.
   context.subscriptions.push(channel);
   output = channel;
