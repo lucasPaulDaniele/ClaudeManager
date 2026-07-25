@@ -16,8 +16,9 @@ export default defineConfig({
        * CI verte » ne disait rien de la moitie du lot — deux findings du gate (C5, C2)
        * vivaient precisement dans cette zone (finding R10/C7).
        *
-       * Les paquets encore vides (`cli`, `mcp`) n'ont pas de sources : ils entreront dans la
-       * mesure le jour ou ils en auront, sans qu'on ait a y penser.
+       * Les paquets encore vides (`mcp`) n'ont pas de sources : ils entreront dans la
+       * mesure le jour ou ils en auront, sans qu'on ait a y penser. C'est exactement ce qui
+       * s'est passe pour `cli` a l'increment B4, sans une ligne a changer ici.
        */
       include: ['packages/**/src/**/*.ts'],
       /**
@@ -34,11 +35,26 @@ export default defineConfig({
        *   desormais sans `vscode`, donc mesures et couverts.
        * - `core.ts` : reexport pur, sans une ligne de logique.
        *
+       * EXCLUSION AJOUTEE A L'INCREMENT B4 (2026-07-25), et de la meme nature que `core.ts` :
+       *
+       * - `packages/cli/src/cmgr.ts` : point d'entree du binaire — un shebang, un import, et
+       *   `await runProcess(process)`. Il ne porte AUCUNE decision : tout ce qui pouvait en
+       *   etre extrait l'a ete au meme increment dans `run.ts` (decoupage d'`argv`, choix du
+       *   flux, code de sortie), qui est mesure a 100 % contre un `process` simule. L'eprouver
+       *   ici supposerait de lancer un processus, donc de compiler d'abord — `npm run
+       *   build:cli` — puis de lire le registre REEL du poste et son inventaire de processus,
+       *   ce qu'aucun test unitaire de ce depot ne fait. C'est le lancement reel du binaire,
+       *   dont la sortie est jointe en preuve a la PR, qui en repond.
+       *
        * Toute nouvelle exclusion se justifie ici, avec sa date. Le reste de
-       * `packages/vscode/src` — `server.ts` au premier chef, qui n'importe pas `vscode` —
-       * est mesure comme le coeur.
+       * `packages/vscode/src` — `server.ts` au premier chef, qui n'importe pas `vscode` — et
+       * TOUT `packages/cli/src` sont mesures comme le coeur.
        */
-      exclude: ['packages/vscode/src/extension.ts', 'packages/vscode/src/core.ts'],
+      exclude: [
+        'packages/vscode/src/extension.ts',
+        'packages/vscode/src/core.ts',
+        'packages/cli/src/cmgr.ts',
+      ],
       thresholds: {
         /**
          * Le coeur porte toute la logique et n'a aucune dependance a VSCode : il n'existe

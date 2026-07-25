@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:cli": "tsc -p packages/cli/tsconfig.build.json",
     "build:vscode": "tsc -p packages/vscode/tsconfig.build.json",
     "build:integration": "tsc -p tests/integration/tsconfig.build.json",
     "test:integration": "npm run build:vscode && npm run build:integration && node tests/integration/dist/tests/integration/src/runTests.js",
