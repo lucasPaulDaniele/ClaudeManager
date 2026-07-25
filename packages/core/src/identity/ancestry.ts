@@ -16,11 +16,11 @@ export function ancestorsOf(pid: number, table: ProcessTable): readonly number[]
   if (!Number.isInteger(pid) || pid <= 0) return chain;
 
   const visited = new Set<number>([pid]);
-  let current = table.get(pid);
+  let current = table.get(pid)?.ppid;
   while (current !== undefined && current > 0 && !visited.has(current)) {
     chain.push(current);
     visited.add(current);
-    current = table.get(current);
+    current = table.get(current)?.ppid;
   }
 
   return chain;
