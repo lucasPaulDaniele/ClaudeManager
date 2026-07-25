@@ -3,8 +3,14 @@
  *
  * Tout le jugement (validation, schema, vivacite, purge, atomicite) vit dans
  * `@claudemanager/core` et n'est PAS redit ici. Ce module se borne a ce que seule
- * l'extension peut faire : lire l'etat de sa propre fenetre via l'API VSCode, et relever
- * sa propre identite de processus.
+ * l'extension peut faire : relever sa propre identite de processus, et mettre en forme
+ * l'entree qui la decrit.
+ *
+ * AUCUN IMPORT DE `vscode`, ET C'EST DELIBERE. L'etat du workspace — dossiers, confiance —
+ * est RECU en parametre plutot que lu ici : c'est `extension.ts`, seul point de contact avec
+ * l'editeur, qui le releve et le passe. Le prix est une ligne de plus a l'appel ; le gain
+ * est que toute cette plomberie se verifie en Node pur, contre un vrai repertoire temporaire
+ * et sans le moindre faux `vscode` (principe fondateur n.5 : pas de mocks du systeme reel).
  *
  * C'est le contre-exemple de la version 0.1.0, qui avait reimplemente le registre et
  * publiait des entrees sans `schemaVersion` ni `mainPid` — un format que la version
@@ -13,7 +19,6 @@
 
 import { rmSync } from 'node:fs';
 import path from 'node:path';
-import * as vscode from 'vscode';
 import { resolveRegistryDir, WINDOW_ENTRY_SCHEMA_VERSION, type WindowEntry } from './core.js';
 
 /** Identite de la fenetre : les deux pid, releves ensemble. */
@@ -44,13 +49,19 @@ export interface WindowEntryDraft {
   readonly token: string;
   readonly extensionVersion: string;
   readonly startedAt: string;
+  /**
+   * Etat du workspace AU MOMENT DE LA PUBLICATION, releve par l'appelant.
+   *
+   * Il change pendant la vie de la fenetre — la confiance s'accorde en cours de route, les
+   * dossiers se reorganisent — donc republier revient a rappeler cette fonction avec un
+   * releve frais. Ce qui suit n'en garde aucune trace.
+   */
+  readonly workspaceFolders: readonly string[];
+  readonly isTrusted: boolean;
 }
 
 /**
  * Construit l'entree decrivant cette fenetre a l'instant present.
- *
- * L'etat du workspace est relu a CHAQUE appel : la confiance peut etre accordee en cours
- * de route, et les dossiers changer. Republier revient donc a rappeler cette fonction.
  *
  * Aucune validation ici : `writeWindowEntry` est seule juge de ce qui est publiable.
  */
@@ -63,24 +74,32 @@ export function buildWindowEntry(draft: WindowEntryDraft): WindowEntry {
     mainPid: draft.identity.mainPid,
     port: draft.port,
     token: draft.token,
-    workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
-    isTrusted: vscode.workspace.isTrusted,
+    workspaceFolders: draft.workspaceFolders,
+    isTrusted: draft.isTrusted,
     extensionVersion: draft.extensionVersion,
     startedAt: draft.startedAt,
   };
 }
 
 /**
- * Retire l'entree de CETTE fenetre, et d'aucune autre.
+ * Chemin du fichier d'entree d'UNE fenetre.
  *
- * DETTE ASSUMEE : le nom de fichier d'une entree (`<extHostPid>.json`) est une convention
- * du coeur, que ce module doit ici redire faute d'un `removeWindowEntry` exporte. C'est la
- * seule connaissance du registre dupliquee dans l'extension — signalee comme telle, a
- * remonter dans `core/registry/store.node.ts`.
+ * DETTE ASSUMEE : le nommage `<extHostPid>.json` est une convention du coeur, que ce module
+ * doit ici redire faute d'un equivalent exporte. C'est la seule connaissance du registre
+ * dupliquee dans l'extension — signalee comme telle, a remonter dans
+ * `core/registry/store.node.ts`. Elle est isolee dans cette unique fonction : le jour ou le
+ * coeur l'exportera, il n'y aura qu'un corps a remplacer.
+ */
+export function windowEntryPath(extHostPid: number, dir?: string): string {
+  return path.join(resolveRegistryDir(dir), `${extHostPid}.json`);
+}
+
+/**
+ * Retire l'entree de CETTE fenetre, et d'aucune autre.
  *
  * `force` : l'entree peut avoir deja ete balayee par une autre fenetre. Son absence est le
  * resultat recherche, pas une defaillance.
  */
-export function removeWindowEntry(extHostPid: number): void {
-  rmSync(path.join(resolveRegistryDir(), `${extHostPid}.json`), { force: true });
+export function removeWindowEntry(extHostPid: number, dir?: string): void {
+  rmSync(windowEntryPath(extHostPid, dir), { force: true });
 }

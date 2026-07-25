@@ -18,3 +18,15 @@
  * dependance reste declaree en un seul endroit.
  */
 export * from '../../core/src/index.js';
+
+/**
+ * DEFAUT DU COEUR SIGNALE, NON CORRIGE ICI : `systemErrorCode` n'est pas reexporte par
+ * `packages/core/src/index.ts`, alors que c'est la fonction meme qui reduit une defaillance
+ * systeme a son code — et donc ce qui empeche un chemin personnel d'atteindre un journal
+ * public. Le coeur s'en sert (`store.node.ts`), l'extension en a le meme besoin, mais la
+ * porte publique ne la laisse pas passer.
+ *
+ * Elle est donc importee ici depuis son module, faute de mieux. La correction appartient au
+ * coeur — ajouter la ligne a son index —, hors du perimetre de cet increment.
+ */
+export { systemErrorCode } from '../../core/src/errors.js';

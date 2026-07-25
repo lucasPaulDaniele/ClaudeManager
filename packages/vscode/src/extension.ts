@@ -5,50 +5,40 @@
  * `outputChannel.show()`, aucune commande contribuee, aucune vue revelee. L'outil s'execute
  * pendant que l'humain travaille ailleurs — se manifester a l'ecran serait deja un vol
  * d'attention, et rendrait le pilotage non deterministe.
+ *
+ * SEUL POINT DE CONTACT AVEC L'EDITEUR de tout le paquet, et volontairement mince : il
+ * releve l'etat que seule une fenetre connait, cable les evenements, et delegue. Le cycle de
+ * vie de la publication vit dans `publication.ts`, la plomberie de registre dans
+ * `registry.ts`, le serveur dans `server.ts`, la mise en forme des defaillances dans
+ * `diagnostics.ts` — tous sans `vscode`, donc tous verifies en Node pur. Ce qui reste ici
+ * est, par construction, ce que seule une vraie fenetre peut eprouver : c'est la raison de
+ * son exclusion nommee de la mesure de couverture (`vitest.config.ts`).
  */
 
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import * as vscode from 'vscode';
-import {
-  isClaudeManagerError,
-  purgeStaleEntries,
-  readProcessTable,
-  writeWindowEntry,
-  WINDOW_ENTRY_SCHEMA_VERSION,
-} from './core.js';
-import {
-  buildWindowEntry,
-  readWindowIdentity,
-  removeWindowEntry,
-  type WindowIdentity,
-} from './registry.js';
-import { startServer, type HealthPayload, type ServerHandle } from './server.js';
+import { purgeStaleEntries, readProcessTable } from './core.js';
+import { describe, readExtensionVersion } from './diagnostics.js';
+import { WindowPublisher, type WorkspaceState } from './publication.js';
+import { readWindowIdentity } from './registry.js';
 
 const OUTPUT_CHANNEL = 'ClaudeManager';
 
-/** Version de repli si le manifeste devenait illisible : jamais vide, l'entree serait refusee. */
-const UNKNOWN_VERSION = '0.0.0-unknown';
-
-interface WindowState {
-  readonly identity: WindowIdentity;
-  readonly extensionVersion: string;
-  readonly startedAt: string;
-  readonly token: string;
-  readonly server: ServerHandle;
-}
-
 let output: vscode.LogOutputChannel | undefined;
-let state: WindowState | undefined;
+let publisher: WindowPublisher | undefined;
 
 /**
  * Journalise dans le canal de journal de la fenetre.
  *
  * CANAL DE JOURNAL (`{ log: true }`) et non canal de sortie ordinaire : VSCode en
  * PERSISTE le contenu dans un fichier, sous
- * `<user-data-dir>/logs/<horodatage>/window<N>/exthost/`. Deux consequences voulues :
- * l'activation devient mesurable de l'EXTERIEUR — sans quoi les durees d'activation et de
- * balayage ne seraient lisibles que dans l'UI, donc inverifiables par un agent —, et
- * `cmgr doctor` (lot D) pourra lire ce journal pour diagnostiquer une fenetre muette.
+ * `<user-data-dir>/logs/<horodatage>/window<N>/exthost/<id d'extension>/`. Deux consequences
+ * voulues : l'activation devient mesurable de l'EXTERIEUR — sans quoi les durees
+ * d'activation et de balayage ne seraient lisibles que dans l'UI, donc inverifiables par un
+ * agent —, et `cmgr doctor` (lot D) pourra lire ce journal pour diagnostiquer une fenetre
+ * muette. Le repertoire est publie sur `GET /health`, sans quoi rien ne permettrait de
+ * l'atteindre : son chemin comporte deux segments indevinables.
  *
  * `show()` reste INTERDIT (principe fondateur n.1) : le support change, pas la regle.
  * L'horodatage est fourni par VSCode, il n'est pas redit ici.
@@ -57,97 +47,12 @@ function log(message: string): void {
   output?.info(message);
 }
 
-/**
- * Rend une defaillance lisible SANS trace de pile : les journaux d'un depot public ne
- * doivent porter ni chemin de fichier ni detail interne. Une erreur nommee est rendue avec
- * son code stable et sa remediation (principe fondateur n.3).
- */
-function describe(error: unknown): string {
-  if (isClaudeManagerError(error)) {
-    return `${error.code}: ${error.message} — ${error.remediation}`;
-  }
-  if (error instanceof Error) return `${error.name}: ${error.message}`;
-  return String(error);
-}
-
-/** `packageJSON` est type `any` par l'API VSCode : on ne s'y fie qu'apres controle. */
-function readExtensionVersion(context: vscode.ExtensionContext): string {
-  const packageJson: unknown = context.extension.packageJSON;
-  if (typeof packageJson !== 'object' || packageJson === null) return UNKNOWN_VERSION;
-  const version = (packageJson as Record<string, unknown>)['version'];
-  return typeof version === 'string' && version.length > 0 ? version : UNKNOWN_VERSION;
-}
-
-function healthOf(identity: WindowIdentity, extensionVersion: string): HealthPayload {
+/** L'unique chose que le cycle de publication demande a l'editeur. */
+function readWorkspace(): WorkspaceState {
   return {
-    ok: true,
-    schemaVersion: WINDOW_ENTRY_SCHEMA_VERSION,
-    extensionVersion,
-    extHostPid: identity.extHostPid,
-    mainPid: identity.mainPid,
-    // Relus a chaque requete : ils changent pendant la vie de la fenetre.
-    isTrusted: vscode.workspace.isTrusted,
     workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+    isTrusted: vscode.workspace.isTrusted,
   };
-}
-
-/**
- * Publie l'entree de cette fenetre. Rend `false` si le coeur l'a refusee.
- *
- * Le refus n'est PAS anticipe par un controle local : c'est `writeWindowEntry` qui juge, et
- * son erreur nommee qu'on journalise. Redire ici sa regle de validation la ferait diverger
- * un jour — et le cas le plus frequent, la fenetre sans dossier de travail, est
- * precisement une regle du coeur (`REGISTRY_ENTRY_INVALID`).
- */
-function publish(current: WindowState, reason: string): boolean {
-  const entry = buildWindowEntry({
-    identity: current.identity,
-    port: current.server.port,
-    token: current.token,
-    extensionVersion: current.extensionVersion,
-    startedAt: current.startedAt,
-  });
-
-  try {
-    writeWindowEntry(entry);
-  } catch (error) {
-    log(`refusing to publish this window (${reason}) — ${describe(error)}`);
-    return false;
-  }
-
-  // Le jeton n'est JAMAIS journalise. Les chemins du workspace non plus : seul leur nombre
-  // est utile ici, et `GET /health` les rend a qui detient le jeton.
-  log(
-    `published (${reason}): extHostPid=${entry.extHostPid} mainPid=${entry.mainPid} ` +
-      `port=${entry.port} trusted=${entry.isTrusted} workspaceFolders=${entry.workspaceFolders.length}`
-  );
-  return true;
-}
-
-/**
- * Retire cette fenetre du registre et ferme son serveur.
- *
- * Les deux vont ENSEMBLE : un serveur ouvert sans entree pour le joindre n'est joignable
- * par personne, et une entree sans serveur derriere designe une fenetre morte.
- */
-async function shutdown(reason: string): Promise<void> {
-  const current = state;
-  state = undefined;
-  if (current === undefined) return;
-
-  try {
-    removeWindowEntry(current.identity.extHostPid);
-  } catch (error) {
-    log(`could not remove this window's registry entry (${reason}) — ${describe(error)}`);
-  }
-
-  try {
-    await current.server.close();
-  } catch (error) {
-    log(`could not close the local server (${reason}) — ${describe(error)}`);
-  }
-
-  log(`window withdrawn (${reason}): extHostPid=${current.identity.extHostPid}`);
 }
 
 /**
@@ -163,7 +68,7 @@ async function shutdown(reason: string): Promise<void> {
  * Son echec n'empeche jamais la publication : publier est la fonction vitale, balayer n'est
  * que de l'hygiene. L'erreur est nommee et journalisee, puis l'extension continue.
  */
-async function sweepStaleEntries(): Promise<void> {
+async function sweepStaleEntries(current: WindowPublisher): Promise<void> {
   const start = performance.now();
   try {
     const { removed } = purgeStaleEntries({ snapshot: await readProcessTable() });
@@ -173,6 +78,50 @@ async function sweepStaleEntries(): Promise<void> {
   } catch (error) {
     const elapsed = Math.round(performance.now() - start);
     log(`sweep failed after ${elapsed} ms, this window stays published — ${describe(error)}`);
+  }
+
+  // MOMENT NATUREL, et le seul GARANTI du cycle de vie : on vient de parcourir le registre
+  // en entier. Verifier que notre propre entree y est encore ne coute qu'un `existsSync`, et
+  // couvre le cas ou un balayage — le notre, ou celui d'une fenetre demarree en meme temps —
+  // vient de l'emporter. L'observateur ci-dessous couvre la suite ; celui-ci ne depend
+  // d'aucune API de surveillance (finding S6).
+  await current.republishIfEntryVanished('after the sweep');
+}
+
+/**
+ * Surveille le fichier d'entree de CETTE fenetre, et rien d'autre.
+ *
+ * Le controle post-balayage n'a lieu qu'une fois : il ne verrait pas une suppression
+ * survenue une heure plus tard. Cet observateur la voit — sans aucun sondage, VSCode
+ * s'appuyant sur les notifications du systeme de fichiers. Le motif designe le SEUL fichier
+ * de cette fenetre : aucune entree d'une autre fenetre n'est observee, encore moins touchee.
+ *
+ * Sa creation est gardee : le repertoire du registre est HORS du workspace, et rien ne
+ * garantit qu'un observateur y soit possible partout. S'il ne l'est pas, on le DIT — la
+ * fenetre perd la reprise tardive, pas la publication (principe fondateur n.3).
+ */
+function watchOwnEntry(current: WindowPublisher): vscode.Disposable | undefined {
+  try {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(
+        vscode.Uri.file(path.dirname(current.entryFile)),
+        path.basename(current.entryFile)
+      ),
+      // Creations et modifications ignorees : ce sont les notres, et rien d'autre n'ecrit ce
+      // nom. Seule la suppression appelle une reaction.
+      true,
+      true,
+      false
+    );
+    watcher.onDidDelete(() => {
+      void current.republishIfEntryVanished('watcher');
+    });
+    return watcher;
+  } catch (error) {
+    log(
+      `could not watch this window's registry entry, a late deletion will go unnoticed — ${describe(error)}`
+    );
+    return undefined;
   }
 }
 
@@ -184,53 +133,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(channel);
   output = channel;
 
-  const identity = readWindowIdentity();
-  const extensionVersion = readExtensionVersion(context);
-  const startedAt = new Date().toISOString();
-  // Propre a cette fenetre ET a cette session : il ne survit pas a un redemarrage.
-  const token = randomUUID();
+  const current = new WindowPublisher({
+    identity: readWindowIdentity(),
+    extensionVersion: readExtensionVersion(context.extension.packageJSON),
+    // Propre a cette fenetre ET a cette session : il ne survit pas a un redemarrage.
+    token: randomUUID(),
+    logDirectory: context.logUri.fsPath,
+    readWorkspace,
+    log,
+  });
+  publisher = current;
 
-  let server: ServerHandle;
-  try {
-    server = await startServer({
-      token,
-      health: () => healthOf(identity, extensionVersion),
-      onError: (error) => log(`local server error — ${describe(error)}`),
-    });
-  } catch (error) {
-    log(`this window is NOT reachable, the local server failed to listen — ${describe(error)}`);
-    return;
-  }
-
-  const current: WindowState = { identity, extensionVersion, startedAt, token, server };
-  state = current;
-
-  // ORDRE IMPOSE : publier d'abord, balayer ensuite. Un balayage qui echoue ou qui traine
-  // ne doit jamais retarder la joignabilite de la fenetre.
-  if (!publish(current, 'activation')) {
-    // La fenetre reste parfaitement utilisable : elle n'est simplement pas pilotable.
-    await shutdown('entry rejected at activation');
-    return;
-  }
-
+  // ORDRE IMPOSE, ET C'EST LA CORRECTION DE C5 : les abonnements de reprise sont poses AVANT
+  // la premiere tentative de publication. Auparavant, le chemin d'echec a l'activation
+  // rendait la main avant de les enregistrer — la fenetre qui demarrait sans dossier de
+  // travail n'avait donc aucun moyen d'apprendre qu'on venait de lui en ajouter un.
   context.subscriptions.push(
     // La confiance accordee en cours de route change `isTrusted` : republier remplace
-    // l'entree, `writeWindowEntry` etant idempotente.
+    // l'entree, la publication etant idempotente.
     vscode.workspace.onDidGrantWorkspaceTrust(() => {
-      if (state !== undefined && !publish(state, 'workspace trust granted')) {
-        void shutdown('entry rejected after trust was granted');
-      }
+      void current.ensurePublished('workspace trust granted');
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      if (state !== undefined && !publish(state, 'workspace folders changed')) {
-        void shutdown('entry rejected after workspace folders changed');
-      }
+      void current.ensurePublished('workspace folders changed');
     })
   );
 
+  const watcher = watchOwnEntry(current);
+  if (watcher !== undefined) context.subscriptions.push(watcher);
+
+  // Publier d'abord, balayer ensuite. Un balayage qui echoue ou qui traine ne doit jamais
+  // retarder la joignabilite de la fenetre.
+  await current.ensurePublished('activation');
+
   // Lance sans etre attendu : `activate` rend la main immediatement, et le balayage — qui
   // ne bloque plus rien — rapporte sa ligne de journal quand il aboutit.
-  void sweepStaleEntries();
+  void sweepStaleEntries(current);
 
   log(`activation completed in ${(performance.now() - activationStart).toFixed(1)} ms`);
 }
@@ -241,5 +179,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  * par la prochaine fenetre qui demarre.
  */
 export async function deactivate(): Promise<void> {
-  await shutdown('deactivate');
+  const current = publisher;
+  publisher = undefined;
+  if (current === undefined) return;
+  await current.close('deactivate');
 }
