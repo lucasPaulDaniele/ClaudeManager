@@ -1,9 +1,35 @@
 # ADR-001 — Comment piloter une conversation Claude dans VSCode
 
 - **Date** : 2026-07-24
-- **Statut** : accepté
+- **Statut** : **remplacé par [ADR-002](002-ouverture-interactive.md)** le **2026-07-25**
 - **Vérifié contre** : extension `Anthropic.claude-code` **2.1.219**, VSCode 1.122.1, Windows 11
 - **Méthode** : spike jeté (extension VSCode minimale lancée via `--extensionDevelopmentPath`), 7 itérations, preuves conservées dans le corps de cet ADR
+
+> ### ⚠️ Document historique — le mécanisme décidé ici a été remplacé
+>
+> **Ce qui est invalidé.** La décision ci-dessous — amorcer la session par
+> `claude -p --session-id <uuid>` puis attacher le panneau — a été **rejetée en recette le
+> 2026-07-25** : la conversation ainsi ouverte **n'est pas interactive à son premier tour**.
+> Amorcée par `claude -p`, elle répond en annonçant elle-même qu'elle ne peut pas lancer de flux
+> OAuth MCP « car cette session n'est pas interactive ». Tombe avec elle la conséquence favorable
+> « la réponse du tour d'amorçage est obtenue gratuitement » : le tour 1 étant désormais joué dans
+> un terminal dont la sortie n'est pas capturée, sa réponse se lit dans le transcript ou par le
+> hook `Stop`.
+>
+> **Ce qui reste valide**, et sur quoi le projet continue de s'appuyer :
+>
+> - `initialPrompt` **pré-remplit sans soumettre** (§1) — reconfirmé au source *et* par mesure ;
+> - la **fermeture** par `vscode.window.tabGroups.close(tab)` sur l'onglet dont le `viewType`
+>   contient `claudeVSCodePanel` ;
+> - l'**indépendance au focus** de `editor.open` et de `tabGroups.close` (§3) ;
+> - l'**identité de fenêtre** par chaîne d'ancêtres — `claude.exe.ppid` = PID de l'extension host —
+>   et le fait que `VSCODE_PID` ne discrimine rien (§4) ;
+> - le piège du **Workspace Trust**, qui fait disparaître les commandes `claude-vscode.*` sans le
+>   moindre message (§5).
+>
+> **Le corps de cet ADR n'a pas été réécrit** : un ADR remplacé se conserve tel quel, c'est un
+> document historique. Pour le mécanisme en vigueur, voir
+> [ADR-002](002-ouverture-interactive.md).
 
 ## Contexte
 
