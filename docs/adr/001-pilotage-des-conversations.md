@@ -27,8 +27,15 @@
 > - la **fermeture** par `vscode.window.tabGroups.close(tab)` sur l'onglet dont le `viewType`
 >   contient `claudeVSCodePanel` ;
 > - l'**indépendance au focus** de `editor.open` et de `tabGroups.close` (§3) ;
-> - l'**identité de fenêtre** par chaîne d'ancêtres — `claude.exe.ppid` = PID de l'extension host —
->   et le fait que `VSCODE_PID` ne discrimine rien (§4) ;
+> - l'**identité de fenêtre** par **chaîne d'ancêtres**, et le fait que `VSCODE_PID` ne discrimine
+>   rien (§4).
+>   **Incise (2026-07-25)** : §4 conclut « `claude.exe.ppid` est le PID de l'extension host de sa
+>   fenêtre ». Cela reste vrai **de la topologie qu'il a mesurée** — un `claude.exe` attaché au
+>   panneau, donc enfant direct de l'extension host — mais ce n'est pas une règle générale, et
+>   c'est ici, dans cet encadré, que la généralisation avait été faite. Le lot B a mesuré **trois
+>   sauts** entre le `claude.exe` appelant et son extension host. L'énoncé en vigueur et sa trace
+>   de mesure sont désormais portés par **D9** de [`docs/compatibilite.md`](../compatibilite.md) :
+>   remonter **toute** la chaîne, jamais le seul `ppid` ;
 > - le piège du **Workspace Trust**, qui fait disparaître les commandes `claude-vscode.*` sans le
 >   moindre message (§5).
 >
