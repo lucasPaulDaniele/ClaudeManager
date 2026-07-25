@@ -68,8 +68,42 @@ des PID **mesurés** — jamais inventés — que :
 3. elle les supprime en revanche dès que leurs PID ont disparu de la table : un processus
    mort ne revient pas, sa version importe peu.
 
-### Note sur la lecture du registre réel
+### Ce que les tests font du registre réel du poste
 
-Les tests **ne lisent jamais** `~/.claudemanager/windows/`. Ces fixtures sont copiées dans un
-répertoire temporaire réel (`os.tmpdir()`) avant chaque scénario. Le registre du poste est en
-lecture seule pour ce dépôt, et il est resté intact à la copie.
+Les deux niveaux de test **ne se comportent pas de la même façon**, et cette page a longtemps
+affirmé le contraire pour les deux — finding **C8** du gate du lot B.
+
+**Tests unitaires — jamais le registre réel.** Ces fixtures sont copiées dans un répertoire
+temporaire réel (`mkdtempSync` sous `os.tmpdir()`, voir `tests/unit/registry/fixtures.ts`) avant
+chaque scénario, et tout s'y joue. Aucun test unitaire ne lit ni n'écrit
+`~/.claudemanager/windows/` ; le seul endroit qui nomme ce chemin
+(`tests/unit/vscode/registry.test.ts`) vérifie la **valeur de chaîne** rendue par défaut, sans
+toucher au disque.
+
+**Harnais d'intégration — le registre réel, délibérément.** `tests/integration/src/suite.ts`
+appelle `resolveRegistryDir()` **sans surcharge de répertoire** : il travaille dans
+`~/.claudemanager/windows`. Ce n'est pas un oubli, c'est la condition qui donne son sens au test
+d'isolation — prouver qu'une fenêtre ne revendique pas les autres dans un registre vide et dédié
+ne prouverait rien. La fenêtre sous test publie donc son entrée par le chemin de **production**,
+au milieu des entrées héritées du poste.
+
+Ce qui rend cela sûr, tel que le code le fait aujourd'hui :
+
+- **l'entrée étrangère de la preuve est fabriquée à l'exécution**, jamais un fichier
+  préexistant : `plantForeignEntry` la nomme d'après `process.ppid` — vivant par construction,
+  et jamais un extension host — et **renonce** (`undefined`, le point est perdu) si un fichier
+  porte déjà ce nom ; son contenu est la fixture 0.1.0 ci-dessus, seul l'`extHostPid` étant
+  repointé ;
+- **elle n'est retirée que si son contenu est inchangé depuis l'écriture** :
+  `unplantForeignEntry` relit le fichier et le compare octet pour octet à ce qu'il a écrit ; s'il
+  a changé, il n'est plus le nôtre et la suite le **laisse en place** ;
+- **aucun chemin de la suite ne supprime les entrées héritées du poste.** `11172.json` et
+  `17544.json` y sont **observées** — leur présence et leur classification sont rapportées comme
+  un renseignement sur l'état du poste — et ne portent plus aucune assertion (finding C6) ;
+- l'entrée de la fenêtre de test, elle, est retirée par le `deactivate` de l'extension, ce que le
+  lanceur constate après la fermeture de la fenêtre (`runTests.ts`, point 8).
+
+**Ce que la suite ne maîtrise pas, et qu'il faut savoir** : le **balayage** joué à l'activation
+supprime bel et bien des entrées **mortes** du registre du poste. C'est le comportement de
+production de l'extension — pas un acte du test — et c'est précisément ce que le harnais éprouve.
+Une entrée dont le PID est vivant n'en est jamais la cible.
