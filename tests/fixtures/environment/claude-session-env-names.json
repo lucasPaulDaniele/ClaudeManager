@@ -1,0 +1,43 @@
+{
+  "provenance": {
+    "command": "node -e \"console.log(Object.keys(process.env).sort().join(String.fromCharCode(10)))\"",
+    "capturedOn": "2026-07-26",
+    "platform": "win32",
+    "os": "Windows 11 Pro 10.0.22000",
+    "from": "shell lance par une session Claude Code s executant dans le terminal integre de VSCode — la configuration de PRODUCTION de ClaudeManager",
+    "vscodeVersion": "1.122.1",
+    "nameCount": 21,
+    "notes": [
+      "SEULS LES NOMS SONT VERSIONNES, jamais les valeurs : elles portent des chemins personnels (VSCODE_CWD, CLAUDE_CODE_EXECPATH), des noms de tubes nommes (CHROME_CRASHPAD_PIPE_NAME, VSCODE_IPC_HOOK) et des identifiants de session. Le depot est public.",
+      "Capture brute du filtre applique par le lanceur : ni triee a la main, ni tronquee, ni completee. Le compte varie d une session a l autre (le poste de reference en portait 19 le 2026-07-25, 21 ici) — c est precisement pourquoi le lanceur filtre par FAMILLE plutot que par liste nommee."
+    ]
+  },
+  "inheritedNames": [
+    "CHROME_CRASHPAD_PIPE_NAME",
+    "CLAUDECODE",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+    "CLAUDE_CODE_ENABLE_TASKS",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ELECTRON_RUN_AS_NODE",
+    "VSCODE_CODE_CACHE_PATH",
+    "VSCODE_CRASH_REPORTER_PROCESS_TYPE",
+    "VSCODE_CWD",
+    "VSCODE_ESM_ENTRYPOINT",
+    "VSCODE_HANDLES_UNCAUGHT_ERRORS",
+    "VSCODE_IPC_HOOK",
+    "VSCODE_L10N_BUNDLE_LOCATION",
+    "VSCODE_NLS_CONFIG",
+    "VSCODE_PID"
+  ],
+  "knownFatalToElectron": {
+    "ELECTRON_RUN_AS_NODE": "MESURE : le binaire VSCode demarre en Node et traite le premier argument de lancement comme un script — Cannot find module <dossier de travail>. Voir tests/integration/src/environment.ts.",
+    "VSCODE_IPC_HOOK": "Tube nomme de l instance VSCode APPELANTE : herite, il route la demande de lancement vers la fenetre de l humain au lieu d en ouvrir une neuve. Retire par la meme regle de famille ; symptome non mesure isolement.",
+    "VSCODE_ESM_ENTRYPOINT": "Point d entree ESM du processus VSCode APPELANT : herite, il detourne l amorcage du binaire de test. Retire par la meme regle de famille ; symptome non mesure isolement."
+  }
+}
