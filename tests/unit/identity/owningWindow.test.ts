@@ -88,8 +88,10 @@ describe("resolveOwningWindow — l'identite ne tient qu'a l'extHostPid", () => 
 
   it('ne departage pas par le chemin deux enregistrements de MEME extHostPid', () => {
     // Angle mort documente de la construction par jonction : deux chemins distincts pour
-    // une meme fenetre. Aucun critere de chemin ne doit intervenir — le premier enregistre
-    // gagne, et le resultat ne change pas quand seuls les chemins changent.
+    // une meme fenetre. Aucun critere de chemin ne doit intervenir — et puisque aucun
+    // critere legitime ne reste, il n y a rien a departager : l ambiguite est NOMMEE.
+    // Laisser gagner l un des deux reviendrait a faire de l ordre d enumeration un
+    // arbitre, c est-a-dire a offrir la victoire a qui choisit son nom de fichier.
     const first: RegisteredWindow = {
       extHostPid: WINDOWS_ROLES.owningExtHostPid,
       label: 'premier',
@@ -97,8 +99,16 @@ describe("resolveOwningWindow — l'identite ne tient qu'a l'extHostPid", () => 
     };
     const second: RegisteredWindow = { ...first, label: 'second', workspacePath: '/ws-same' };
 
-    expect(resolveOwningWindow(CALLER, TABLE, [first, second])).toBe(first);
-    expect(resolveOwningWindow(CALLER, TABLE, [second, first])).toBe(second);
+    for (const order of [[first, second], [second, first]]) {
+      const failure = catchFailure(() => resolveOwningWindow(CALLER, TABLE, order));
+
+      expect(failure.code).toBe(ERROR_CODES.DUPLICATE_WINDOW_IDENTITY);
+      // Les details ne portent ni chemin ni libelle : ils partent vers un agent.
+      expect(failure.details).toEqual({
+        extHostPid: WINDOWS_ROLES.owningExtHostPid,
+        chainDepth: WINDOWS_ROLES.expectedAncestry.indexOf(WINDOWS_ROLES.owningExtHostPid) + 1,
+      });
+    }
   });
 });
 

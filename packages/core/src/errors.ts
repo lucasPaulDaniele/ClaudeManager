@@ -9,7 +9,9 @@
  * `docs/compatibilite.md`. Les codes portant sur une dependance au systeme d'exploitation
  * — `PROCESS_TABLE_UNAVAILABLE` pour l'inventaire des processus, `REGISTRY_UNREADABLE` et
  * `REGISTRY_ENTRY_INVALID` pour le systeme de fichiers — n'y figurent pas : ils ne
- * dependent d'aucune API interne.
+ * dependent d'aucune API interne. Pas davantage ceux qui portent sur le format du registre
+ * lui-meme (`DUPLICATE_WINDOW_IDENTITY`, `OWNING_WINDOW_NOT_FOUND`) : ce format est le
+ * notre, il n'est emprunte a personne.
  */
 
 export const ERROR_CODES = {
@@ -23,6 +25,8 @@ export const ERROR_CODES = {
   TRANSCRIPT_UNREADABLE: 'TRANSCRIPT_UNREADABLE',
   /** Aucune fenetre enregistree ne revendique le processus appelant. */
   OWNING_WINDOW_NOT_FOUND: 'OWNING_WINDOW_NOT_FOUND',
+  /** Deux fenetres enregistrees revendiquent le meme extension host. */
+  DUPLICATE_WINDOW_IDENTITY: 'DUPLICATE_WINDOW_IDENTITY',
   /** La table des processus du systeme est illisible, ou vide — ce qui est impossible. */
   PROCESS_TABLE_UNAVAILABLE: 'PROCESS_TABLE_UNAVAILABLE',
   /** Le repertoire du registre des fenetres existe mais ne peut pas etre liste. */
@@ -47,6 +51,8 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     'Le transcript de la session est introuvable ou illisible. La conversation existe peut-etre sans avoir encore produit de tour.',
   [ERROR_CODES.OWNING_WINDOW_NOT_FOUND]:
     "Aucune fenetre VSCode enregistree ne revendique ce processus. Verifier que l'extension compagnon ClaudeManager est installee et active dans la fenetre appelante.",
+  [ERROR_CODES.DUPLICATE_WINDOW_IDENTITY]:
+    "Deux fenetres enregistrees revendiquent le meme extension host. Le registre nomme ses fichiers d'apres le pid, ce cas ne peut donc venir que d'une entree dupliquee ou forgee : inspecter ~/.claudemanager/windows et retirer celle qui n'a pas ete ecrite par une fenetre VSCode.",
   [ERROR_CODES.PROCESS_TABLE_UNAVAILABLE]:
     "L'inventaire des processus du systeme n'a pas pu etre lu. Sous Windows, verifier que `powershell.exe` est accessible et que la strategie d'execution ne bloque pas `-Command` ; ailleurs, que `ps` est installe (paquet procps). Sans cet inventaire, aucune fenetre ne peut etre identifiee.",
   [ERROR_CODES.REGISTRY_UNREADABLE]:

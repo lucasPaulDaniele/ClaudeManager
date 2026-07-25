@@ -29,7 +29,14 @@ import type { ProcessSnapshot } from '../identity/processTable.js';
 import { parseWindowEntry, type EntryIdentity, type WindowEntry } from './entry.js';
 
 /** Motif pour lequel un fichier du registre n'a pas donne de fenetre pilotable. */
-export type SkipReason = 'unreadable' | 'unparsable' | 'invalid' | 'foreign-schema' | 'dead' | 'pid-reused';
+export type SkipReason =
+  | 'unreadable'
+  | 'unparsable'
+  | 'invalid'
+  | 'foreign-schema'
+  | 'identity-mismatch'
+  | 'dead'
+  | 'pid-reused';
 
 export interface SkippedEntry {
   /**
@@ -201,7 +208,29 @@ interface ScannedFile {
   readonly modifiedAt: number;
 }
 
-function classifyContent(content: string, snapshot: ProcessSnapshot): Classification {
+/**
+ * L'ecriture NOMME le fichier d'apres le pid — la lecture doit donc le VERIFIER.
+ *
+ * Sans ce controle, rien ne rattache un fichier a l'identite qu'il revendique : n'importe
+ * quel processus tournant sous le compte de l'utilisateur peut deposer un `0000.json`
+ * declarant l'`extHostPid` et le `mainPid` REELS d'une fenetre. L'entree passe alors toute
+ * la validation, est jugee vivante, et gagne l'arbitrage a egalite de profondeur par le
+ * seul ordre alphabetique de `readdir` — le client s'adresse au serveur de l'attaquant en
+ * croyant parler a sa propre fenetre.
+ *
+ * Le nom du fichier est la seule chose qu'un intrus ne controle pas librement : deux
+ * fichiers ne peuvent pas porter le meme nom, donc un pid ne peut etre revendique qu'une
+ * fois. Exiger l'egalite fait de cette contrainte du systeme de fichiers une contrainte
+ * d'identite.
+ */
+function claimsItsOwnName(file: string, identity: EntryIdentity): boolean {
+  // Pid illisible : l'entree sera de toute facon rejetee, et jamais purgee faute de savoir
+  // si sa fenetre vit. Rien a confronter ici.
+  if (identity.extHostPid === undefined) return true;
+  return file === `${identity.extHostPid}${ENTRY_EXTENSION}`;
+}
+
+function classifyContent(file: string, content: string, snapshot: ProcessSnapshot): Classification {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -210,6 +239,7 @@ function classifyContent(content: string, snapshot: ProcessSnapshot): Classifica
   }
 
   const parsed = parseWindowEntry(value);
+  if (!claimsItsOwnName(file, parsed.identity)) return { kind: 'skip', reason: 'identity-mismatch' };
   // Le SCHEMA d'abord, la vivacite ensuite — et jamais l'inverse : juger la vivacite d'une
   // entree avant de savoir de quelle version elle est, c'est lui appliquer une semantique
   // qu'on ne lui connait pas. Une entree morte reste purgeable dans les deux cas, mais par
@@ -247,7 +277,7 @@ function scanRegistry(dir: string, snapshot: ProcessSnapshot): readonly ScannedF
       continue;
     }
 
-    scanned.push({ file, classification: classifyContent(content, snapshot), modifiedAt });
+    scanned.push({ file, classification: classifyContent(file, content, snapshot), modifiedAt });
   }
 
   return scanned;
