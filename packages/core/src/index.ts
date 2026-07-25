@@ -13,6 +13,11 @@ export {
   type ProcessTable,
 } from './identity/processTable.js';
 export {
+  readProcessTable,
+  type CommandRunner,
+  type ReadProcessTableOptions,
+} from './identity/processTable.node.js';
+export {
   requireOwningWindow,
   resolveOwningWindow,
   type WindowLike,
