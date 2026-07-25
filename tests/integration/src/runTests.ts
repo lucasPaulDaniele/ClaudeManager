@@ -12,13 +12,9 @@ import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
-/**
- * VERSION EPINGLEE, jamais `stable` : une preuve doit etre rejouable a l'identique. C'est
- * la version du poste de reference (`docs/compatibilite.md`). La relever est une decision,
- * pas un effet de bord d'une publication amont.
- */
-const VSCODE_VERSION = '1.122.1';
+import { findHarnessLeftovers, removeQuietly, type RemovalOutcome } from './cleanup.js';
+import { VSCODE_VERSION } from './environment.js';
+import { mask } from './redaction.js';
 
 /**
  * Ou atterrit le VSCode telecharge (242 Mo).
@@ -39,7 +35,9 @@ const CACHE_DIRECTORY = ['node_modules', '.cache', 'vscode-test'];
  * sortie standard, ce qui revient au meme sans deroger a la regle.
  */
 function say(line: string): void {
-  process.stdout.write(`${line}\n`);
+  // TOUTE sortie du lanceur passe par le masque, y compris le rapport rendu par la suite —
+  // qui l'applique deja de son cote, la double application etant sans effet (finding S7).
+  process.stdout.write(`${mask(line)}\n`);
 }
 
 /**
@@ -160,7 +158,13 @@ async function main(): Promise<void> {
       vscodeExecutablePath: executable,
       extensionDevelopmentPath,
       extensionTestsPath,
-      extensionTestsEnv: { CMGR_B3_REPORT: reportPath, CMGR_B3_USER_DATA: userDataDir },
+      extensionTestsEnv: {
+        CMGR_B3_REPORT: reportPath,
+        CMGR_B3_USER_DATA: userDataDir,
+        // La suite y lit la fixture 0.1.0 reelle dont elle derive son entree fabriquee :
+        // son `__dirname` est sous `dist/`, la racine ne s'en deduit pas sans convention.
+        CMGR_B3_REPO_ROOT: repoRoot,
+      },
       launchArgs: [
         workspace,
         '--disable-workspace-trust',
@@ -197,9 +201,34 @@ async function main(): Promise<void> {
     );
   }
 
-  fs.rmSync(workspace, { recursive: true, force: true });
-  fs.rmSync(userDataDir, { recursive: true, force: true });
-  say('[runTests] dossiers temporaires supprimes.');
+  // ---- Hygiene : rapportee, jamais bloquante, jamais silencieuse ------------------------
+  // Le code de sortie ci-dessous ne depend QUE des assertions. Une poignee que VSCode n'a
+  // pas encore relachee sur son `--user-data-dir` est un fait du systeme, pas un verdict de
+  // test : elle se temporise, se dit, et ne fait pas echouer un critere de merge (B1).
+  //
+  // Sont balayes en meme temps les residus des executions PRECEDENTES : rapports et fichier
+  // de position n'etaient effaces par personne et s'accumulaient dans le repertoire
+  // temporaire, tout comme le `user-data-dir` d'un run interrompu par cet EPERM meme.
+  //
+  // Balayer le temporaire d'AUTRUI n'est pas un risque ici : deux executions simultanees
+  // sont deja impossibles par construction, `cmgr-b3-current.json` etant ecrit a un chemin
+  // fixe que la seconde ecraserait.
+  const leftovers = findHarnessLeftovers(os.tmpdir()).filter(
+    (item) => item !== workspace && item !== userDataDir
+  );
+  const outcomes: RemovalOutcome[] = [];
+  for (const target of [workspace, userDataDir, ...leftovers]) {
+    outcomes.push(await removeQuietly(target));
+  }
+  const failed = outcomes.filter((outcome) => !outcome.removed);
+  say(
+    failed.length === 0
+      ? `[runTests] hygiene : ${outcomes.length} elements temporaires supprimes.`
+      : `[runTests] hygiene : ${outcomes.length - failed.length}/${outcomes.length} supprimes, ` +
+          `${failed.length} RESISTANT(S) — ${failed
+            .map((outcome) => `${path.basename(outcome.target)} (${outcome.code}, ${outcome.attempts} tentatives)`)
+            .join(', ')}. Sans effet sur le verdict : ces elements sont a supprimer a la main.`
+  );
 
   if (failure !== undefined) {
     say(`[runTests] ECHEC : ${failure instanceof Error ? failure.message : String(failure)}`);
