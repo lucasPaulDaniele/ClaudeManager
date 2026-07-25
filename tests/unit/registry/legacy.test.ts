@@ -1,4 +1,5 @@
-import { readdirSync, rmSync } from 'node:fs';
+import { readdirSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   purgeStaleEntries,
@@ -122,5 +123,59 @@ describe('purgeStaleEntries face aux entrees heritees — purge conservatrice', 
 
     expect(purgeStaleEntries({ snapshot: snapshotOf(table), dir }).removed).toEqual([`${HOST}.json`]);
     expect(readdirSync(dir)).toEqual([`${SIBLING}.json`]);
+  });
+});
+
+/**
+ * Rattrapage de l'AVENIR — le pendant du precedent, et le seul jamais eprouve jusqu'ici.
+ *
+ * Les entrees 0.1.0 n'ont pas de `mainPid` : elles sont structurellement exemptes de la
+ * garde anti-reemploi, donc elles ne prouvaient rien de la compatibilite ascendante. Une
+ * version 2 qui GARDE le nom `mainPid` en changeant ce qu'il designe est le cas qui compte.
+ */
+describe('purgeStaleEntries face a une version ULTERIEURE', () => {
+  /** Entree de schema 2 : pid bien vivant, `mainPid` porteur d'un autre sens que le notre. */
+  function writeSchema2Entry(extHostPid: number): void {
+    const entry = {
+      ...currentSchemaEntry(extHostPid),
+      schemaVersion: 2,
+      // Une v2 pourrait y mettre un identifiant de fenetre, un parent releve a distance,
+      // ou le parent releve a un autre instant. La version 1 n'en sait rien — c'est le
+      // sujet. Ici : un pid reel de la capture, qui n'est pas le parent de `extHostPid`.
+      mainPid: WINDOWS_ROLES.callerClaudePid,
+    };
+    writeFileSync(path.join(dir, `${extHostPid}.json`), JSON.stringify(entry, null, 2), 'utf8');
+  }
+
+  it('ne detruit JAMAIS son entree vivante, meme si `mainPid` a change de sens', () => {
+    writeSchema2Entry(HOST);
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir });
+
+    expect(REAL_TABLE.has(HOST)).toBe(true);
+    expect(result.removed).toEqual([]);
+    expect(readdirSync(dir).sort()).toEqual([...LEGACY_FILES].sort());
+    expect(result.kept).toContainEqual({ file: `${HOST}.json`, reason: 'foreign-schema' });
+  });
+
+  it('ne la pilote pas davantage : un schema inconnu ne se pilote pas', () => {
+    writeSchema2Entry(HOST);
+
+    const result = readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir });
+
+    expect(result.windows).toEqual([]);
+    expect(result.skipped).toContainEqual({ file: `${HOST}.json`, reason: 'foreign-schema' });
+  });
+
+  it('la supprime en revanche des que son pid a disparu, quelle que soit sa version', () => {
+    // Contre-epreuve : le conservatisme n'est pas de l'immobilisme. La seule question que
+    // la version 1 s autorise sur un schema etranger — ce pid existe-t-il ? — reste posee.
+    writeSchema2Entry(HOST);
+    const table = new Map(REAL_TABLE);
+    table.delete(HOST);
+
+    expect(purgeStaleEntries({ snapshot: snapshotOf(table), dir }).removed).toEqual([
+      `${HOST}.json`,
+    ]);
   });
 });

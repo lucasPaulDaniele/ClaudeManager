@@ -138,7 +138,7 @@ function listFiles(dir: string): readonly string[] {
 type Liveness = 'alive' | 'dead' | 'pid-reused' | 'unknown';
 
 /**
- * Juge si la fenetre decrite par une entree existe encore.
+ * Juge si la fenetre decrite par une entree DU SCHEMA COURANT existe encore.
  *
  * GARDE ANTI-REEMPLOI DE PID : un pid vivant ne prouve pas que la fenetre l'est. Un pid
  * libere puis reattribue par le systeme designerait un processus quelconque — et le
@@ -146,20 +146,42 @@ type Liveness = 'alive' | 'dead' | 'pid-reused' | 'unknown';
  * l'invariant d'isolation. Le `ppid` releve a l'enregistrement le detecte : un processus
  * reattribue n'a quasiment jamais le meme parent que l'extension host qu'il remplace.
  *
- * Sans `extHostPid` lisible, on ne CONCLUT pas : on ne sait pas si l'entree est morte, et
- * la purge devra s'en abstenir.
+ * `mainPid` n'a ce sens QUE dans le schema courant, d'ou cette fonction distincte : voir
+ * `judgeForeignLiveness` pour ce qu'on s'autorise face a une entree qu'on ne comprend pas.
  */
-function judgeLiveness(identity: EntryIdentity, snapshot: ProcessSnapshot): Liveness {
-  const { extHostPid, mainPid } = identity;
-  if (extHostPid === undefined) return 'unknown';
-
-  const parentPid = snapshot.table.get(extHostPid);
+function judgeCurrentSchemaLiveness(entry: WindowEntry, snapshot: ProcessSnapshot): Liveness {
+  const parentPid = snapshot.table.get(entry.extHostPid);
   if (parentPid === undefined) return 'dead';
-  // `mainPid` manque aux entrees anterieures au schema 1 : leur vivacite se juge alors sur
-  // la seule presence du pid, faute de mieux. Elles ne sont de toute facon jamais pilotees.
-  if (mainPid !== undefined && parentPid !== mainPid) return 'pid-reused';
+  if (parentPid !== entry.mainPid) return 'pid-reused';
 
   return 'alive';
+}
+
+/**
+ * CONTRAT INTER-VERSIONS — ce que la version 1 a le droit de supposer d'une entree qu'elle
+ * n'a pas ecrite, et rien de plus :
+ *
+ *   - `schemaVersion` designe la version du schema de l'entree ;
+ *   - `extHostPid` designe le pid de l'extension host de la fenetre.
+ *
+ * Ces DEUX champs seulement, une version ulterieure s'engage a ne pas les deplacer. Tous
+ * les autres — `mainPid` au premier chef — peuvent changer de sens sans preavis : une
+ * version 2 pourrait y mettre un identifiant de fenetre, un `ppid` releve a distance, ou
+ * le parent releve a un autre instant.
+ *
+ * La consequence est stricte : la seule question qu'on s'autorise ici est « ce pid
+ * existe-t-il encore ? ». Un pid absent ⇒ `dead`, et un processus mort ne revient pas,
+ * quelle que soit la version qui l'a inscrit. Tout le reste ⇒ INTOUCHABLE. Appliquer la
+ * semantique v1 de `mainPid` a un schema qu'on ne possede pas reviendrait a supprimer
+ * l'entree VIVANTE d'une version ulterieure — exactement ce que `schemaVersion` existe
+ * pour empecher.
+ *
+ * Sans `extHostPid` lisible, on ne CONCLUT pas : on ignore si l'entree est morte, et la
+ * purge devra s'en abstenir.
+ */
+function judgeForeignLiveness(identity: EntryIdentity, snapshot: ProcessSnapshot): Liveness {
+  if (identity.extHostPid === undefined) return 'unknown';
+  return snapshot.table.has(identity.extHostPid) ? 'unknown' : 'dead';
 }
 
 type Classification =
@@ -188,9 +210,13 @@ function classifyContent(content: string, snapshot: ProcessSnapshot): Classifica
   }
 
   const parsed = parseWindowEntry(value);
-  // La vivacite se juge AVANT le schema : la version d'une fenetre morte n'a plus d'objet,
-  // et c'est ce qui rend une entree etrangere perimee purgeable un jour.
-  const liveness = judgeLiveness(parsed.identity, snapshot);
+  // Le SCHEMA d'abord, la vivacite ensuite — et jamais l'inverse : juger la vivacite d'une
+  // entree avant de savoir de quelle version elle est, c'est lui appliquer une semantique
+  // qu'on ne lui connait pas. Une entree morte reste purgeable dans les deux cas, mais par
+  // la seule question qui vaut pour toutes les versions : son pid existe-t-il encore ?
+  const liveness = parsed.ok
+    ? judgeCurrentSchemaLiveness(parsed.entry, snapshot)
+    : judgeForeignLiveness(parsed.identity, snapshot);
   if (liveness === 'dead' || liveness === 'pid-reused') return { kind: 'skip', reason: liveness };
 
   if (!parsed.ok) return { kind: 'skip', reason: parsed.reason };
@@ -260,7 +286,9 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
  * supprimees que les entrees jugees `dead` ou `pid-reused`, quel que soit leur schema : un
  * processus mort ne revient pas, sa version importe peu. Une entree etrangere dont le pid
  * est VIVANT n'est jamais touchee : elle appartient probablement a une version ulterieure
- * de ClaudeManager, et il est hors de question que la version 1 detruise ses entrees.
+ * de ClaudeManager, et il est hors de question que la version 1 detruise ses entrees. Ce
+ * que « vivant » veut dire pour une entree qu'on ne comprend pas est fixe par le contrat
+ * inter-versions — voir `judgeForeignLiveness`.
  *
  * Contre-intuitif mais volontaire : une entree illisible ou corrompue dont on n'a pas pu
  * lire le pid n'est PAS supprimable non plus — on ignore si sa fenetre est morte, et
