@@ -20,6 +20,7 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 ## Principes fondateurs
 
 1. **Jamais de dépendance au focus — ESSENTIEL.** Toute opération doit fonctionner sur une fenêtre **minimisée, masquée, sur un autre bureau virtuel ou derrière d'autres applications**. Sont **interdits** : l'automatisation clavier/souris (`robotjs`, `nut.js`, `SendKeys`, AutoHotkey), l'activation ou la mise au premier plan d'une fenêtre, et toute API exigeant qu'un élément ait le focus. Motif : l'outil s'exécute pendant que l'humain travaille ailleurs ; voler le focus rendrait le poste inutilisable et rendrait le pilotage non déterministe. `vscode.commands.executeCommand` satisfait cette contrainte, aucune automatisation d'UI ne la satisfait.
+   Ce principe n'est pas qu'une intention : il a été **éprouvé**. La voie d'ouverture retenue a été mesurée fenêtre **minimisée**, handle de premier plan **identique avant, pendant et après** (`docs/adr/002-ouverture-interactive.md`). Un assouplissement temporaire — autoriser l'emprunt de focus sous conditions — avait été accordé le 2026-07-25 pour juger une voie sur pièce plutôt que sur principe ; il a été **retiré le jour même, sur preuve**, la voie retenue n'empruntant aucun focus. Le principe est donc strict, **sans exception**.
 
 2. **L'isolation de fenêtre est l'invariant du produit.** C'est à ClaudeManager ce que le RLS est à une base multi-tenant. Toute opération est précédée d'une **vérification d'appartenance** : le processus appelant est-il un descendant de cette fenêtre ? Une commande émise depuis la fenêtre A ne doit **jamais** affecter la fenêtre B — **y compris quand A et B ouvrent le même dossier**. `VSCODE_PID` ne discrimine pas les fenêtres (un processus principal en héberge plusieurs) : ne jamais l'utiliser comme clé d'identité.
 
@@ -73,33 +74,42 @@ Le chantier est découpé pour la skill `/orchestrer` : **1 incrément = 1 PR**,
 
 | Lot | Contenu |
 |---|---|
-| **0** | Spike de faisabilité (jetable) + squelette, conventions, CI |
-| **A** | Noyau observable : identité, sessions, transcripts, CLI de lecture |
-| **B** | Pilotage : extension compagnon, ouverture avec prompt, fermeture |
-| **C** | Diffusion : hook `Stop`, serveur MCP, README OSS, packaging, release |
+| **0** | Socle : spike de faisabilité (jetable), squelette, conventions, CI |
+| **A** | Trancher le mécanisme d'ouverture interactive : spike comparatif des voies, ADR-002, réalignement du socle documentaire |
+| **B** | Noyau : identité, registre, extension compagnon, CLI de lecture, tests d'intégration |
+| **C** | Ouverture et fermeture : mécanisme V1 implémenté, `cmgr open`, `cmgr close`, E2E multi-fenêtres |
+| **D** | Observabilité : transcript, hook `Stop`, `cmgr read` / `cmgr wait` / `cmgr doctor` |
+| **E** | Diffusion : serveur MCP, packaging, README de diffusion, recette bout-en-bout |
 
 ## Mécanisme retenu
 
-Établi et mesuré par le spike I0.1 — voir `docs/adr/001-pilotage-des-conversations.md`.
+Arbitré le 2026-07-25 au vu de mesures sur pièce — voir `docs/adr/002-ouverture-interactive.md` (voie V1). Il **remplace** celui de `docs/adr/001-pilotage-des-conversations.md`, rejeté en recette : le tour 1 y était joué en headless, donc **non interactif**.
 
-**Ouvrir une conversation = amorcer en headless, puis attacher l'UI.**
+**Ouvrir une conversation = jouer le tour 1 dans un terminal masqué, puis attacher le panneau à cette session.**
+
+Dans la fenêtre cible, et dans cet ordre :
 
 1. Générer un `uuid`.
-2. Jouer le premier tour hors UI, dans le workspace de la fenêtre cible :
-   `claude -p --session-id <uuid> --output-format json`, **prompt fourni par stdin**.
-3. Faire exécuter `claude-vscode.editor.open(<uuid>)` par l'extension compagnon : le panneau s'attache à la session déjà amorcée.
+2. Créer un terminal **masqué** — `hideFromUser: true`, `show()` **jamais** appelé — dans le workspace de la fenêtre, en **neutralisant les variables d'environnement héritées** de la session Claude appelante (`env: { CLAUDECODE: null, CLAUDE_CODE_CHILD_SESSION: null, … }` — les huit variables recensées dans `docs/compatibilite.md`). **Cette neutralisation fait partie du mécanisme, pas de son implémentation** : sans elle, le `claude` lancé se déclare agent enfant non interactif et cesse d'écrire son transcript, silencieusement.
+3. Y jouer le tour 1 dans un vrai pty : `claude --session-id <uuid> "<prompt>"`. Le prompt positionnel est **soumis automatiquement** au démarrage de la session interactive.
+4. Attacher le panneau : `claude-vscode.editor.open(<uuid>)`. Le `cwd` de la session doit correspondre au workspace de la fenêtre, faute de quoi la commande **réussit en ouvrant un panneau vide** — l'absence d'erreur ne prouve jamais l'attachement.
+5. Faire disparaître le terminal : `terminal.dispose()`. Le `claude` du panneau survit, l'onglet reste intact.
+
+Durée de visibilité du terminal pour l'humain : **nulle**. Mesuré fenêtre minimisée, sans aucun emprunt de focus.
 
 **Fermer** = `vscode.window.tabGroups.close(tab)` sur l'onglet dont le `viewType` contient `claudeVSCodePanel`.
 
-Le paramètre `initialPrompt` de `editor.open` **n'est jamais utilisé** : il se contente de pré-remplir le champ de saisie sans le soumettre, ce qui imposerait une frappe clavier et donc le focus. Ne pas y revenir sans ADR.
+**Repli officiel — la voie V5.** Si `claude-vscode.editor.open` perd son paramètre de session, si `--session-id` cesse d'être accepté en mode interactif, ou si toute autre évolution de l'extension Claude rend V1 inopérant, l'outil **bascule sur `claude-vscode.editor.open(null, <prompt>)`** plutôt que d'échouer sans recours : la conversation est ouverte, le prompt pré-rempli, l'humain n'a plus qu'à valider. Perte d'autonomie assumée — mieux vaut un geste humain qu'une conversation non ouverte. C'est une **exigence de conception des lots B et C**, pas un simple classement au tableau.
 
-Corollaire heureux : la réponse du tour d'amorçage est retournée par le JSON du headless — pas besoin du transcript ni du hook pour ce premier tour.
+Le paramètre `initialPrompt` de `editor.open` **n'est jamais utilisé pour soumettre** : il se contente de pré-remplir le champ de saisie. C'est prouvé **deux fois** — au source (il appelle `setInputText`, rien d'autre) et par mesure. Et la frappe qui manque n'est pas rattrapable : mesuré aussi, les frappes synthétiques n'atteignent pas le champ du webview, avec ou sans focus. **Ne pas y revenir sans ADR.** Le repli V5 s'appuie sur ce même paramètre, mais en assumant la validation humaine.
+
+**Contrainte induite — la réponse du tour 1 n'est plus rendue à l'appelant.** Le tour 1 étant joué dans un terminal dont la sortie n'est pas capturée, sa réponse ne s'obtient que par le **transcript** (`~/.claude/projects/<slug>/<sessionId>.jsonl`) ou par le **hook `Stop`**, c'est-à-dire par le **lot D**. `cmgr open --wait` n'est donc pas une commodité d'affichage : c'est le **seul** moyen d'obtenir la réponse du premier tour, et il dépend du lot D.
 
 ## Périmètre — ce que l'outil ne fait pas
 
 Ces exclusions sont des **décisions**, pas des manques. Ne pas les réintroduire sans ADR.
 
-- **Écrire dans une conversation déjà attachée.** Aucun canal ne le permet sans frappe clavier.
+- **Écrire dans une conversation déjà attachée.** Aucun canal ne le permet — et ce n'est plus une supposition : **mesuré**, même avec le focus et la frappe, la soumission n'a pas lieu. Les frappes synthétiques n'atteignent pas le champ de saisie du webview, ni par injection sans focus (Chromium n'expose aucune fenêtre enfant adressable), ni fenêtre au premier plan. Voir `docs/adr/002-ouverture-interactive.md`, voie V3.
 - **Arrêter un prompt en cours.** Aucune primitive propre n'existe. Livrer un `stop` bancal serait pire que ne rien livrer.
 - **Piloter une autre fenêtre que la sienne.** Volontaire : l'enjeu est l'isolation stricte, pas le pilotage croisé.
 
@@ -148,7 +158,8 @@ Ces exclusions sont des **décisions**, pas des manques. Ne pas les réintroduir
 
 - **Unitaires** (`tests/unit/`) : tout `core`, contre des fixtures capturées. Couverture exigée **100 %**.
 - **Intégration** (`tests/integration/`) : une **vraie fenêtre VSCode** via `@vscode/test-electron`, avec l'extension compagnon chargée. Valide le serveur local, le registre, `tabGroups`.
-- **E2E** (`tests/e2e/`) : scénarios multi-fenêtres réels, avec l'extension Claude authentifiée. **Scénario de référence, non négociable** : deux fenêtres dont une **minimisée** et deux ouvrant **le même dossier** → une commande émise depuis A n'affecte jamais B, et A ne prend jamais le focus.
+- **E2E** (`tests/e2e/`) : scénarios multi-fenêtres réels, avec l'extension Claude authentifiée. **Scénario de référence, non négociable** : deux fenêtres dont une **minimisée**, ouvrant **le même répertoire physique** → une commande émise depuis A n'affecte jamais B, et **A ne prend jamais le focus**.
+  **Construction imposée : par jonction de répertoire.** VSCode 1.122.1 **refuse** d'ouvrir un même dossier dans deux fenêtres — trois mécanismes essayés, tous refusés (`docs/adr/002-ouverture-interactive.md`, « Écueils » n°3). Le second workspace doit donc être une **jonction** pointant sur le premier. Le cas ainsi obtenu est **plus exigeant** que « le même dossier » : les deux fenêtres partagent alors le **même processus `Code.exe` principal**, ce qui prouve directement qu'un PID ne discrimine pas une fenêtre — seul l'`extHostPid` le fait.
 - **Fixtures** : capturées depuis une machine réelle et versionnées dans `tests/fixtures/`, **anonymisées** (chemins et tokens neutralisés). Ne jamais fabriquer une fixture à la main pour faire passer un test.
 
 ### Garde-fou de non-régression (règle impérative)
