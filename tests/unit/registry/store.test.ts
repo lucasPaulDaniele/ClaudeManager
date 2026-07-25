@@ -467,9 +467,14 @@ describe('registre sur disque — droits', () => {
 });
 
 describe('purgeStaleEntries — temporaires orphelins', () => {
-  /** Temporaire tel que l ecriture atomique le nomme : `<pid>.<uuid>.tmp`. */
+  /**
+   * Temporaire tel que l ecriture atomique le nomme : `<pid>.<uuid>.tmp`.
+   *
+   * L uuid est integralement nul — jamais un prefixe reconnaissable : neutraliser une
+   * valeur signifie la remplacer entierement, c est la lecon du gate du lot B.
+   */
   function writeOrphanTemporary(extHostPid: number): string {
-    const file = `${extHostPid}.3f2b1c8a-0000-4000-8000-000000000000.tmp`;
+    const file = `${extHostPid}.00000000-0000-0000-0000-000000000000.tmp`;
     writeRaw(dir, file, JSON.stringify(currentSchemaEntry(HOST)));
     return file;
   }
