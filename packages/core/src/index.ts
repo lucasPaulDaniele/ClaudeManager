@@ -12,3 +12,8 @@ export {
   parseWindowsProcessTable,
   type ProcessTable,
 } from './identity/processTable.js';
+export {
+  requireOwningWindow,
+  resolveOwningWindow,
+  type WindowLike,
+} from './identity/owningWindow.js';
