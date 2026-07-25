@@ -8,12 +8,31 @@ export interface WindowLike {
 }
 
 /**
+ * Un pid REEL : entier strictement positif.
+ *
+ * La defense est LOCALE, et sa redondance avec la validation du registre est assumee.
+ * `Map#get` emploie SameValueZero : `NaN` correspond a `NaN`, `0` a `0`. Un pid absurde
+ * face a une fenetre au pid tout aussi absurde produisait donc une correspondance — c'est
+ * a dire le pilotage d'une fenetre qui n'est pas la sienne, la violation meme de
+ * l'invariant du produit. Le registre en etait le seul garant, par un commentaire situe
+ * dans un AUTRE module : ce module est exporte publiquement sur un `WindowLike` qui
+ * n'exige qu'un `extHostPid: number`, et rien ne dit d'ou il vient. Deux lignes ici
+ * valent mieux qu'une precondition que personne ne lit.
+ */
+function isRealPid(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
+}
+
+/**
  * Chaine de rattachement d'un processus, du plus proche au plus lointain.
  *
  * Le processus appelant **en fait partie** : l'extension compagnon *est* l'extension host
  * de sa fenetre, elle doit donc se resoudre elle-meme.
  */
 function ownershipChain(callerPid: number, table: ProcessTable): readonly number[] {
+  // `ancestorsOf` valide bien son argument, mais son resultat etait concatene APRES un
+  // `callerPid` brut : la garde doit donc etre posee ici, en amont de la concatenation.
+  if (!isRealPid(callerPid)) return [];
   // `ancestorsOf` garantit des pid uniques et distincts de `callerPid` : la chaine ne
   // porte aucun doublon, l'indexation par profondeur ci-dessous est donc sans ambiguite.
   return [callerPid, ...ancestorsOf(callerPid, table)];
@@ -45,6 +64,11 @@ export function resolveOwningWindow<T extends WindowLike>(
   let owner: T | undefined;
   let ownerDepth = Number.POSITIVE_INFINITY;
   for (const window of windows) {
+    // Une table corrompue peut porter un ppid non entier — le filtre des analyseurs
+    // n'ecarte que le non-positif —, et il se retrouverait alors dans la chaine. Une
+    // fenetre au pid absurde y correspondrait. Elle n'en est pas une : on l'ignore.
+    if (!isRealPid(window.extHostPid)) continue;
+
     const depth = depthByPid.get(window.extHostPid);
     if (depth === undefined) continue;
 

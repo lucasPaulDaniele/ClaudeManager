@@ -142,6 +142,41 @@ describe('resolveOwningWindow — regles de resolution', () => {
   });
 });
 
+describe('resolveOwningWindow — pid absurde des DEUX cotes', () => {
+  const table: ProcessTable = new Map([[100, { ppid: 50, createdAt: undefined }]]);
+
+  it('ne fait jamais correspondre un pid absurde a un pid absurde', () => {
+    // La moitie dangereuse, et la seule qui ne soit pas acquise d avance : `Map#get`
+    // emploie SameValueZero, donc `NaN` correspond a `NaN` et `0` a `0`. Un `--pid` mal
+    // analyse face a une entree elle-meme corrompue produisait une correspondance — donc
+    // le pilotage d une fenetre qui n est pas la sienne.
+    for (const absurd of [Number.NaN, 0, -1, 1.5]) {
+      expect(
+        resolveOwningWindow(absurd, table, [{ extHostPid: absurd }]),
+        `callerPid=${absurd}`
+      ).toBeUndefined();
+    }
+  });
+
+  it('ignore une fenetre au pid absurde meme quand l appelant, lui, est reel', () => {
+    // Une table corrompue peut porter un ppid non entier : le filtre des analyseurs
+    // n ecarte que le non-positif, et `1.5` se retrouverait alors dans la chaine.
+    const corrupted: ProcessTable = new Map([[100, { ppid: 1.5, createdAt: undefined }]]);
+
+    expect(resolveOwningWindow(100, corrupted, [{ extHostPid: 1.5 }])).toBeUndefined();
+    // Et la fenetre reelle de la meme chaine, elle, reste resolue.
+    expect(resolveOwningWindow(100, corrupted, [{ extHostPid: 100 }])?.extHostPid).toBe(100);
+  });
+
+  it('ne revendique rien non plus en operation, et le dit', () => {
+    const failure = catchFailure(() => requireOwningWindow(Number.NaN, table, [{ extHostPid: Number.NaN }]));
+
+    expect(failure.code).toBe(ERROR_CODES.OWNING_WINDOW_NOT_FOUND);
+    // La chaine est VIDE : un pid absurde n en ouvre aucune, il ne se met pas lui-meme en tete.
+    expect(failure.details?.['chainLength']).toBe(0);
+  });
+});
+
 describe('requireOwningWindow', () => {
   it('rend la fenetre hote quand elle existe', () => {
     const host: WindowLike = { extHostPid: WINDOWS_ROLES.owningExtHostPid };
