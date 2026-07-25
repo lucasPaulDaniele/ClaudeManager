@@ -2,6 +2,7 @@ export {
   ClaudeManagerError,
   ERROR_CODES,
   isClaudeManagerError,
+  systemErrorCode,
   type ErrorCode,
   type SerializedError,
 } from './errors.js';
