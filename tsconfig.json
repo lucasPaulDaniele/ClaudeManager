@@ -4,7 +4,7 @@
     "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"],
+    "types": ["node", "vscode"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,

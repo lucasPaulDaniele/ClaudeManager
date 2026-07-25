@@ -1,0 +1,6 @@
+{
+  "//": "MARQUEUR DE FORMAT, ce n'est pas un paquet npm. Il ne porte volontairement ni nom ni version.",
+  "//2": "Il ne s'applique qu'aux SOURCES : `npm run typecheck` (racine) les lit en NodeNext + verbatimModuleSyntax, qui exige la syntaxe ESM et interdit qu'un fichier CommonJS importe @claudemanager/core (ESM). Sans ce marqueur, la verification echoue en TS1295/TS1287.",
+  "//3": "Il ne s'applique PAS a dist/ : le package.json le plus proche des fichiers emis reste le manifeste de l'extension, sans champ `type`, donc CommonJS — la forme que le chargeur d'extensions de VSCode exige.",
+  "type": "module"
+}
