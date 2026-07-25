@@ -51,7 +51,7 @@ describe('entrees heritees 0.1.0 — pourquoi elles sont dangereuses', () => {
       expect(legacy.token.length).toBeGreaterThan(0);
       expect(legacy.workspaceFolders.length).toBeGreaterThan(0);
       expect(legacy.extensionVersion).toBe('0.1.0');
-      expect(REAL_TABLE.get(extHostPid)).toBe(WINDOWS_ROLES.mainCodePid);
+      expect(REAL_TABLE.get(extHostPid)?.ppid).toBe(WINDOWS_ROLES.mainCodePid);
     }
   });
 

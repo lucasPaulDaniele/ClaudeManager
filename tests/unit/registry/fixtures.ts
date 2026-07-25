@@ -105,13 +105,13 @@ export function readLegacyEntry(extHostPid: number): LegacyEntry {
  */
 export function currentSchemaEntry(extHostPid: number): WindowEntry {
   const legacy = readLegacyEntry(extHostPid);
-  const mainPid = REAL_TABLE.get(extHostPid);
-  if (mainPid === undefined) throw new Error(`${extHostPid} absent de la table capturee`);
+  const host = REAL_TABLE.get(extHostPid);
+  if (host === undefined) throw new Error(`${extHostPid} absent de la table capturee`);
 
   return {
     schemaVersion: WINDOW_ENTRY_SCHEMA_VERSION,
     extHostPid: legacy.extHostPid,
-    mainPid,
+    mainPid: host.ppid,
     port: legacy.port,
     token: legacy.token,
     workspaceFolders: legacy.workspaceFolders,

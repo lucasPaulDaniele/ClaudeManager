@@ -114,9 +114,9 @@ describe("resolveOwningWindow — l'identite ne tient qu'a l'extHostPid", () => 
 
 describe('resolveOwningWindow — regles de resolution', () => {
   const table: ProcessTable = new Map([
-    [100, 50],
-    [50, 40],
-    [40, 30],
+    [100, { ppid: 50, createdAt: undefined }],
+    [50, { ppid: 40, createdAt: undefined }],
+    [40, { ppid: 30, createdAt: undefined }],
   ]);
 
   it('resout le processus appelant lui-meme — le cas de l extension compagnon', () => {

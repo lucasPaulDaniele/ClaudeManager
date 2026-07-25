@@ -155,6 +155,42 @@ describe('readRegistry — classement des entrees', () => {
     expect(reasonFor(dir, REAL_TABLE, `${HOST}.json`)).toBe('pid-reused');
   });
 
+  it('rapporte un pid reattribue SOUS LE MEME PARENT — la garde que le ppid ne voit pas', () => {
+    // Le trou exact de la garde par le seul `ppid` : sous Windows le parent enregistre est
+    // le `Code.exe` principal, qui engendre des enfants en permanence. `16872` est l un
+    // d eux, releve dans la capture reelle — meme parent que l extension host, et pourtant
+    // il n a jamais ete cette fenetre : il est ne bien apres l ecriture de l entree.
+    const recycled = WINDOWS_ROLES.pidRecycledUnderTheSameParent;
+    const entry: WindowEntry = {
+      ...currentSchemaEntry(HOST),
+      extHostPid: recycled.pid,
+      mainPid: recycled.ppid,
+    };
+    writeWindowEntry(entry, { dir });
+
+    // La premiere garde est bel et bien satisfaite : c est ce qui rend le cas dangereux.
+    expect(REAL_TABLE.get(recycled.pid)?.ppid).toBe(entry.mainPid);
+    // Et la seconde ne l est pas : le processus est ne apres l entree qui le revendique.
+    expect(recycled.createdAt).toBeGreaterThan(Date.parse(entry.startedAt));
+
+    expect(reasonFor(dir, REAL_TABLE, `${recycled.pid}.json`)).toBe('pid-reused');
+    expect(purgeStaleEntries({ snapshot: snapshotOf(REAL_TABLE), dir }).removed).toEqual([
+      `${recycled.pid}.json`,
+    ]);
+  });
+
+  it('retient l extension host dont la creation PRECEDE son entree', () => {
+    // Contre-epreuve, sur les memes donnees mesurees : c est bien la date qui departage,
+    // pas un effet de bord du pid choisi.
+    const host = currentSchemaEntry(HOST);
+
+    expect(REAL_TABLE.get(HOST)?.createdAt).toBeLessThan(Date.parse(host.startedAt));
+
+    writeWindowEntry(host, { dir });
+
+    expect(readRegistry({ snapshot: snapshotOf(REAL_TABLE), dir }).windows).toEqual([host]);
+  });
+
   it('classe chaque fichier une fois et une seule', () => {
     writeWindowEntry(currentSchemaEntry(HOST), { dir });
     writeRaw(dir, 'tronque.json', 'pas du json');

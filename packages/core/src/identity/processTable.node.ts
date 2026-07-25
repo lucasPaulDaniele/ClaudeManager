@@ -36,7 +36,11 @@ const WINDOWS_ARGS: readonly string[] = [
   '-NoProfile',
   '-NonInteractive',
   '-Command',
-  'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId)" }',
+  // La date de creation est projetee en millisecondes depuis l'epoque : un nombre, donc
+  // ni fuseau, ni format local, ni culture — et une fixture qui reste purement numerique.
+  // Le `if` rend la commande TOTALE : sans lui, un `CreationDate` absent produirait une
+  // erreur sur le flux d'erreur plutot qu'une colonne vide.
+  'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId),$(if ($_.CreationDate) { [long]([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() })" }',
 ];
 
 const POSIX_COMMAND = 'ps';

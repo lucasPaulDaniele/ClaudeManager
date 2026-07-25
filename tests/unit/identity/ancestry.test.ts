@@ -30,7 +30,7 @@ describe('ancestorsOf — topologie reelle', () => {
     // c'est precisement pourquoi un PID de processus principal ne discrimine rien.
     for (const other of WINDOWS_ROLES.otherExtHostPids) {
       expect(chain).not.toContain(other);
-      expect(table.get(other)).toBe(WINDOWS_ROLES.mainCodePid);
+      expect(table.get(other)?.ppid).toBe(WINDOWS_ROLES.mainCodePid);
     }
   });
 
@@ -60,7 +60,8 @@ describe('ancestorsOf — topologie reelle POSIX', () => {
 describe('ancestorsOf — cas limites', () => {
   // Ces tables sont construites en memoire : ce ne sont pas des captures mais des
   // structures de donnees exercant explicitement un cas de corruption ou de bord.
-  const build = (entries: readonly (readonly [number, number])[]): ProcessTable => new Map(entries);
+  const build = (entries: readonly (readonly [number, number])[]): ProcessTable =>
+    new Map(entries.map(([pid, ppid]) => [pid, { ppid, createdAt: undefined }]));
 
   it('rend une chaine vide quand le pid est absent de la table', () => {
     expect(ancestorsOf(999, build([[100, 10]]))).toEqual([]);

@@ -180,13 +180,30 @@ type Liveness = 'alive' | 'dead' | 'pid-reused' | 'unknown';
  * l'invariant d'isolation. Le `ppid` releve a l'enregistrement le detecte : un processus
  * reattribue n'a quasiment jamais le meme parent que l'extension host qu'il remplace.
  *
+ * SECONDE GARDE, PAR LA DATE DE CREATION : la premiere se franchit. Sous Windows le
+ * parent enregistre est le `Code.exe` principal, qui engendre des enfants en permanence —
+ * ptyHost, shared process, file watchers, installateurs, autres extension hosts. Un pid
+ * recycle par n'importe lequel d'entre eux a EXACTEMENT le meme parent, et passe. Un
+ * processus ne APRES l'ecriture de l'entree, en revanche, n'a jamais pu etre la fenetre
+ * qui l'a ecrite : la comparaison est sans appel.
+ *
+ * Elle est stricte, sans marge, et c'est deliberе : la marge est structurelle. Un
+ * extension host est cree bien avant que l'extension qui publie son entree ne s'active —
+ * l'activation se compte en centaines de millisecondes, la ou les deux horloges du systeme
+ * ne divergent que de quelques unites. Y ajouter une tolerance serait une intuition non
+ * mesuree, ce que ce projet s'interdit.
+ *
  * `mainPid` n'a ce sens QUE dans le schema courant, d'ou cette fonction distincte : voir
  * `judgeForeignLiveness` pour ce qu'on s'autorise face a une entree qu'on ne comprend pas.
  */
 function judgeCurrentSchemaLiveness(entry: WindowEntry, snapshot: ProcessSnapshot): Liveness {
-  const parentPid = snapshot.table.get(entry.extHostPid);
-  if (parentPid === undefined) return 'dead';
-  if (parentPid !== entry.mainPid) return 'pid-reused';
+  const host = snapshot.table.get(entry.extHostPid);
+  if (host === undefined) return 'dead';
+  if (host.ppid !== entry.mainPid) return 'pid-reused';
+  // Date inconnue : la garde ne s'applique pas, elle ne se devine pas non plus.
+  if (host.createdAt !== undefined && host.createdAt > Date.parse(entry.startedAt)) {
+    return 'pid-reused';
+  }
 
   return 'alive';
 }

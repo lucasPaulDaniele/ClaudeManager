@@ -65,7 +65,7 @@ describe('readProcessTable — branche win32', () => {
     });
 
     expect(table.size).toBeGreaterThan(0);
-    expect(table.get(WINDOWS_ROLES.owningExtHostPid)).toBe(WINDOWS_ROLES.mainCodePid);
+    expect(table.get(WINDOWS_ROLES.owningExtHostPid)?.ppid).toBe(WINDOWS_ROLES.mainCodePid);
   });
 });
 
@@ -100,7 +100,7 @@ describe('readProcessTable — instantane date', () => {
     const { table } = await readProcessTable({ platform: 'win32', run: deferred });
 
     expect(finished).toBe(true);
-    expect(table.get(WINDOWS_ROLES.owningExtHostPid)).toBe(WINDOWS_ROLES.mainCodePid);
+    expect(table.get(WINDOWS_ROLES.owningExtHostPid)?.ppid).toBe(WINDOWS_ROLES.mainCodePid);
   });
 
   it("date l'instantane AVANT de lancer la commande, jamais apres", async () => {
@@ -213,7 +213,7 @@ describe('readProcessTable — systeme reel, sans aucune injection', () => {
 
     expect(table.size).toBeGreaterThan(1);
     expect(table.has(process.pid)).toBe(true);
-    expect(table.get(process.pid)).toBe(process.ppid);
+    expect(table.get(process.pid)?.ppid).toBe(process.ppid);
     expect(capturedAt).toBeLessThanOrEqual(Date.now());
   }, 30_000);
 });
