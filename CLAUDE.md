@@ -13,9 +13,9 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 - **Extension VSCode** : API `vscode` ^1.90, packagée en VSIX (`@vscode/vsce`)
 - **Tests unitaires/intégration** : Vitest
 - **Tests d'extension** : `@vscode/test-electron` (vraie instance VSCode)
-- **Couverture** : `@vitest/coverage-v8` (**100 % sur `core`, 90 % global**)
+- **Couverture** : `@vitest/coverage-v8`, deux seuils **configurés et vérifiés** dans `vitest.config.ts` — **100 %** sur `packages/core/src/**`, et un seuil global fixé **aux valeurs réellement atteintes** (98 % lignes et instructions, 97 % branches, 96 % fonctions). Jamais un chiffre d'intention : un seuil qu'on n'atteint pas est un seuil qu'on désactivera. Deux **exclusions nommées et datées** y figurent, parce que l'API de l'éditeur en est la substance même et que `npm run test:integration` s'en charge : `packages/vscode/src/extension.ts` (activation, abonnements, canal de journal, observateur) et `packages/vscode/src/core.ts` (réexport pur). Toute nouvelle exclusion se justifie au même endroit, avec sa date.
 - **Lint** : ESLint flat config + `typescript-eslint`
-- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** et le **packaging VSIX** ne sont pas encore outillés : ils relèvent du **lot E**.
+- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** est outillé (`build:vscode`, `build:integration`) ; seul le **packaging VSIX** relève encore du **lot E**.
 
 ## Principes fondateurs
 
@@ -40,6 +40,9 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 
 ## Structure du projet
 
+Ce qui porte `(lot X)` **n'existe pas encore** : c'est annoncé et rattaché à un lot, pas livré.
+Tout le reste est dans le dépôt.
+
 ```
 ClaudeManager/
 ├── packages/
@@ -47,26 +50,28 @@ ClaudeManager/
 │   │   └── src/
 │   │       ├── identity/   # résolution « ma fenêtre » par chaîne d'ancêtres
 │   │       ├── registry/   # registre des fenêtres pilotables, auto-nettoyant
-│   │       ├── sessions/   # inventaire des sessions Claude vivantes
-│   │       ├── transcript/ # lecture JSONL, fin de tour, extraction de réponse
-│   │       └── client/     # client HTTP de l'extension compagnon
+│   │       ├── sessions/   # (lot D) inventaire des sessions Claude vivantes
+│   │       ├── transcript/ # (lot D) lecture JSONL, fin de tour, extraction de réponse
+│   │       └── client/     # (lot C) client HTTP de l'extension compagnon
 │   ├── vscode/             # claudemanager-vscode — extension compagnon
-│   ├── cli/                # @claudemanager/cli — binaire `cmgr`
-│   └── mcp/                # @claudemanager/mcp — serveur MCP stdio
+│   ├── cli/                # (lot B) @claudemanager/cli — binaire `cmgr`
+│   └── mcp/                # (lot E) @claudemanager/mcp — serveur MCP stdio
 ├── docs/
 │   ├── adr/                # décisions structurantes, datées
-│   ├── architecture.md
-│   └── compatibilite.md    # matrice des API internes utilisées
+│   └── compatibilite.md    # matrice des API internes de l'écosystème Claude
 ├── tests/
 │   ├── unit/
 │   ├── integration/        # vraie instance VSCode
-│   ├── e2e/                # scénarios multi-fenêtres
-│   └── fixtures/           # captures réelles (JSONL, locks, sorties CLI)
+│   ├── e2e/                # (lot C) scénarios multi-fenêtres
+│   └── fixtures/           # captures réelles (tables de processus, entrées de registre)
 ├── .github/workflows/ci.yml
 ├── CLAUDE.md
 ├── README.md
 └── package.json
 ```
+
+Il n'y a **pas** de `docs/architecture.md` : l'architecture est décrite ici et dans les ADR, et
+aucun lot ne porte ce fichier. Le retirer de la cible vaut mieux que l'y laisser en dette muette.
 
 ## Lots
 
@@ -77,7 +82,7 @@ Le chantier est découpé pour la skill `/orchestrer` : **1 incrément = 1 PR**,
 | **0** | Socle : spike de faisabilité (jetable), squelette, conventions, CI |
 | **A** | Trancher le mécanisme d'ouverture interactive : spike comparatif des voies, ADR-002, réalignement du socle documentaire |
 | **B** | Noyau : identité, registre, extension compagnon, CLI de lecture, tests d'intégration |
-| **C** | Ouverture et fermeture : mécanisme V1 implémenté, `cmgr open`, `cmgr close`, E2E multi-fenêtres |
+| **C** | Ouverture et fermeture : mécanisme V1 implémenté, client HTTP du cœur (`core/client`), `cmgr open`, `cmgr close`, E2E multi-fenêtres |
 | **D** | Observabilité : transcript, hook `Stop`, `cmgr read` / `cmgr wait` / `cmgr doctor` |
 | **E** | Diffusion : serveur MCP, packaging, README de diffusion, recette bout-en-bout |
 
@@ -161,7 +166,7 @@ Ces exclusions sont des **décisions**, pas des manques. Ne pas les réintroduir
 
 ## Tests
 
-- **Unitaires** (`tests/unit/`) : tout `core`, contre des fixtures capturées. Couverture exigée **100 %**.
+- **Unitaires** (`tests/unit/`) : tout `core`, contre des fixtures capturées — couverture exigée **100 %**. Y figure aussi tout ce que `packages/vscode` peut éprouver **sans éditeur** : serveur local, cycle de publication, plomberie de registre, mise en forme des défaillances. Ce qui exige une vraie fenêtre est exclu **nommément et avec sa date** dans `vitest.config.ts`, jamais laissé hors mesure en silence.
 - **Intégration** (`tests/integration/`) : une **vraie fenêtre VSCode** via `@vscode/test-electron`, avec l'extension compagnon chargée. Valide le serveur local, le registre, `tabGroups`.
 - **E2E** (`tests/e2e/`) : scénarios multi-fenêtres réels, avec l'extension Claude authentifiée. **Scénario de référence, non négociable** : deux fenêtres ouvrant **le même répertoire physique**, **A minimisée** — A étant la fenêtre **cible et agissante**, c'est la condition mesurée à l'ADR-002 → une commande émise depuis A n'affecte jamais B, et **A ne prend jamais le focus**.
   **Construction imposée : par jonction de répertoire.** VSCode 1.122.1 **refuse** d'ouvrir un même dossier dans deux fenêtres — trois mécanismes essayés, tous refusés (`docs/adr/002-ouverture-interactive.md`, « Écueils » n°3). Le second workspace doit donc être une **jonction** pointant sur le premier : c'est le **seul montage possible**, pas un montage choisi.
@@ -179,17 +184,22 @@ Tout incrément de **correction de bug** embarque un test qui **reproduit le bug
 
 ```bash
 npm run ci                 # lint + typecheck + tests unitaires  (exécutable partout)
-npm run test:integration   # vraie instance VSCode               (local + CI sous xvfb)
-npm run test:e2e           # multi-fenêtres, extension Claude     (LOCAL UNIQUEMENT)
+npm run test:integration   # vraie instance VSCode               (LOCAL UNIQUEMENT)
+npm run test:e2e           # multi-fenêtres, extension Claude     (LOCAL UNIQUEMENT — lot C)
 ```
 
-Seul `npm run ci` existe à ce jour ; les deux autres commandes décrivent la cible et seront outillées aux lots B et C.
+`npm run ci` et `npm run test:integration` **existent et s'exécutent** ; le second compile d'abord l'extension et le harnais (`build:vscode`, `build:integration`) puis lance une vraie instance VSCode via `@vscode/test-electron`. `npm run test:e2e` décrit la cible et sera outillé au **lot C**.
 
-**Limite assumée** : les tests E2E exigent l'extension Claude propriétaire **authentifiée**. Ils sont **impossibles en CI publique**. La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus** : il n'existe à ce jour ni script `build` ni étape de packaging VSIX, l'un et l'autre relevant du **lot E**. Les résultats E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
+**Deux limites assumées, et ce sont des choix :**
+
+- **`test:integration` n'est pas exécuté par la CI publique.** Elle téléchargerait une instance VSCode complète à chaque exécution et exige un affichage ; la commande est donc **locale**, et son log est joint en preuve à la PR. Ce n'est pas un manque d'outillage : la commande existe.
+- **`test:e2e` sera impossible en CI publique**, définitivement : il exige l'extension Claude propriétaire **authentifiée**.
+
+La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus**. Le build de l'extension et du harnais est outillé ; seul le **packaging VSIX** relève encore du **lot E**. Les résultats d'intégration et E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
 
 ## Documentation obligatoire
 
 - **Toute décision structurante donne un ADR daté** dans `docs/adr/`, numéroté, qui énonce le contexte, les options écartées et la décision.
-- **Toute dépendance nouvelle à une API interne de l'écosystème Claude** est inscrite dans `docs/compatibilite.md` avec sa traçabilité ligne à ligne (colonne « Vérifié en / sur », ou `— non vérifié`) et la façon dont l'absence est détectée. L'environnement de référence — versions d'extension, de CLI et de VSCode — est en tête du fichier.
+- **Toute dépendance nouvelle à une API interne de l'écosystème Claude** est inscrite dans `docs/compatibilite.md` avec sa traçabilité ligne à ligne (colonne « Vérifié en / sur », ou `— non vérifié`) et la façon dont l'absence est détectée. L'environnement de référence — versions d'extension, de CLI et de VSCode — est en tête du fichier. Les API **`vscode` publiques**, elles, n'y entrent pas : elles sont versionnées par le plancher `engines.vscode` et recensées dans [`docs/adr/003-registre-et-serveur-local.md`](docs/adr/003-registre-et-serveur-local.md).
 - **Le README est la vitrine du projet** : il expose le problème, la démonstration, l'installation, les limites et les risques. Il est mis à jour à chaque changement de périmètre.
 - **Ne jamais considérer une tâche comme terminée sans avoir mis à jour la documentation.**
