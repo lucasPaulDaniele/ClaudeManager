@@ -35,3 +35,15 @@ export {
   type WindowEntryAccepted,
   type WindowEntryRejected,
 } from './registry/entry.js';
+export {
+  purgeStaleEntries,
+  readRegistry,
+  resolveRegistryDir,
+  writeWindowEntry,
+  type PurgeStaleEntriesOptions,
+  type ReadRegistryOptions,
+  type RegistryReadResult,
+  type SkipReason,
+  type SkippedEntry,
+  type WriteWindowEntryOptions,
+} from './registry/store.node.js';
