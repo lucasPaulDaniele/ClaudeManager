@@ -20,8 +20,34 @@
 | Windows | 11 Pro 10.0.22000 |
 | Node | 24.13.0 |
 
-Dans tout ce document, `<HOME>` remplace le répertoire personnel de l'utilisateur et
-`<SPIKE>` le répertoire `%TEMP%\claudemanager-spike-a1`.
+Dans tout ce document, `<HOME>` remplace le répertoire personnel de l'utilisateur,
+`<SPIKE>` le répertoire `%TEMP%\claudemanager-spike-a1`, et `<CONFIG>` la **racine de
+configuration du CLI `claude` en vigueur pendant la mesure** — c'est-à-dire
+`<SPIKE>\claude-config`, le bac à sable désigné par `CLAUDE_CONFIG_DIR` (voir l'erratum
+ci-dessous), et non `<HOME>\.claude`.
+
+> ### Erratum — 2026-07-25
+>
+> Annotation postérieure à l'acceptation de cet ADR, ajoutée par l'incrément de correction du
+> gate de fin de lot A. **Aucune mesure, aucun relevé, aucun verdict n'est modifié** : cet
+> erratum explique un point de lecture qui manquait.
+>
+> Les deux preuves d'interactivité de V1 sont rapportées **sous deux racines différentes**, et ce
+> n'est pas une coquille. La mesure a été conduite avec `CLAUDE_CONFIG_DIR` pointant sur le bac à
+> sable `<SPIKE>\claude-config`, **dont le sous-répertoire `projects\` a été jonctionné vers le
+> `projects\` de la racine par défaut** — précisément parce que, sans cette jonction, le panneau
+> ne retrouvait pas la session. D'où :
+>
+> - la preuve **structurelle** se lit sous le bac à sable — `<CONFIG>\sessions\<pid>.json` ;
+> - la preuve **fonctionnelle** se lit sous la racine par défaut —
+>   `<HOME>\.claude\projects\…\<uuid>.jsonl`, atteinte **par cette jonction**.
+>
+> Conséquence à porter au-delà du spike : `CLAUDE_CONFIG_DIR` **relocalise la racine de
+> configuration**, donc `sessions\` et — sauf jonction — `projects\`. Sa sémantique exacte
+> **n'a pas été mesurée directement** ici : c'est une déduction du montage. Elle est inscrite
+> comme point d'adhérence **et comme dette du lot D** dans
+> [`docs/compatibilite.md`](../compatibilite.md) (D17), dont dépend toute la localisation des
+> transcripts.
 
 ## Contexte
 
