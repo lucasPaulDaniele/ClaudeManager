@@ -419,8 +419,12 @@ describe('writeWindowEntry — defaillance du systeme de fichiers', () => {
 
     expect(failure.message).not.toContain(asFile);
     expect(JSON.stringify(failure.toJSON())).not.toContain(os.homedir());
-    // Le code systeme, lui, reste : il diagnostique sans rien reveler du poste.
-    expect(failure.details).toEqual({ cause: 'EEXIST' });
+    // Le code systeme, lui, reste : il diagnostique sans rien reveler du poste. Les deux
+    // plateformes ne nomment pas le meme : Windows rend EEXIST la ou POSIX peut rendre
+    // ENOTDIR. On epingle le fait qui compte — un code, et rien qu un code.
+    expect(String(failure.details?.['cause'])).toMatch(/^[A-Z][A-Z0-9_]*$/);
+    expect(String(failure.details?.['cause'])).not.toContain(path.sep);
+    expect(Object.keys(failure.details ?? {})).toEqual(['cause']);
   });
 
   it('ne laisse derriere elle aucun temporaire porteur du jeton', () => {

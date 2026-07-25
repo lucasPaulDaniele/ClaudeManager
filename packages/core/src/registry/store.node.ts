@@ -468,6 +468,11 @@ export function writeWindowEntry(entry: WindowEntry, options: WriteWindowEntryOp
     `${parsed.entry.extHostPid}.${randomUUID()}${TEMPORARY_EXTENSION}`
   );
 
+  // Le nettoyage du temporaire ne doit JAMAIS masquer la defaillance qu'il accompagne : on
+  // ne tente de l'effacer que s'il a reellement ete cree. Sinon `rmSync` sonde un chemin
+  // situe SOUS un repertoire qui n'en est pas un — `ENOTDIR`, que `force` ne rattrape pas,
+  // contrairement a `ENOENT` — et c'est cette erreur nue qui remonterait a la place.
+  let temporaryExists = false;
   try {
     mkdirSync(dir, { recursive: true, mode: REGISTRY_DIR_MODE });
     // RATTRAPAGE DE L'EXISTANT (principe fondateur n.7) : le `mode` de `mkdirSync` ne
@@ -481,12 +486,13 @@ export function writeWindowEntry(entry: WindowEntry, options: WriteWindowEntryOp
       encoding: 'utf8',
       mode: ENTRY_FILE_MODE,
     });
+    temporaryExists = true;
     renameSync(temporary, file);
   } catch (cause) {
     // Un temporaire abandonne porte le JETON COMPLET, et son nom ne se termine pas par
     // `.json` : il echappe a la lecture, donc a l'inventaire, donc a l'utilisateur. Chaque
     // echec ulterieur en ajouterait un. On l'efface ici, ou la purge le ramassera.
-    rmSync(temporary, { force: true });
+    if (temporaryExists) rmSync(temporary, { force: true });
     // Erreur NOMMEE, symetrique de `REGISTRY_UNREADABLE` cote lecture : un `mkdirSync` sur
     // un chemin qui existe deja en fichier, un `renameSync` bloque par un antivirus ou un
     // indexeur sont des defaillances previsibles. Sans detail hors du code systeme : le
