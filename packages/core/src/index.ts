@@ -5,3 +5,10 @@ export {
   type ErrorCode,
   type SerializedError,
 } from './errors.js';
+
+export { ancestorsOf } from './identity/ancestry.js';
+export {
+  parsePosixProcessTable,
+  parseWindowsProcessTable,
+  type ProcessTable,
+} from './identity/processTable.js';
