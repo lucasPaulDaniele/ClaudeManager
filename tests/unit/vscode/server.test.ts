@@ -1,9 +1,13 @@
 import { Agent, request } from 'node:http';
+import { connect } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ClaudeManagerError, ERROR_CODES } from '../../../packages/core/src/index.js';
+import type { OpenConversationResult } from '../../../packages/vscode/src/conversations.js';
 import {
   startServer,
   type HealthPayload,
+  type OpenConversationRoute,
   type ServerHandle,
 } from '../../../packages/vscode/src/server.js';
 
@@ -39,7 +43,8 @@ function call(
   route: string,
   headers: Record<string, string> = {},
   method = 'GET',
-  host = '127.0.0.1'
+  host = '127.0.0.1',
+  body?: string
 ): Promise<Reply> {
   return new Promise((resolve, reject) => {
     // `agent: false` : une socket neuve a chaque appel. L'agent par defaut en garderait une
@@ -49,15 +54,40 @@ function call(
     const req = request(
       { host, port: handle.port, path: route, method, headers, agent: false },
       (res) => {
-        let body = '';
-        res.on('data', (chunk) => (body += chunk));
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
+        let received = '';
+        res.on('data', (chunk) => (received += chunk));
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, body: received, headers: res.headers })
+        );
       }
     );
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
+
+/** `POST /conversations` avec un corps JSON, la forme que le client du lot C emploiera. */
+function post(handle: ServerHandle, payload: unknown, extra: Record<string, string> = {}): Promise<Reply> {
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  return call(
+    handle,
+    '/conversations',
+    { ...authorized(), 'content-type': 'application/json', ...extra },
+    'POST',
+    '127.0.0.1',
+    body
+  );
+}
+
+const OPENED: OpenConversationResult = {
+  ok: true,
+  mode: 'seeded',
+  sessionId: '11111111-2222-3333-4444-555555555555',
+  extHostPid: 11172,
+  humanActionRequired: false,
+  firstTurn: 'process-started',
+  firstTurnVerified: false,
+};
 
 function authorized(): Record<string, string> {
   return { authorization: `Bearer ${TOKEN}` };
@@ -67,11 +97,22 @@ const errors: unknown[] = [];
 /** Combien de fois l'appelant a appris que son ecoute etait morte SANS qu'il l'ait demande. */
 let closures = 0;
 let handles: ServerHandle[] = [];
+/** Les prompts REELLEMENT parvenus au mecanisme, dans l'ordre. */
+let opened: string[] = [];
+/**
+ * Ce que le mecanisme rend. Par defaut il LEVE : une route qui repondrait 200 sans avoir ete
+ * cablee ferait passer les gardes de transport pour ce qu'elles ne sont pas.
+ */
+let opener: OpenConversationRoute = () => Promise.reject(new Error('not wired'));
 
 async function open(health: () => HealthPayload = () => HEALTH): Promise<ServerHandle> {
   const handle = await startServer({
     token: TOKEN,
     health,
+    openConversation: (request) => {
+      opened.push(request.prompt);
+      return opener(request);
+    },
     onError: (error) => errors.push(error),
     onClosed: () => (closures += 1),
   });
@@ -91,11 +132,13 @@ function killListener(handle: ServerHandle): Promise<void> {
 }
 
 afterEach(async () => {
-  const opened = handles;
+  const live = handles;
   handles = [];
-  for (const handle of opened) await handle.close();
+  for (const handle of live) await handle.close();
   errors.length = 0;
   closures = 0;
+  opened = [];
+  opener = () => Promise.reject(new Error('not wired'));
 });
 
 describe('ecoute', () => {
@@ -135,6 +178,208 @@ describe('ecoute', () => {
     const reply = await call(handle, '/health', authorized());
 
     expect(JSON.parse(reply.body)['listenAddress']).toBe(handle.address);
+  });
+});
+
+describe('S10 — Host et Origin sont juges AVANT l authentification', () => {
+  it('refuse un Host qui ne designe pas la boucle locale, sans rien en refleter', async () => {
+    const handle = await open();
+
+    // RE-LIAISON DNS : un nom tiers qui resout vers 127.0.0.1 atteint la socket. Le jeton est
+    // VALIDE ici — c'est le point : la garde tombe avant qu'il ne soit regarde.
+    const reply = await call(handle, '/health', { ...authorized(), host: `evil.example:${handle.port}` });
+
+    expect(reply.status).toBe(403);
+    expect(JSON.parse(reply.body)).toEqual({ ok: false, error: 'FORBIDDEN_HOST' });
+    expect(reply.body).not.toContain('evil.example');
+  });
+
+  it('accepte 127.0.0.1 comme localhost, quelle que soit la casse', async () => {
+    const handle = await open();
+
+    for (const name of ['127.0.0.1', 'localhost', 'LOCALHOST', 'LocalHost']) {
+      expect((await call(handle, '/health', { ...authorized(), host: `${name}:${handle.port}` })).status).toBe(200);
+    }
+  });
+
+  it('exige NOTRE port : un Host loopback sur un autre port est refuse', async () => {
+    const handle = await open();
+
+    const wrongPort = handle.port === 1 ? 2 : handle.port - 1;
+    expect((await call(handle, '/health', { ...authorized(), host: `127.0.0.1:${wrongPort}` })).status).toBe(403);
+    // Sans port du tout : un client qui nous a resolus par le registre en annonce toujours un.
+    expect((await call(handle, '/health', { ...authorized(), host: '127.0.0.1' })).status).toBe(403);
+  });
+
+  it('refuse une requete SANS Host — que seule une socket brute peut produire', async () => {
+    const handle = await open();
+
+    // `http.request` de Node pose toujours un `Host`, et son ANALYSEUR refuse lui-meme une
+    // requete HTTP/1.1 qui n'en porte pas — mesure : `400 Bad Request`, avant notre code.
+    // HTTP/1.0, lui, ne l'exige pas : la requete arrive jusqu'a nous, sans `Host`. C'est le
+    // seul chemin qui atteint cette garde, et il existe pour de vrai.
+    const reply = await new Promise<string>((resolve, reject) => {
+      const socket = connect(handle.port, '127.0.0.1', () => {
+        socket.write(`GET /health HTTP/1.0\r\nauthorization: Bearer ${TOKEN}\r\n\r\n`);
+      });
+      let received = '';
+      socket.on('data', (chunk: Buffer) => (received += chunk.toString('utf8')));
+      socket.on('end', () => resolve(received));
+      socket.on('error', reject);
+    });
+
+    expect(reply).toContain('403');
+    expect(reply).toContain('FORBIDDEN_HOST');
+  });
+
+  it('refuse TOUTE requete portant un Origin, quelle que soit sa valeur', async () => {
+    const handle = await open();
+
+    // Notre client n'en pose JAMAIS ; un navigateur en pose TOUJOURS, `null` compris.
+    for (const origin of ['https://claude.ai', 'null', 'http://127.0.0.1', '']) {
+      const reply = await call(handle, '/health', { ...authorized(), origin });
+      expect(reply.status).toBe(403);
+      expect(JSON.parse(reply.body)).toEqual({ ok: false, error: 'FORBIDDEN_ORIGIN' });
+    }
+  });
+
+  it('juge Host et Origin AVANT le jeton : un refus de transport ne dit rien de l authentification', async () => {
+    const handle = await open();
+
+    // Sans jeton du tout : si l'ordre etait inverse, la reponse serait 401.
+    expect((await call(handle, '/health', { host: 'evil.example:1' })).status).toBe(403);
+    expect((await call(handle, '/health', { origin: 'https://claude.ai' })).status).toBe(403);
+  });
+
+  it('protege /health autant que la route a effet de bord', async () => {
+    const handle = await open();
+
+    // La garde ne vaut pas pour la seule route nouvelle : /health publie l'etat de la
+    // fenetre et son repertoire de journal.
+    expect((await call(handle, '/health', { ...authorized(), origin: 'https://claude.ai' })).status).toBe(403);
+    expect((await post(handle, { prompt: 'x' }, { origin: 'https://claude.ai' })).status).toBe(403);
+  });
+});
+
+describe('POST /conversations', () => {
+  it('transmet le prompt du CORPS au mecanisme, et rend son resultat', async () => {
+    const handle = await open();
+    opener = () => Promise.resolve(OPENED);
+
+    const reply = await post(handle, { prompt: 'Reponds exactement OK' });
+
+    expect(reply.status).toBe(200);
+    expect(opened).toEqual(['Reponds exactement OK']);
+    expect(JSON.parse(reply.body)).toEqual(OPENED);
+  });
+
+  it('rend le mode et la session, jamais le jeton ni un chemin absolu', async () => {
+    const handle = await open();
+    opener = () => Promise.resolve(OPENED);
+
+    const reply = await post(handle, { prompt: 'x' });
+
+    const payload = JSON.parse(reply.body) as Record<string, unknown>;
+    expect(payload['mode']).toBe('seeded');
+    expect(payload['sessionId']).toBe(OPENED.sessionId);
+    expect(payload['extHostPid']).toBe(11172);
+    expect(reply.body).not.toContain(TOKEN);
+  });
+
+  it('refuse un corps qui ne porte pas de prompt exploitable', async () => {
+    const handle = await open();
+    opener = () => Promise.resolve(OPENED);
+
+    for (const payload of ['{', 'null', '[]', '"texte"', {}, { prompt: 42 }, { prompt: '' }, { prompt: '   ' }]) {
+      const reply = await post(handle, payload);
+      expect(reply.status).toBe(400);
+      expect(JSON.parse(reply.body)).toEqual({ ok: false, error: 'BAD_REQUEST' });
+    }
+    // Le mecanisme n'a JAMAIS ete sollicite : un refus de forme ne cree aucun terminal.
+    expect(opened).toEqual([]);
+  });
+
+  it('refuse un chemin de fichier a la place du prompt — la surface de traversee n existe pas', async () => {
+    const handle = await open();
+
+    const reply = await post(handle, { promptFile: 'c:\\Windows\\System32\\drivers\\etc\\hosts' });
+
+    expect(reply.status).toBe(400);
+    expect(opened).toEqual([]);
+  });
+
+  it('BORNE le corps lu, et le dit', async () => {
+    const handle = await open();
+
+    // Au-dela de la borne, la lecture CESSE : accumuler puis mesurer serait l'epuisement
+    // memoire qu'on veut empecher.
+    const reply = await post(handle, { prompt: 'A'.repeat(2 * 1024 * 1024) }).catch(
+      (error: NodeJS.ErrnoException) => ({ status: `ERR(${error.code})`, body: '', headers: {} })
+    );
+
+    // Selon l'instant ou la socket est detruite, le client voit le 413 ou la coupure : les
+    // deux prouvent que le corps n'a pas ete accumule. Ce qui compte est qu'aucune ouverture
+    // n'ait ete tentee.
+    expect([413, 'ERR(ECONNRESET)', 'ERR(EPIPE)']).toContain(reply.status);
+    expect(opened).toEqual([]);
+  });
+
+  it('accepte un corps volumineux mais SOUS la borne', async () => {
+    const handle = await open();
+    opener = () => Promise.resolve(OPENED);
+
+    const prompt = 'A'.repeat(200_000);
+    const reply = await post(handle, { prompt });
+
+    expect(reply.status).toBe(200);
+    expect(opened[0]?.length).toBe(200_000);
+  });
+
+  it('rend l erreur NOMMEE telle quelle, code stable compris', async () => {
+    const handle = await open();
+    opener = () =>
+      Promise.reject(
+        new ClaudeManagerError(ERROR_CODES.CLAUDE_EXTENSION_MISSING, 'nope', { extensionId: 'x' })
+      );
+
+    const reply = await post(handle, { prompt: 'x' });
+
+    expect(reply.status).toBe(500);
+    expect(JSON.parse(reply.body)).toMatchObject({
+      ok: false,
+      error: ERROR_CODES.CLAUDE_EXTENSION_MISSING,
+      remediation: expect.stringContaining('anthropic.claude-code') as unknown,
+      details: { extensionId: 'x' },
+    });
+  });
+
+  it('reduit une defaillance imprevue a son seul CODE systeme', async () => {
+    const handle = await open();
+    // Un message d'erreur `fs` porterait le chemin absolu, donc le nom du compte, dans une
+    // reponse HTTP.
+    opener = () => Promise.reject(Object.assign(new Error("EPERM: rename 'c:\\Users\\qui'"), { code: 'EPERM' }));
+
+    const reply = await post(handle, { prompt: 'x' });
+
+    expect(reply.status).toBe(500);
+    expect(JSON.parse(reply.body)).toEqual({ ok: false, error: 'UNEXPECTED_FAILURE', cause: 'EPERM' });
+    expect(reply.body).not.toContain('Users');
+  });
+
+  it('refuse /conversations sans jeton, sans jamais atteindre le mecanisme', async () => {
+    const handle = await open();
+
+    const reply = await call(handle, '/conversations', {}, 'POST', '127.0.0.1', '{"prompt":"x"}');
+
+    expect(reply.status).toBe(401);
+    expect(opened).toEqual([]);
+  });
+
+  it('n existe que sur POST : GET /conversations reste une route inconnue', async () => {
+    const handle = await open();
+
+    expect((await call(handle, '/conversations', authorized())).status).toBe(404);
+    expect(opened).toEqual([]);
   });
 });
 

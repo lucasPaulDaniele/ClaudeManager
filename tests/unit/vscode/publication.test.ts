@@ -87,6 +87,10 @@ function makePublisher(initial?: Partial<WorkspaceState>, harnessOptions?: Harne
     token: TOKEN,
     logDirectory,
     readWorkspace: () => harness.readWorkspace(),
+    // Ce module porte le CYCLE DE VIE de la publication, jamais les effets de bord du
+    // produit : la route est traversee, jamais appelee. Elle leve donc — un appel qu'on
+    // n'attend pas doit se voir.
+    openConversation: () => Promise.reject(new Error('not exercised by this suite')),
     log: (message) => lines.push(message),
     registryDir: dir,
     // Le DELAI est releve, la tache part au tour suivant : c'est l'echelle qu'on veut

@@ -60,6 +60,45 @@ export function probe(
   });
 }
 
+/**
+ * Poste un corps JSON sur une route du serveur local.
+ *
+ * `headers` est applique EN DERNIER et peut donc ecraser `host` : c'est ce qui permet
+ * d'eprouver la garde de re-liaison DNS sur la vraie socket, sans client fabrique.
+ */
+export function postJson(
+  port: number,
+  route: string,
+  payload: unknown,
+  headers: Record<string, string>
+): Promise<ProbeResult> {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  return new Promise((resolve) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: route,
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': body.byteLength,
+          ...headers,
+        },
+      },
+      (res) => {
+        let received = '';
+        res.on('data', (chunk) => (received += chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: received }));
+      }
+    );
+    req.on('error', (error: NodeJS.ErrnoException) =>
+      resolve({ status: `ERR(${error.code})`, body: '' })
+    );
+    req.end(body);
+  });
+}
+
 /** Tente la MEME socket depuis une adresse non-loopback de la machine. */
 export function probeAddress(address: string, port: number): Promise<string> {
   return new Promise((resolve) => {

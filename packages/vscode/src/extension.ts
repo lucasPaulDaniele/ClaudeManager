@@ -18,10 +18,21 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import * as vscode from 'vscode';
+import {
+  openConversation,
+  serializeOpenings,
+  type ClaudeExtensionHandle,
+  type EditorPort,
+  type HiddenTerminal,
+  type HiddenTerminalSpec,
+  type OpenConversationRequest,
+  type OpenConversationResult,
+} from './conversations.js';
 import { purgeStaleEntries, readProcessTable } from './core.js';
 import { describe, readExtensionVersion } from './diagnostics.js';
 import { WindowPublisher, type WorkspaceState } from './publication.js';
 import { readWindowIdentity } from './registry.js';
+import { CLAUDE_EXTENSION_ID, type PanelTabLike } from './seed.js';
 
 const OUTPUT_CHANNEL = 'ClaudeManager';
 
@@ -52,6 +63,81 @@ function readWorkspace(): WorkspaceState {
   return {
     workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
     isTrusted: vscode.workspace.isTrusted,
+  };
+}
+
+/**
+ * L'ADAPTATEUR D'EDITEUR DU MECANISME V1 — traduction, ZERO decision.
+ *
+ * Il vit ici pour la meme raison que tout le reste de ce fichier : c'est le SEUL point de
+ * contact du paquet avec l'API `vscode`. Chaque membre est un appel direct ; le mecanisme
+ * lui-meme — l'ordre des etapes, les refus, le repli, la preuve d'attachement — est dans
+ * `conversations.ts`, sans `vscode`, donc mesure et couvert.
+ *
+ * `show()` n'apparait NULLE PART, et le port ne l'expose meme pas : reveler un terminal
+ * volerait le focus (principe fondateur n.1).
+ */
+function editorPort(): EditorPort {
+  return {
+    readWorkspace,
+
+    getClaudeExtension(): ClaudeExtensionHandle | undefined {
+      const extension = vscode.extensions.getExtension(CLAUDE_EXTENSION_ID);
+      if (extension === undefined) return undefined;
+      return {
+        // Relu a CHAQUE lecture : `isActive` bascule pendant l'activation qu'on demande.
+        get isActive(): boolean {
+          return extension.isActive;
+        },
+        extensionPath: extension.extensionUri.fsPath,
+        activate: async (): Promise<void> => {
+          await extension.activate();
+        },
+      };
+    },
+
+    // `true` : l'inventaire COMPLET, commandes internes comprises. Les `claude-vscode.*` sont
+    // enregistrees a l'activation, elles n'y figurent pas avant.
+    listCommands: (): Promise<readonly string[]> =>
+      Promise.resolve(vscode.commands.getCommands(true)),
+
+    executeCommand: (command, ...args): Promise<unknown> =>
+      Promise.resolve(vscode.commands.executeCommand(command, ...args)),
+
+    createHiddenTerminal(spec: HiddenTerminalSpec): HiddenTerminal {
+      const terminal = vscode.window.createTerminal({
+        name: spec.name,
+        cwd: spec.cwd,
+        shellPath: spec.shellPath,
+        shellArgs: [...spec.shellArgs],
+        // `hideFromUser` : le terminal n'apparait meme pas dans la liste des terminaux, et
+        // `show()` n'est jamais appele. Duree de visibilite pour l'humain : nulle.
+        hideFromUser: true,
+        // La carte de neutralisation, telle quelle : `null` supprime, `undefined` n'agirait
+        // PAS et `''` laisserait la variable presente (mesure, ADR-004). Le type du port ne
+        // permet que `null`.
+        env: { ...spec.env },
+      });
+      return {
+        sendText: (line) => terminal.sendText(line, true),
+        dispose: () => terminal.dispose(),
+        processId: () => Promise.resolve(terminal.processId),
+      };
+    },
+
+    // ENUMERATION EN LECTURE SEULE. `tabGroups.close` n'est appele nulle part : fermer une
+    // conversation releve de l'increment C3.
+    //
+    // Le diff du mecanisme compare des CLES (`viewType` + `label`), jamais l'identite des
+    // objets `Tab` — celle-ci n'est garantie par aucune documentation, et ces enveloppes sont
+    // de toute facon reconstruites a chaque releve.
+    listPanelTabs: (): readonly PanelTabLike[] =>
+      vscode.window.tabGroups.all.flatMap((group) =>
+        group.tabs.map((tab) => ({
+          viewType: tab.input instanceof vscode.TabInputWebview ? tab.input.viewType : undefined,
+          label: tab.label,
+        }))
+      ),
   };
 }
 
@@ -147,13 +233,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(channel);
   output = channel;
 
+  const identity = readWindowIdentity();
+
+  /**
+   * LA ROUTE D'OUVERTURE, cablee ici et nulle part ailleurs.
+   *
+   * `serializeOpenings` : deux ouvertures concurrentes dans la MEME fenetre se voleraient
+   * leur preuve d'attachement, qui est un diff d'onglets. Une a la fois.
+   *
+   * `globalStorageUri` porte le fichier transitoire du prompt : un repertoire propre a
+   * l'extension, HORS du workspace de l'utilisateur — un prompt d'orchestration n'a rien a
+   * faire dans un depot, fut-ce une milliseconde.
+   */
+  const openRoute = serializeOpenings((request: OpenConversationRequest): Promise<OpenConversationResult> =>
+    openConversation(request, {
+      editor: editorPort(),
+      extHostPid: identity.extHostPid,
+      promptDirectory: path.join(context.globalStorageUri.fsPath, 'prompts'),
+      log,
+    })
+  );
+
   const current = new WindowPublisher({
-    identity: readWindowIdentity(),
+    identity,
     extensionVersion: readExtensionVersion(context.extension.packageJSON),
     // Propre a cette fenetre ET a cette session : il ne survit pas a un redemarrage.
     token: randomUUID(),
     logDirectory: context.logUri.fsPath,
     readWorkspace,
+    openConversation: openRoute,
     log,
   });
   publisher = current;

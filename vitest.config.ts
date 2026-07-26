@@ -72,21 +72,40 @@ export default defineConfig({
          * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
          * que rien ne configurait.
          *
-         * MESURE DU 2026-07-26 (gate final du lot B), les QUATRE metriques :
+         * MESURE DU 2026-07-26 (increment C1), les QUATRE metriques, SUR LES DEUX PLATEFORMES :
+         *
+         *   Windows, poste de reference : 99,31 instructions · 98,61 branches · 98,30 fonctions · 99,31 lignes
+         *   Linux, CI GitHub (execution 30202106398) : 99,31 · 98,61 · 98,30 · 99,31 — IDENTIQUES
+         *
+         * Plancher retenu : 99 / 98 / 98 / 99. Marges : 0,31 · 0,61 · 0,30 · 0,31 point.
+         *
+         * LES DEUX MESURES SONT CITEES, ET C'EST LE POINT : un plancher releve sur la seule
+         * plateforme de developpement est un plancher qu'on n'a pas verifie la ou la porte se
+         * ferme. Les deux plateformes n'executent PAS les memes tests — 5 tests POSIX sont
+         * ignores sous Windows (3 du registre, 2 sur les droits du repertoire de transit du
+         * prompt), 1 test Windows est ignore sous Linux (le decoupage d'un `PATH` a lettres de
+         * lecteur). La couverture ressort pourtant identique au centieme : les lignes
+         * concernees sont EXECUTEES des deux cotes, seules les assertions different.
+         *
+         * CES QUATRE CHIFFRES SONT AUSSI DANS `CLAUDE.md`, ET C'EST LE PIEGE A EVITER : le
+         * gate du lot B a passe une journee sur le symetrique de ce residu — un document qui
+         * annoncait un seuil que rien ne configurait. Les deux se relevent ENSEMBLE, ou ni
+         * l'un ni l'autre.
+         *
+         * RELEVE LE 2026-07-26 PAR C1 : lignes et instructions 98 -> 99, fonctions 97 -> 98.
+         * Les branches restent a 98, qui est deja leur plancher. Le seuil se releve quand la
+         * couverture monte : l'increment ajoute 1 200 lignes de mecanisme et 67 tests, et la
+         * couverture globale a MONTE — la laisser au plancher precedent serait accorder une
+         * marge que rien ne justifie.
+         *
+         * Mesure precedente (2026-07-26, gate final du lot B) :
          *   98,96 instructions · 98,25 branches · 97,72 fonctions · 98,96 lignes
-         * Plancher retenu : 98 / 98 / 97 / 98. Marges : 0,96 · 0,25 · 0,72 · 0,96 point.
+         * Plancher alors retenu : 98 / 98 / 97 / 98.
          *
          * La mesure precedente (2026-07-25 : 98,43 lignes / 97,88 branches / 96,82 fonctions)
          * omettait les INSTRUCTIONS, alors que le seuil, lui, en portait un. Les quatre sont
          * desormais citees — un chiffre configure sans mesure en regard est la divergence
          * meme que ce commentaire existe pour empecher.
-         *
-         * RELEVE LE 2026-07-26 : branches 97 -> 98, fonctions 96 -> 97. Lignes et
-         * instructions restent a 98, qui est deja leur plancher.
-         *
-         * Mesure prise sous Windows, ou 3 tests POSIX sont ignores ; la couverture de la CI
-         * Linux a ete relevee et elle est IDENTIQUE — le plancher ne depend donc pas de la
-         * plateforme.
          *
          * TOUT L'ECART TIENT A QUATRE CHEMINS DE DEFAILLANCE QU'UNE VRAIE SOCKET NE PRODUIT
          * PAS, et qu'on refuse de forcer avec un faux `http` (principe fondateur n.5) :
@@ -100,10 +119,10 @@ export default defineConfig({
          *
          * Le seuil se releve quand la couverture monte, jamais l'inverse sans justification.
          */
-        lines: 98,
-        functions: 97,
+        lines: 99,
+        functions: 98,
         branches: 98,
-        statements: 98,
+        statements: 99,
       },
     },
   },

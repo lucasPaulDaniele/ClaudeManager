@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import { runEmptyWorkspace } from './scenarios/emptyWorkspace.js';
 import { runNominal } from './scenarios/nominal.js';
+import { runOpenConversation } from './scenarios/openConversation.js';
 import type { ScenarioContext } from './support.js';
 
 type Scenario = (context: ScenarioContext) => Promise<void>;
@@ -25,6 +26,9 @@ type Scenario = (context: ScenarioContext) => Promise<void>;
 const SCENARIOS: Readonly<Record<string, Scenario>> = {
   nominal: runNominal,
   'empty-workspace': runEmptyWorkspace,
+  // Increment C1 : le seul scenario a EFFET DE BORD, et le seul lance avec l'extension
+  // Claude chargee (`--disable-extensions` retire pour lui SEUL).
+  'open-conversation': runOpenConversation,
 };
 
 export async function run(): Promise<void> {
