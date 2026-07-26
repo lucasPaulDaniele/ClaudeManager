@@ -1,14 +1,21 @@
 {
   "name": "@claudemanager/cli",
-  "version": "0.1.0",
-  "description": "Binaire cmgr : lecture du registre des fenetres pilotables et resolution de la fenetre hote. Sortie JSON, aucun reseau.",
+  "version": "0.2.0",
+  "description": "Binaire cmgr : lecture du registre des fenetres pilotables, resolution de la fenetre hote et ouverture de conversation. Sortie JSON.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lucasPaulDaniele/ClaudeManager.git"
+  },
+  "homepage": "https://github.com/lucasPaulDaniele/ClaudeManager#readme",
   "type": "module",
   "bin": {
     "cmgr": "./dist/cli/src/cmgr.js"
   },
+  "//files": "`dist` EN ENTIER, et c'est le point : `build:cli` y emet DEUX racines — `dist/cli` (le binaire) et `dist/core` (le coeur, compile a cote plutot que recopie, cf. tsconfig.build.json). Le paquet ne declare aucune dependance : depuis C2 la CLI passe par le client HTTP du coeur, donc un tarball qui n'embarquerait que `dist/cli` echouerait a l'EXECUTION sur un module absent. Les cartes de source sont retranchees pour la meme raison que dans le VSIX : les sources `.ts` ne partent pas, les cartes seraient pendantes.",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.map"
   ],
   "engines": {
     "node": ">=20"

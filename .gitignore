@@ -6,6 +6,13 @@ coverage/
 .DS_Store
 .vscode-test/
 
+# Repertoire de sortie de l'empaquetage (`npm run package:vscode`, `npm run package:cli`).
+# Il porte des ARTEFACTS DE BUILD — un `.vsix` et un `.tgz` — que rien ne doit versionner :
+# ils se reconstruisent, et un binaire dans un depot public est du poids mort qu'on ne relit
+# jamais. `*.vsix` etait deja ecarte ; le repertoire l'est desormais en entier, ce qui couvre
+# aussi le tarball de la CLI et les extractions de verification.
+artifacts/
+
 # Etat de travail de la skill `/orchestrer` : journaux de chantier, rapports de lot,
 # transcriptions. Il porte des donnees du POSTE — prefixe de jeton reel, uuid de sessions,
 # adresse IP interne, nom de compte — et ce depot est PUBLIC.

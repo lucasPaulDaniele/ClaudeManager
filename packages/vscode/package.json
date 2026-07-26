@@ -2,13 +2,17 @@
   "name": "claudemanager-vscode",
   "displayName": "ClaudeManager",
   "description": "Rend la fenetre VSCode courante joignable par un agent, sans jamais voler le focus.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "claudemanager",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/lucasPaulDaniele/ClaudeManager.git"
   },
+  "bugs": {
+    "url": "https://github.com/lucasPaulDaniele/ClaudeManager/issues"
+  },
+  "homepage": "https://github.com/lucasPaulDaniele/ClaudeManager#readme",
   "engines": {
     "vscode": "^1.90.0"
   },
