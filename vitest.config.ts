@@ -72,9 +72,14 @@ export default defineConfig({
          * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
          * que rien ne configurait.
          *
-         * MESURE DU 2026-07-26 (increment C1), les QUATRE metriques :
-         *   99,31 instructions · 98,61 branches · 98,30 fonctions · 99,31 lignes
-         * Plancher retenu : 99 / 98 / 98 / 99. Marges : 0,31 · 0,61 · 0,30 · 0,31 point.
+         * MESURE DU 2026-07-26 (increment C1, reprise 1), les QUATRE metriques :
+         *   99,31 instructions · 98,60 branches · 98,30 fonctions · 99,31 lignes
+         * Plancher retenu : 99 / 98 / 98 / 99. Marges : 0,31 · 0,60 · 0,30 · 0,31 point.
+         *
+         * CES QUATRE CHIFFRES SONT AUSSI DANS `CLAUDE.md`, ET C'EST LE PIEGE A EVITER : le
+         * gate du lot B a passe une journee sur le symetrique de ce residu — un document qui
+         * annoncait un seuil que rien ne configurait. Les deux se relevent ENSEMBLE, ou ni
+         * l'un ni l'autre.
          *
          * RELEVE LE 2026-07-26 PAR C1 : lignes et instructions 98 -> 99, fonctions 97 -> 98.
          * Les branches restent a 98, qui est deja leur plancher. Le seuil se releve quand la

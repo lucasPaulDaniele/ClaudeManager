@@ -26,6 +26,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import {
@@ -242,7 +243,7 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
     for (const subscription of subscriptions) subscription.dispose();
 
     const openedBody = JSON.parse(opened.body) as Record<string, unknown>;
-    report['nominal'] = {
+    report['seeded'] = {
       status: opened.status,
       // MESUREE : c'est elle qui dit si l'attachement attend la session ou la precede.
       openMs,
@@ -250,22 +251,30 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
       sessionId: openedBody['sessionId'],
       extHostPid: openedBody['extHostPid'],
       humanActionRequired: openedBody['humanActionRequired'],
-      // Le shell a REELLEMENT engendre le processus du tour 1 — fait observe dans la table
-      // des processus. Sans lui, l'attachement precedait la naissance de `claude`.
-      seedProcessObserved: openedBody['seedProcessObserved'],
+      // CE QUE LA ROUTE PROMET, releve tel quel : elle ne doit jamais promettre le tour.
+      firstTurn: openedBody['firstTurn'],
+      firstTurnVerified: openedBody['firstTurnVerified'],
       panelViewType: openedBody['panelViewType'],
       bodyCarriesToken: opened.body.includes(entry.token),
     };
     flush();
     assert.equal(opened.status, 200, `POST /conversations must succeed; got ${mask(opened.body)}`);
-    assert.equal(openedBody['mode'], 'nominal', 'the nominal V1 path must have been taken');
+    assert.equal(openedBody['mode'], 'seeded', 'the seeded V1 path must have been taken');
     assert.equal(openedBody['extHostPid'], extHostPid, 'the acting window must be THIS one');
     assert.equal(typeof openedBody['sessionId'], 'string', 'a session id must be returned');
     assert.equal(opened.body.includes(entry.token), false, 'no response may carry the token');
     assert.equal(
-      openedBody['seedProcessObserved'],
-      true,
+      openedBody['firstTurn'],
+      'process-started',
       'the first-turn process must have been OBSERVED before the panel was attached'
+    );
+    // ELLE NE DOIT JAMAIS PROMETTRE LE TOUR. C'est le garde-fou du défaut de la reprise 1 :
+    // la route rendait un succes qui se lisait « le tour est joue » pour un cas ou, mesure a
+    // l'appui, rien n'avait ete joue.
+    assert.equal(
+      openedBody['firstTurnVerified'],
+      false,
+      'the route must never claim the first turn was played: only the transcript can say so'
     );
 
     // Point 3 — DIFF DES ONGLETS. L'absence d'erreur ne prouve rien : `editor.open` reussit
@@ -335,6 +344,41 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
     flush();
     assert.deepEqual(leftovers, [], 'the transient prompt file must be gone');
 
+    // ---- LE TOUR 1 A-T-IL EU LIEU ? On va le CHERCHER, on ne le suppose pas -------------
+    //
+    // LIRE LE TRANSCRIPT EST AUTORISE **ICI, DANS LE TEST, ET LA SEULEMENT** : un test a le
+    // droit de constater ce que le code de production n'a pas le droit de supposer.
+    // `packages/**` reste interdit de toute dependance au transcript, a `CLAUDE_CONFIG_DIR`
+    // et a `sessions/<pid>.json` — cette frontiere ne bouge pas, c'est celle du lot D.
+    const turn = await lookForFirstTurn(
+      openedBody['sessionId'] as string,
+      (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? '',
+      45_000
+    );
+    report['firstTurnOnDisk'] = turn;
+    flush();
+
+    // CE QUI EST ASSERTE, ET POURQUOI PAS DAVANTAGE.
+    //
+    // On N'ASSERTE PAS `transcriptFound === true`, et c'est un blanc MESURE, pas une facilite.
+    // Banc de reprise du 2026-07-26, cinq variantes : un `claude` lance avec la ligne EXACTE
+    // attendue reste bloque dans `showSetupScreens()` — l'ecran d'accueil du CLI — sans jamais
+    // ecrire une ligne de transcript. Le blocage est le MEME dans un dossier temporaire neuf
+    // et a la racine du depot (donc ce n'est pas la porte de confiance du dossier), et le MEME
+    // que le terminal soit masque ou revele (donc ce n'est pas la detection du theme : revele,
+    // la requete OSC 11 obtient sa reponse, et le CLI bloque quand meme).
+    //
+    // C'est une PRECONDITION DE LA MACHINE — l'onboarding du CLI n'a jamais ete franchi pour
+    // une session interactive —, pas un defaut de ce mecanisme, et la franchir est interdit :
+    // `cmgr doctor` (lot D) doit la verifier et la NOMMER, jamais la franchir a l'aveugle.
+    //
+    // Ce qui EST asserte : la route ne ment pas, et le transcript, s'il existe, est coherent.
+    // Sur une machine dont l'onboarding est fait, cette preuve devient donc automatiquement
+    // plus forte, sans qu'on ait a y revenir.
+    if (turn['transcriptFound'] === true) {
+      assert.ok((turn['lines'] as number) > 0, 'a transcript that exists must carry at least one record');
+    }
+
     // ---- CE QUE LE DIFF D ONGLETS PROUVE, ET CE QU IL NE PROUVE PAS ---------------------
     //
     // FALSIFICATION, parce qu'une preuve qu'on ne cherche pas a casser n'en est pas une.
@@ -398,9 +442,20 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
     assert.equal(fallbackBody['sessionId'], null, 'no session is seeded in fallback mode');
     assert.equal(fallbackBody['humanActionRequired'], true, 'the human must validate the prefilled prompt');
     assert.equal(degraded?.['code'], 'PROMPT_TOO_LARGE', 'the response must carry the named cause');
+
+    // LE NOMBRE DE PANNEAUX EST RELEVÉ, JAMAIS ASSERTÉ — et c'est une correction, pas une
+    // prudence. Une première version exigeait un panneau de PLUS ; mesuré sur deux exécutions
+    // consécutives du même code, `editor.open(null, <prompt>)` a ouvert un troisième panneau
+    // une fois (2 → 3) et RÉUTILISÉ un panneau existant l'autre (2 → 2). Le comportement n'est
+    // pas contractuel : la commande pré-remplit le champ de saisie, elle ne promet pas
+    // d'ouvrir un onglet neuf. Une assertion dessus est un test instable — c'est-à-dire, à
+    // terme, un test qu'on désactive.
+    //
+    // Ce qui EST déterministe, et donc asserté, est le CONTRAT DE LA RÉPONSE : mode dégradé,
+    // aucune session, validation humaine requise, et la cause nommée qui l'accompagne.
     assert.ok(
-      claudePanels().length > panelsBeforeFallback.length,
-      'the fallback must have opened a conversation, prompt PRE-FILLED and not submitted'
+      claudePanels().length >= panelsBeforeFallback.length,
+      'the fallback must never CLOSE a conversation'
     );
 
     // ---- Point 9 : « commande disparue », SANS toucher a l'installation ------------------
@@ -433,6 +488,79 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
   } finally {
     flush();
   }
+}
+
+/**
+ * Cherche sur disque la trace du tour 1 — **dans le TEST, jamais dans le produit**.
+ *
+ * C'est le seul endroit du dépôt qui regarde `<CONFIG>/projects/**`, et c'est délibéré : la
+ * route ne PEUT pas s'y fier (frontière du lot D), mais la preuve, elle, doit pouvoir dire si
+ * le tour a réellement eu lieu plutôt que de le laisser croire.
+ *
+ * Le slug de répertoire est la convention D7 (`:` et `\` → `-`). On CHERCHE aussi le fichier
+ * par balayage : la convention n'est pas contractuelle, et une preuve qui conclurait « aucun
+ * tour » sur un slug devenu faux serait une preuve fausse.
+ */
+async function lookForFirstTurn(
+  sessionId: string,
+  cwd: string,
+  budgetMs: number
+): Promise<Record<string, unknown>> {
+  const projects = path.join(os.homedir(), '.claude', 'projects');
+  const slug = cwd.replace(/[:\\/]/g, '-');
+  const expected = path.join(projects, slug, `${sessionId}.jsonl`);
+
+  const started = Date.now();
+  let found: string | undefined;
+  while (Date.now() - started < budgetMs) {
+    if (fs.existsSync(expected)) {
+      found = expected;
+      break;
+    }
+    // Balayage : le slug n'est pas contractuel, le nom du fichier l'est davantage.
+    for (const dir of fs.existsSync(projects) ? fs.readdirSync(projects) : []) {
+      const candidate = path.join(projects, dir, `${sessionId}.jsonl`);
+      if (fs.existsSync(candidate)) {
+        found = candidate;
+        break;
+      }
+    }
+    if (found !== undefined) break;
+    await new Promise((done) => setTimeout(done, 1_000));
+  }
+
+  if (found === undefined) {
+    return {
+      transcriptFound: false,
+      projectDirectoryExists: fs.existsSync(path.join(projects, slug)),
+      waitedMs: Date.now() - started,
+      // LE CHEMIN N'EST PAS RAPPORTÉ, et `mask` n'aurait pas suffi : le slug du CLI remplace
+      // les séparateurs (`c--Users-<compte>-…`), donc il échappe à un masque qui cherche des
+      // chemins. Ce rapport est joint à des PR d'un dépôt PUBLIC — seul le VERDICT a une
+      // valeur de preuve, le chemin n'en a aucune.
+      projectDirectoriesScanned: fs.existsSync(projects) ? fs.readdirSync(projects).length : 0,
+    };
+  }
+
+  const lines = fs.readFileSync(found, 'utf8').split(/\r?\n/).filter((line) => line.length > 0);
+  return {
+    transcriptFound: true,
+    waitedMs: Date.now() - started,
+    lines: lines.length,
+    bytes: fs.statSync(found).size,
+    // Les TYPES d'enregistrements, jamais leur contenu : le rapport part dans une PR.
+    recordTypes: [
+      ...new Set(
+        lines.map((line) => {
+          try {
+            return String((JSON.parse(line) as { type?: unknown }).type ?? 'sans-type');
+          } catch {
+            return 'illisible';
+          }
+        })
+      ),
+    ].sort(),
+  };
 }
 
 /** Combien de temps un terminal met a QUITTER `window.terminals` apres sa suppression. */

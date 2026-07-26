@@ -68,6 +68,7 @@ par défaut, relocalisable par `CLAUDE_CONFIG_DIR` (D17).
 | D18 | Le paramètre `sessionId` de `claude-vscode.editor.open` **attache une session existante** | Contrat implicite de la commande interne (précise D1) | Étape 4 du mécanisme retenu — c'est ce qui distingue V1 de V5 | ADR-002 (V1) pour le comportement nominal ; **la perte de ce paramètre n'est toujours pas observée**, c'est un scénario de rupture anticipé | La commande existe (D1 passe) mais l'appel avec un `sessionId` valide ouvre un panneau qui n'est pas celui de la session. **⚠️ NON DÉTECTABLE EN C1** — voir D19 : la commande ouvre un panneau **même pour une session jamais amorcée**, le diff d'onglets ne discrimine donc pas. Détection reportée au lot D (transcript) |
 | D19 | `claude-vscode.editor.open(<uuid>)` ouvre un panneau **même quand aucune session ne porte cet uuid** | Comportement non documenté de la commande interne (précise D1, D10, D18) | **Rien** — c'est une LIMITE, recensée pour qu'on cesse de croire le contraire | **Mesurée C1 le 2026-07-26 sur 2.1.220, par falsification** : appel avec `00000000-0000-4000-8000-0000000c1c1c`, jamais amorcé → un onglet `claudeVSCodePanel` apparaît (`ghostSessionOpensAPanel: true`). Le libellé reste `Claude Code` pendant 45 s, **sans jamais devenir dérivé du contenu** | **Conséquence directe** : le diff d'onglets prouve que la commande a répondu, **jamais** que la session est chargée. Il ne peut donc servir ni d'horloge, ni de preuve d'attachement réel. Le mécanisme attend à la place un **fait observé dans la table des processus** (D20) |
 | D20 | Le shell du terminal masqué engendre le processus du tour 1, observable dans la **table des processus** | Comportement du système d'exploitation, **pas** une API interne Claude | Savoir que le tour 1 a **démarré** avant d'attacher puis de supprimer le terminal | **Mesuré C1 le 2026-07-26** : `seedProcessObserved: true`, une seule lecture de table suffisant en pratique (ouverture complète en **1 733 ms**) | Aucun processus n'est né du shell dans l'échelle bornée → erreur `SEED_PROCESS_NOT_STARTED`. **Ce que cela n'établit PAS, et c'est un blanc ASSUMÉ** : que le tour soit **terminé**. Le terminal est supprimé ~1,7 s après, et sa suppression tue le `claude` du tour 1 (ADR-002). Trancher suppose le transcript ou le hook `Stop` — **dette du lot D** |
+| D22 | **L'onboarding du CLI (`showSetupScreens`) bloque toute session interactive tant qu'il n'a pas été franchi une fois** | Comportement du CLI au démarrage | **Rien** — c'est une **précondition de la machine**, recensée parce qu'elle rend le tour 1 impossible sans que rien ne le signale | **Mesurée C1 (reprise 1) le 2026-07-26 sur 2.1.220**, cinq variantes, `--debug-file` à l'appui. Dernière ligne du journal du CLI : `[STARTUP] Running showSetupScreens()...`, jamais suivie d'autre chose — **87 s** plus tard le processus vit toujours et n'a écrit **aucun** transcript | **Aucune erreur n'est levée, aucune sortie n'est produite.** Le processus `claude` existe, porte la ligne de commande exacte attendue (vérifié sur `Win32_Process.CommandLine`) et **ne fait rien**. Aucun signal n'est disponible depuis `packages/**` : la détection appartient à `cmgr doctor` (lot D), qui doit la **vérifier et la nommer** — jamais la franchir |
 | D21 | Plafond de `lpCommandLine` (~32 767 unités UTF-16) atteint par le **prompt positionnel** | Limite du système d'exploitation, rendue atteignable par le **contrat CLI** (D3) | Refuser AVANT d'envoyer un prompt que la ligne ne peut pas porter | **Mesuré le 2026-07-26** ([ADR-004](adr/004-transport-du-prompt.md)) : 32 000 passe, 32 600 échoue, **identiquement** pour un prompt littéral et pour un prompt lu depuis un fichier (lignes de pty de 32 744 et 236 caractères) | **L'échec est SILENCIEUX** : aucune sortie, aucune erreur, aucun processus. La garde du cœur pèse la ligne du processus fils et lève `PROMPT_TOO_LARGE`, **puis** bascule sur le repli V5 — lequel passe le prompt en mémoire, sans ligne de commande |
 
 **Notes de conception** — consignes qui découlent des lignes ci-dessus, et qui ne sont pas des
@@ -163,6 +164,31 @@ Elles se propagent **jusqu'aux terminaux** de la fenêtre. Un `claude` lancé l�
 C'est le piège qui a fait conclure **à tort** à l'échec de la voie retenue lors de la première mesure ([ADR-002](adr/002-ouverture-interactive.md), « Écueils » n°1). `cmgr doctor` doit le détecter et le nommer ; les tests de non-régression le couvrent désormais à deux niveaux — deux tests unitaires, un par forme fautive, et le scénario d'intégration `open-conversation`.
 
 ### Deux portes avant le tour 1 — onboarding CLI et confiance du dossier
+
+> **MESURE DU 2026-07-26 (incrément C1, reprise 1) — la porte n°1 est confirmée, et son
+> périmètre est resserré.** Cinq variantes jouées dans une vraie fenêtre, avec `--debug-file` :
+>
+> | Variante | `cwd` | Terminal | Transcript écrit | Dernière ligne du journal CLI |
+> |---|---|---|---|---|
+> | A | temporaire neuf | masqué | **non** | *(sans debug)* |
+> | B | temporaire neuf | masqué | **non** | `[STARTUP] Running showSetupScreens()...` |
+> | C | **racine du dépôt** (connue du CLI) | masqué | **non** | idem |
+> | D | temporaire neuf | **révélé** | **non** | idem, mais `OSC 11 response=… detected=dark` |
+> | E | **racine du dépôt** | **révélé** | **non** | idem |
+>
+> Ce que ces cinq lignes établissent, et qu'aucune ne pouvait établir seule :
+> - **ce n'est pas la porte de confiance du dossier** — A/B et C/E ne diffèrent pas ;
+> - **ce n'est pas la détection du thème** — révélé, le terminal répond bien à `OSC 11`
+>   (`detected=dark`), et le CLI bloque **quand même**. La formule d'ADR-002 « la porte est
+>   l'onboarding lui-même, pas la valeur du thème » est confirmée, et il faut y ajouter : ni sa
+>   **détection** ;
+> - **le transport est hors de cause** — `Win32_Process.CommandLine` montre la ligne exacte
+>   attendue : binaire du bundle, `--session-id <uuid>`, prompt intact.
+>
+> **Conséquence opérationnelle** : sur une machine dont l'onboarding CLI n'a jamais été franchi
+> en session interactive, `POST /conversations` ouvre un panneau et amorce un processus, mais
+> **le tour 1 n'a pas lieu** — sans la moindre erreur. C'est pourquoi la réponse de la route
+> porte `firstTurnVerified: false` plutôt que de laisser croire à un succès complet.
 
 Sur une machine où l'humain n'utilise que le panneau, le **CLI interactif** ouvre le sélecteur de thème au premier lancement et **attend** — alors même que `theme` est déjà renseigné dans `<HOME>/.claude/settings.json` : la porte est l'onboarding lui-même, pas la valeur du thème, et aucune variable d'environnement ne le court-circuite. Le CLI demande ensuite `Quick safety check: Is this a project you created or one you trust?`, **par répertoire**.
 

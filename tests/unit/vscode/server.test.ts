@@ -81,10 +81,12 @@ function post(handle: ServerHandle, payload: unknown, extra: Record<string, stri
 
 const OPENED: OpenConversationResult = {
   ok: true,
-  mode: 'nominal',
+  mode: 'seeded',
   sessionId: '11111111-2222-3333-4444-555555555555',
   extHostPid: 11172,
   humanActionRequired: false,
+  firstTurn: 'process-started',
+  firstTurnVerified: false,
 };
 
 function authorized(): Record<string, string> {
@@ -278,7 +280,7 @@ describe('POST /conversations', () => {
     const reply = await post(handle, { prompt: 'x' });
 
     const payload = JSON.parse(reply.body) as Record<string, unknown>;
-    expect(payload['mode']).toBe('nominal');
+    expect(payload['mode']).toBe('seeded');
     expect(payload['sessionId']).toBe(OPENED.sessionId);
     expect(payload['extHostPid']).toBe(11172);
     expect(reply.body).not.toContain(TOKEN);

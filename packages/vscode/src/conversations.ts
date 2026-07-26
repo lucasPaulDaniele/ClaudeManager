@@ -175,7 +175,32 @@ export interface OpenConversationRequest {
   readonly prompt: string;
 }
 
-export type OpenMode = 'nominal' | 'fallback';
+/**
+ * QUEL CHEMIN A ETE PRIS — et rien de plus.
+ *
+ * `'seeded'` A REMPLACE `'nominal'`, ET CE N'EST PAS COSMETIQUE. « Nominal » se lit
+ * naturellement « tout s'est bien passe », c'est-a-dire « la conversation est ouverte et le
+ * tour 1 est joue ». Or c'est FAUX : ce que ce mode etablit est qu'une session a ete AMORCEE
+ * et qu'un panneau s'est attache — jamais que le tour ait ete joue (voir `firstTurnVerified`).
+ * Un nom qui laisse croire davantage que ce qui est mesure est une degradation silencieuse a
+ * lui tout seul.
+ */
+export type OpenMode = 'seeded' | 'fallback';
+
+/**
+ * CE QUE L'OUVERTURE A REELLEMENT ETABLI DU TOUR 1.
+ *
+ * `'process-started'` — un vrai processus a ete engendre par le shell d'amorcage, constate
+ * dans la table des processus. **Cela ne dit RIEN de ce qu'il fait**, et ce n'est pas une
+ * precaution de style : MESURE le 2026-07-26, un `claude` lance avec la ligne EXACTE attendue
+ * — binaire du bundle, `--session-id`, prompt intact — reste bloque 87 secondes dans
+ * `showSetupScreens()`, l'ecran d'accueil du CLI, sans jamais ecrire une ligne de transcript.
+ * L'identite du processus ne discrimine donc PAS un CLI qui joue le tour d'un CLI arrete a
+ * une porte : les deux sont `claude.exe`, avec la meme ligne de commande.
+ *
+ * `'not-attempted'` — repli V5 : aucune session n'a ete amorcee, il n'y a pas de tour.
+ */
+export type FirstTurnOutcome = 'process-started' | 'not-attempted';
 
 export interface OpenConversationResult {
   readonly ok: true;
@@ -183,8 +208,27 @@ export interface OpenConversationResult {
   /** `null` en repli : aucune session n'a ete amorcee, l'humain valide un champ pre-rempli. */
   readonly sessionId: string | null;
   readonly extHostPid: number;
-  /** Vrai en repli seulement : le prompt est pre-rempli, il n'est PAS soumis. */
+  /**
+   * Vrai en repli SEULEMENT, et l'enonce est etroit a dessein : le prompt est pre-rempli dans
+   * le champ de saisie et attend une validation humaine. Ce champ ne dit RIEN de l'etat du
+   * tour 1 dans la voie amorcee — c'est `firstTurnVerified` qui le porte.
+   */
   readonly humanActionRequired: boolean;
+  /** Ce que l'ouverture a etabli du tour 1 — jamais plus que ce qui a ete observe. */
+  readonly firstTurn: FirstTurnOutcome;
+  /**
+   * LE TOUR 1 A-T-IL ETE JOUE ? **TOUJOURS `false`, ET C'EST STRUCTUREL.**
+   *
+   * Le savoir suppose de lire le transcript (`<CONFIG>/projects/**`) ou le hook `Stop`, dont
+   * `packages/**` n'a pas le droit de dependre : c'est la frontiere du lot D, et elle ne
+   * bouge pas. Le champ existe pour que l'appelant n'ait pas a DEDUIRE cette limite d'une
+   * absence — un agent qui lit `ok: true` sans ce champ conclurait, a tort, que le tour a eu
+   * lieu.
+   *
+   * Le type est litteral : une version ulterieure qui saurait le verifier devra elargir ce
+   * type, donc rompre la compilation de ses consommateurs. C'est voulu — la promesse change.
+   */
+  readonly firstTurnVerified: false;
   /**
    * Le `viewType` de l'onglet apparu, RELEVE TEL QUEL — il est prefixe par VSCode.
    *
@@ -192,11 +236,6 @@ export interface OpenConversationResult {
    * la preuve d'attachement a porte. Absent en repli, ou aucun diff n'est fait.
    */
   readonly panelViewType?: string | undefined;
-  /**
-   * Le shell a bien engendre le processus du tour 1 — fait OBSERVE dans la table des
-   * processus, jamais suppose. Absent en repli.
-   */
-  readonly seedProcessObserved?: boolean;
   /**
    * L'ERREUR QUI A CAUSE LE REPLI — le repli s'AJOUTE a elle, il ne la remplace jamais
    * (dette D18). Sans ce champ, l'appelant croirait le mecanisme nominal intact.
@@ -479,6 +518,9 @@ async function runFallback(
     sessionId: null,
     extHostPid,
     humanActionRequired: true,
+    // Aucune session n'a ete amorcee : il n'y a pas de tour 1 a qualifier.
+    firstTurn: 'not-attempted',
+    firstTurnVerified: false,
     degradedFrom: cause.toJSON(),
   };
 }
@@ -613,22 +655,27 @@ export async function openConversation(
     terminal.sendText(buildSeedCommandLine({ claudeBinary, sessionId, promptFile }));
     log(`seed line sent to a hidden terminal (session ${sessionId})`);
 
-    // ---- Etape 5 bis : le tour 1 a REELLEMENT demarre ------------------------------------
+    // ---- Etape 5 bis : un processus a REELLEMENT ete engendre ----------------------------
     // Correction d'un defaut mesure : sans elle, l'attachement aboutissait avant que `claude`
     // n'existe, et la suppression du terminal tuait le tour a sa naissance.
-    const seed = await awaitSeedProcess(terminal, readTable, wait, log);
+    //
+    // CE QU'ELLE ETABLIT S'ARRETE LA, ET LE RESULTAT LE DIT : le processus existe. Qu'il joue
+    // le tour ou qu'il attende derriere l'ecran d'accueil du CLI ne se distingue pas d'ici —
+    // mesure du 2026-07-26, les deux sont `claude.exe` avec la meme ligne de commande.
+    await awaitSeedProcess(terminal, readTable, wait, log);
 
     // ---- Etape 6 : attachement, prouve par diff des onglets ------------------------------
     const panel = await attachPanel(editor, sessionId, before, wait, log);
 
     return {
       ok: true,
-      mode: 'nominal',
+      mode: 'seeded',
       sessionId,
       extHostPid,
       humanActionRequired: false,
+      firstTurn: 'process-started',
+      firstTurnVerified: false,
       panelViewType: panel.viewType,
-      seedProcessObserved: seed.seedPid !== undefined,
     };
   } catch (error) {
     if (!isClaudeManagerError(error)) throw error;

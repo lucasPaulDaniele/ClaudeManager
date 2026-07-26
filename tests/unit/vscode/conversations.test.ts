@@ -286,7 +286,7 @@ describe('etapes 3 a 6 — la voie nominale', () => {
 
     const result = await harness.open('Reponds exactement OK');
 
-    expect(result).toMatchObject({ ok: true, mode: 'nominal', extHostPid: 11172, humanActionRequired: false });
+    expect(result).toMatchObject({ ok: true, mode: 'seeded', extHostPid: 11172, humanActionRequired: false });
     const spec = harness.trace.terminals[0]?.spec;
     expect(spec?.shellPath).toBe(path.join(harness.binDirectory, 'pwsh.exe'));
     expect(spec?.shellArgs).toEqual(['-NoLogo']);
@@ -410,7 +410,7 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
     expect(order.indexOf('readProcessTable')).toBeLessThan(
       order.indexOf(`executeCommand(${CLAUDE_OPEN_COMMAND}, sessionId)`)
     );
-    expect(result.seedProcessObserved).toBe(true);
+    expect(result.firstTurn).toBe('process-started');
   });
 
   it('patiente tant que le shell n a rien engendre, puis repart des qu il l a fait', async () => {
@@ -420,7 +420,7 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
 
     const result = await harness.open('x');
 
-    expect(result.mode).toBe('nominal');
+    expect(result.mode).toBe('seeded');
     expect(harness.trace.calls.filter((call) => call === 'readProcessTable')).toHaveLength(3);
   });
 
@@ -455,6 +455,54 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
     await refusal(harness);
 
     expect(harness.trace.calls.some((call) => call.includes('sessionId'))).toBe(false);
+  });
+});
+
+describe("ce que la reponse PROMET — garde-fou du defaut mesure a la reprise 1", () => {
+  /**
+   * LE DEFAUT, ET IL ETAIT SILENCIEUX. La route rendait `mode: 'nominal'`,
+   * `humanActionRequired: false`, sans autre qualificatif — c'est-a-dire « la conversation est
+   * ouverte et le tour 1 est joue ». Or la mesure du 2026-07-26 (banc de reprise, trois
+   * variantes) montre qu'un `claude` lance avec la ligne EXACTE attendue — binaire du bundle,
+   * `--session-id`, prompt intact, verifie sur `Win32_Process.CommandLine` — reste bloque
+   * **87 secondes** dans `showSetupScreens()` sans ecrire une seule ligne de transcript, et
+   * cela **quel que soit le workspace** (temporaire neuf comme racine du depot deja connue du
+   * CLI). Le `mode` recouvrait donc une conversation potentiellement VIDE.
+   *
+   * `awaitSeedProcess` ne peut pas trancher, et ce n'est pas faute de finesse : les deux cas
+   * sont le MEME processus, `claude.exe`, avec la MEME ligne de commande. Renforcer
+   * l'observation par l'identite du processus n'y changerait rien — c'est mesure.
+   *
+   * La reponse dit donc desormais ce qu'elle a etabli, et rien de plus.
+   */
+  it('ne pretend JAMAIS que le tour 1 a ete joue', async () => {
+    const harness = makeHarness();
+
+    const result = await harness.open('x');
+
+    // `'nominal'` se lisait « tout va bien ». `'seeded'` dit ce qui a eu lieu : une session
+    // amorcee, un panneau attache.
+    expect(result.mode).toBe('seeded');
+    expect(result.firstTurn).toBe('process-started');
+    // LE CHAMP QUI PORTE LA LIMITE, pour que l'appelant n'ait pas a la deduire d'une absence.
+    expect(result.firstTurnVerified).toBe(false);
+  });
+
+  it('ne qualifie AUCUN tour en repli : il n y a pas de session amorcee', async () => {
+    const harness = makeHarness();
+
+    const result = await harness.open('A'.repeat(40_000));
+
+    expect(result.mode).toBe('fallback');
+    expect(result.firstTurn).toBe('not-attempted');
+    expect(result.firstTurnVerified).toBe(false);
+  });
+
+  it('reserve `humanActionRequired` a ce qu il enonce vraiment — le champ pre-rempli', async () => {
+    // Il ne dit RIEN de l'etat du tour 1 : c'est `firstTurnVerified` qui le porte. Les
+    // confondre reintroduirait exactement l'ambiguite qu'on vient de retirer.
+    expect((await makeHarness().open('x')).humanActionRequired).toBe(false);
+    expect((await makeHarness().open('A'.repeat(40_000))).humanActionRequired).toBe(true);
   });
 });
 
@@ -595,7 +643,7 @@ describe('ce que le mecanisme prend du PROCESSUS quand on ne lui dit rien', () =
       }
     );
 
-    expect(result.mode).toBe('nominal');
+    expect(result.mode).toBe('seeded');
     // La granularite du sondage est de 250 ms : au moins une attente a eu lieu.
     expect(Date.now() - started).toBeGreaterThanOrEqual(200);
   });
@@ -617,7 +665,7 @@ describe('ce que le mecanisme prend du PROCESSUS quand on ne lui dit rien', () =
       }
     );
 
-    expect(result.mode).toBe('nominal');
+    expect(result.mode).toBe('seeded');
   });
 });
 
@@ -650,7 +698,7 @@ describe('hygiene et concurrence', () => {
     const result = await harness.open('x');
 
     // L'hygiene ne fait PAS echouer une ouverture — mais elle ne se tait pas non plus.
-    expect(result.mode).toBe('nominal');
+    expect(result.mode).toBe('seeded');
     expect(harness.trace.lines.some((line) => line.includes('could not sweep'))).toBe(true);
     expect(fs.existsSync(trap)).toBe(true);
   });
@@ -681,7 +729,8 @@ describe('hygiene et concurrence', () => {
       order.push(`debut ${label}`);
       await new Promise((done) => setTimeout(done, 5));
       order.push(`fin ${label}`);
-      return { ok: true, mode: 'nominal', sessionId: label, extHostPid: 1, humanActionRequired: false };
+      return { ok: true, mode: 'seeded', sessionId: label, extHostPid: 1, humanActionRequired: false,
+        firstTurn: 'process-started', firstTurnVerified: false };
     });
 
     await Promise.all([serialized('a'), serialized('b')]);
@@ -695,7 +744,8 @@ describe('hygiene et concurrence', () => {
       calls += 1;
       return label === 'ko'
         ? Promise.reject(new Error('ko'))
-        : Promise.resolve({ ok: true, mode: 'nominal', sessionId: label, extHostPid: 1, humanActionRequired: false } as OpenConversationResult);
+        : Promise.resolve({ ok: true, mode: 'seeded', sessionId: label, extHostPid: 1, humanActionRequired: false,
+        firstTurn: 'process-started', firstTurnVerified: false } as OpenConversationResult);
     });
 
     await expect(serialized('ko')).rejects.toThrow('ko');

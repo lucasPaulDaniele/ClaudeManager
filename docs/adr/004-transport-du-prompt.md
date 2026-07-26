@@ -204,6 +204,58 @@ porte un `— non vérifié` assumé (D17). L'absence de ce processus est nommé
 (`SEED_PROCESS_NOT_STARTED`), et c'est aussi le premier signal dont disposent les **deux
 portes** du CLI : quand l'une attend, rien n'est engendré.
 
-**Ce qui reste ouvert, et c'est écrit plutôt que comblé** : cette attente établit que le tour a
-**démarré**, pas qu'il soit **terminé**. Le savoir suppose de lire le transcript ou le hook
-`Stop` — donc le **lot D**. Voir D20 dans [`../compatibilite.md`](../compatibilite.md).
+**Ce qui reste ouvert, et c'est écrit plutôt que comblé** : cette attente établit qu'un
+**processus a été engendré**, pas que le tour soit joué ni terminé. Le savoir suppose de lire le
+transcript ou le hook `Stop` — donc le **lot D**. Voir D20 dans
+[`../compatibilite.md`](../compatibilite.md).
+
+## Reprise 1 — ce que « la conversation est ouverte » ne dit pas, et pourquoi
+
+La première livraison rendait `mode: "nominal"`, `humanActionRequired: false`. Vérification
+faite **sur pièce** : pour la session ouverte, **aucun transcript n'existait** sous
+`<CONFIG>/projects/**`. Le contrôle est valide sur un cas positif — le spike A1 tournait lui
+aussi dans un dossier temporaire et y a bien laissé son répertoire de projet.
+
+### La cause, mesurée en cinq variantes
+
+Banc de reprise, vraie fenêtre, `--debug-file` (instrument de mesure, **absent du produit** :
+il écrit dans un fichier et ne capture pas la sortie du pty, donc il ne change pas
+l'interactivité).
+
+| Variante | `cwd` | Terminal | Transcript | Dernière ligne du journal CLI |
+|---|---|---|---|---|
+| A | temporaire neuf | masqué | **non** | *(sans debug)* |
+| B | temporaire neuf | masqué | **non** | `[STARTUP] Running showSetupScreens()...` |
+| C | racine du dépôt | masqué | **non** | idem |
+| D | temporaire neuf | **révélé** | **non** | idem + `OSC 11 response=… detected=dark` |
+| E | racine du dépôt | **révélé** | **non** | idem |
+
+Le processus engendré est bien `claude.exe`, avec la ligne de commande **exacte** attendue —
+relevée sur `Win32_Process.CommandLine` : binaire du bundle, `--session-id <uuid>`, prompt
+intact. Le transport est donc hors de cause. Il vit **87 secondes** sans rien écrire.
+
+**Conclusion, et elle est étroite** : le CLI s'arrête dans `showSetupScreens()`, son écran
+d'accueil. Ce n'est **pas** la porte de confiance du dossier (A/B ≡ C/E), et ce n'est **pas** la
+détection du thème (révélé, `OSC 11` obtient sa réponse et le blocage demeure). C'est
+l'onboarding lui-même — ce qu'ADR-002 énonçait, ici confirmé et resserré.
+
+### Ce que la décision en tire
+
+**L'identité du processus ne peut PAS servir de preuve du tour**, et c'est mesuré : un CLI qui
+joue le tour et un CLI arrêté à son écran d'accueil sont le **même** exécutable avec la **même**
+ligne de commande. Renforcer l'observation de ce côté n'apporterait rien.
+
+Puisque `packages/**` n'a pas le droit de lire le transcript, **la route ne peut pas établir le
+tour — elle doit donc cesser de le laisser croire** :
+
+- `mode: 'nominal'` devient **`'seeded'`**. « Nominal » se lit « tout s'est bien passé » ;
+  « seeded » dit ce qui a eu lieu — une session amorcée, un panneau attaché.
+- Deux champs nommés apparaissent : `firstTurn` (`'process-started'` | `'not-attempted'`) et
+  **`firstTurnVerified`, littéralement typé `false`**. Une version ultérieure qui saurait le
+  vérifier devra élargir ce type, donc rompre la compilation de ses consommateurs : la promesse
+  change, le type le dit.
+- `humanActionRequired` garde son énoncé étroit — le prompt est pré-rempli et attend une
+  validation — et ne dit **rien** de l'état du tour.
+
+**Le franchissement de la porte reste interdit**, au produit comme au banc : son libellé n'est
+pas contractuel, et `cmgr doctor` (lot D) doit la **vérifier et la nommer**. Consigné en **D22**.
