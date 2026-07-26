@@ -224,14 +224,45 @@ describe('resolution des executables', () => {
   });
 
   it('decoupe le PATH selon la convention de la PLATEFORME, jamais un separateur code en dur', () => {
-    expect(splitPathVariable(`c:\\a${path.delimiter}c:\\b`)).toEqual(['c:\\a', 'c:\\b']);
+    /**
+     * LES ENTREES NE PORTENT NI `:` NI `;`, ET C'EST LE FOND DE LA CORRECTION.
+     *
+     * La version precedente construisait l'entree avec `path.delimiter` — donc en suivant la
+     * plateforme — mais codait des chemins de forme Windows dans l'ATTENDU. Sous Linux, ou le
+     * delimiteur EST `:`, la chaine `c:\a:c:\b` se decoupe en QUATRE morceaux
+     * (`c`, `\a`, `c`, `\b`) : le test se contredisait des qu'il changeait de plateforme, et
+     * la CI publique — qui tourne sous Linux — le disait depuis la livraison initiale.
+     *
+     * Il eprouvait son CAS PARTICULIER, pas sa REGLE. La regle, elle, est la meme partout :
+     * on decoupe selon la convention de la plateforme. Des entrees sans separateur d'aucune
+     * des deux conventions la rendent verifiable des deux cotes.
+     */
+    expect(splitPathVariable(`dossier-a${path.delimiter}dossier-b`)).toEqual([
+      'dossier-a',
+      'dossier-b',
+    ]);
     expect(splitPathVariable(undefined)).toEqual([]);
     expect(splitPathVariable('')).toEqual([]);
-    // Un `PATH` Windows peut citer une entree : les guillemets sont de la syntaxe, pas du chemin.
-    expect(splitPathVariable(`"c:\\avec espace"${path.delimiter}  c:\\b  `)).toEqual([
-      'c:\\avec espace',
-      'c:\\b',
+    // Les guillemets sont de la SYNTAXE de la variable, pas du chemin ; les espaces de bord
+    // non plus.
+    expect(splitPathVariable(`"avec espace"${path.delimiter}  autre  `)).toEqual([
+      'avec espace',
+      'autre',
     ]);
+  });
+
+  /**
+   * Cas INTRINSEQUEMENT propre a Windows : une lettre de lecteur ne se decoupe correctement
+   * que la ou le delimiteur est `;`. Il est GARDE parce que c'est la forme de PRODUCTION du
+   * poste cible, et BORNE parce qu'il n'a aucun sens ailleurs — meme convention que les tests
+   * POSIX deja ignores sous Windows.
+   */
+  const windowsOnly = process.platform === 'win32' ? it : it.skip;
+
+  windowsOnly('decoupe un vrai PATH Windows, lettres de lecteur comprises', () => {
+    expect(path.delimiter).toBe(';');
+    expect(splitPathVariable('c:\\a;c:\\b')).toEqual(['c:\\a', 'c:\\b']);
+    expect(splitPathVariable('"c:\\avec espace";c:\\b')).toEqual(['c:\\avec espace', 'c:\\b']);
   });
 
   it('cherche les noms de binaire propres a la plateforme', () => {
