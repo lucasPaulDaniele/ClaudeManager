@@ -376,9 +376,22 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
  * que « vivant » veut dire pour une entree qu'on ne comprend pas est fixe par le contrat
  * inter-versions — voir `judgeForeignLiveness`.
  *
- * Contre-intuitif mais volontaire : une entree illisible ou corrompue dont on n'a pas pu
- * lire le pid n'est PAS supprimable non plus — on ignore si sa fenetre est morte, et
- * supprimer par defaut reviendrait a nettoyer a l'aveugle le registre d'autrui.
+ * Contre-intuitif mais volontaire : ni un fichier corrompu, ni une entree dont le nom dement
+ * le contenu (`identity-mismatch`) ne sont supprimables — MEME quand un pid mort y est
+ * parfaitement lisible.
+ *
+ * LE MOTIF N'EST PAS « on ignore si sa fenetre est morte », et le dire serait faux : un
+ * fichier nomme `<pid>.json` porte un pid lisible dans son NOM, et une entree
+ * `identity-mismatch` porte le sien dans son CONTENU. Le motif est que LA CONVENTION DE
+ * NOMMAGE N'EST PAS DANS LE CONTRAT INTER-VERSIONS : celui-ci ne gele que `schemaVersion` et
+ * `extHostPid` (voir `judgeForeignLiveness`), jamais la facon dont les fichiers sont nommes.
+ * Une version 2 a le droit de nommer les siens autrement — et la version 1 lirait alors un
+ * `identity-mismatch`, ou un fichier corrompu, sur une entree parfaitement VIVANTE.
+ * Conclure « le pid 12345 est mort » sur la foi d'un nom de fichier reviendrait a detruire
+ * l'entree d'une version ulterieure : exactement ce que `schemaVersion` existe pour empecher.
+ *
+ * Seul le CONTENU autorise a conclure, et seulement quand le fichier revendique son propre
+ * nom. Ce qui n'est pas supprime est RAPPORTE dans `kept`, jamais escamote.
  *
  * FRAICHEUR DE L'INSTANTANE — contrainte propre a la purge, que la lecture n'a pas :
  * `dead` ne veut dire que « absent de CET instantane ». Une entree publiee apres sa capture

@@ -288,6 +288,46 @@ describe('purgeStaleEntries', () => {
     ]);
   });
 
+  /**
+   * C8 — ce que la purge s interdit de conclure du NOM d un fichier.
+   *
+   * Les cas deja couverts ne jouaient que des noms qui ne sont pas des pid (`tronque.json`,
+   * `sans-pid.json`) : le motif « on ignore si sa fenetre est morte » y suffisait. Ceux-ci
+   * portent un pid MORT dans leur nom, et restent malgre tout immortels — parce que la
+   * convention de nommage n est pas dans le contrat inter-versions, et qu une version 2 qui
+   * nommerait ses fichiers autrement se lirait ici exactement ainsi.
+   */
+  it('ne conclut RIEN du NOM d un fichier, meme quand ce nom porte un pid mort', () => {
+    const table = tableWithoutExtensionHosts();
+    expect(table.has(HOST) || table.has(SIBLING), 'les deux pid doivent etre morts').toBe(false);
+    // Le NOM porte un pid mort ; le CONTENU, lui, n en donne aucun — et c est le contenu,
+    // seul, qui autorise a conclure.
+    writeRaw(dir, `${HOST}.json`, '{"schemaVersion": 1, "extHostPid":');
+    writeRaw(dir, `${SIBLING}.json`, JSON.stringify({ schemaVersion: 1 }));
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(table), dir });
+
+    expect(result.removed).toEqual([]);
+    expect([...result.kept].sort((a, b) => a.file.localeCompare(b.file))).toEqual([
+      { file: `${HOST}.json`, reason: 'unparsable' },
+      { file: `${SIBLING}.json`, reason: 'invalid' },
+    ]);
+    expect(readdirSync(dir).sort()).toEqual([`${HOST}.json`, `${SIBLING}.json`]);
+  });
+
+  it('n efface pas davantage une entree dont le nom dement le contenu, les deux pid fussent-ils morts', () => {
+    // `identity-mismatch` n est JAMAIS classee `dead` : le pid du contenu est pourtant
+    // parfaitement lisible, et mort dans cet instantane. C est le prix assume de ne rien
+    // conclure d un nom — cette entree est immortelle, et `cmgr doctor` la montrera.
+    writeRaw(dir, `${SIBLING}.json`, JSON.stringify(currentSchemaEntry(HOST)));
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
+
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([{ file: `${SIBLING}.json`, reason: 'identity-mismatch' }]);
+    expect(readdirSync(dir)).toEqual([`${SIBLING}.json`]);
+  });
+
   it('reste sans effet sur un registre inexistant', () => {
     const absent = path.join(dir, 'absent');
 
