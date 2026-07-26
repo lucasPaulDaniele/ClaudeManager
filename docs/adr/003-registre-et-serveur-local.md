@@ -54,7 +54,7 @@ sur le même dossier se collisionneraient, et c'est le cas de référence du pro
 Conséquence directe, exploitée par la décision 5 : le système de fichiers interdit deux fichiers
 de même nom, donc **un PID ne peut être revendiqué qu'une fois**.
 
-## Décision 2 — le contrat inter-versions tient en deux champs
+## Décision 2 — le contrat inter-versions tient en deux champs, **et un nom de fichier**
 
 Le schéma courant est `schemaVersion: 1` (`packages/core/src/registry/entry.ts`). Une entrée
 porte `extHostPid`, `mainPid`, `port`, `token`, `workspaceFolders`, `isTrusted`,
