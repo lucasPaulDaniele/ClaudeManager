@@ -61,6 +61,17 @@ export function resolveOwningWindow<T extends WindowLike>(
   const depthByPid = new Map<number, number>();
   ownershipChain(callerPid, table).forEach((pid, depth) => depthByPid.set(pid, depth));
 
+  /**
+   * Les extension hosts DEJA revendiques, et c'est l'index qui detecte l'ambiguite.
+   *
+   * INDEXER PAR PID, JAMAIS PAR PROFONDEUR. L'egalite de profondeur ne se lisait que face
+   * a la fenetre RETENUE, laquelle n'est mise a jour que par la branche « plus proche » :
+   * deux fenetres de meme `extHostPid` situees plus loin qu'une fenetre deja retenue
+   * n'etaient donc jamais comparees entre elles. Meme ensemble, trois ordres, deux
+   * verdicts — precisement ce que la decision 5 d'ADR-003 interdit.
+   */
+  const claimed = new Set<number>();
+
   let owner: T | undefined;
   let ownerDepth = Number.POSITIVE_INFINITY;
   for (const window of windows) {
@@ -72,24 +83,32 @@ export function resolveOwningWindow<T extends WindowLike>(
     const depth = depthByPid.get(window.extHostPid);
     if (depth === undefined) continue;
 
-    // DEUX FENETRES A LA MEME PROFONDEUR, C'EST DEUX FENETRES DE MEME `extHostPid` — la
-    // chaine ne porte aucun doublon de pid, l'egalite de profondeur ne peut venir que de
-    // la. Or le registre nomme ses fichiers d'apres le pid et la lecture le verifie : ce
-    // cas ne peut plus provenir que d'une duplication ou d'une forge. On ne departage
-    // donc PAS — surtout pas par l'ordre d'enumeration, qui donnerait la victoire au
-    // premier nom de fichier venu. L'ambiguite est nommee, l'appelant tranche.
-    if (depth === ownerDepth) {
+    // UN PID REVENDIQUE DEUX FOIS EST UNE AMBIGUITE, quelle que soit sa place dans la
+    // chaine. Le registre nomme ses fichiers d'apres le pid et la lecture le verifie : ce
+    // cas ne peut plus provenir que d'une duplication ou d'une forge. On ne departage donc
+    // PAS — surtout pas par l'ordre d'enumeration, qui donnerait la victoire au premier nom
+    // de fichier venu. L'ambiguite est nommee, l'appelant tranche.
+    //
+    // PORTEE, ET ELLE EST HONNETE : ce chemin n'est PAS atteignable depuis `readRegistry`
+    // aujourd'hui — `claimsItsOwnName` impose `<extHostPid>.json`, et deux fichiers d'un
+    // meme repertoire ne peuvent pas porter le meme nom. C'est de la defense en profondeur.
+    // Mais cette fonction est exportee publiquement sur un `WindowLike` qui n'exige qu'un
+    // `extHostPid`, et le lot C sera le premier appelant a ne pas venir de `readRegistry`.
+    if (claimed.has(window.extHostPid)) {
       throw new ClaudeManagerError(
         ERROR_CODES.DUPLICATE_WINDOW_IDENTITY,
         `Two registered windows claim extension host ${window.extHostPid}`,
         { extHostPid: window.extHostPid, chainDepth: depth }
       );
     }
+    claimed.add(window.extHostPid);
 
     // Quand PLUSIEURS fenetres enregistrees figurent dans la chaine — cas anormal mais
     // possible, une fenetre VSCode ouverte depuis le terminal integre d'une autre —, on
     // retient la PLUS PROCHE du processus appelant. C'est necessairement la fenetre hote
     // reelle : les autres ne sont que ses aieules, et agir sur elles violerait l'isolation.
+    // L'arbitrage n'a lieu qu'APRES la garde ci-dessus : on ne departage jamais une
+    // ambiguite, on la nomme.
     if (depth < ownerDepth) {
       owner = window;
       ownerDepth = depth;
