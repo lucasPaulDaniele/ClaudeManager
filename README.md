@@ -138,7 +138,9 @@ cmgr doctor                              # 🚧 lot D — diagnostiquer l'enviro
 
 Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain. Cela vaut **sans exception**, y compris pour `--help` et pour les erreurs — un agent doit pouvoir faire `JSON.parse(stdout)` sans condition.
 
-Le prompt passe **toujours par fichier**, jamais en argument — l'échappement des prompts longs en shell (a fortiori PowerShell) est une source de bugs inépuisable. Cette règle porte sur **l'interface de `cmgr` vis-à-vis de son appelant**, et seulement sur elle : le **transport interne** vers le pty est aujourd'hui un prompt positionnel — c'est la forme mesurée — et il **reste à trancher au lot C**, la ligne de commande Windows plafonnant autour de 32 Ko quand un prompt d'orchestration en pèse couramment 15 à 25.
+Le prompt passe **toujours par fichier**, jamais en argument — l'échappement des prompts longs en shell (a fortiori PowerShell) est une source de bugs inépuisable. Cette règle porte sur **l'interface de `cmgr` vis-à-vis de son appelant**, et seulement sur elle.
+
+Le **transport interne** vers le pty, lui, a été **tranché par la mesure** le 2026-07-26 ([ADR-004](docs/adr/004-transport-du-prompt.md)) : le prompt reste **positionnel** — le CLI n'offre rien d'autre —, et il est alimenté depuis un **fichier transitoire que le shell lit en donnée**, si bien qu'il ne traverse jamais l'analyseur du shell. Le plafond, lui, est réel et **il est celui de `CreateProcess`, pas du terminal** : mesuré, 32 000 caractères passent et 32 600 échouent — **sans la moindre erreur**. C'est cet échec silencieux qui est inacceptable, pas le plafond : une garde du cœur pèse la ligne **avant** de l'envoyer et refuse par une erreur nommée, puis bascule sur le repli pré-rempli — lequel passe le prompt en mémoire, hors de toute ligne de commande.
 
 `--wait` relit la réponse du premier tour dans le transcript de la session : il dépend du lot D (voir la [feuille de route](#feuille-de-route)).
 
