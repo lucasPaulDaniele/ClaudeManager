@@ -342,7 +342,7 @@ describe('la purge d une fenetre face a l entree VIVANTE de l autre', () => {
     // reproche — une ecoute vivante que plus aucun registre ne decrit.
     expect(await probe(before.port, before.token)).toBe(200);
 
-    await pair.b.publisher.republishIfEntryVanished('after the sweep');
+    await pair.b.publisher.republishIfEntryLost('after the sweep');
 
     expect(existsSync(pair.b.publisher.entryFile)).toBe(true);
     const after = readEntry(pair.b);
@@ -350,7 +350,7 @@ describe('la purge d une fenetre face a l entree VIVANTE de l autre', () => {
     expect(after.token).toBe(before.token);
     expect(pair.b.lines.join('\n')).toContain('registry entry vanished');
     // Et A n'a pas ete emportee : elle se republie de son cote, sans rien devoir a B.
-    await pair.a.publisher.republishIfEntryVanished('after the sweep');
+    await pair.a.publisher.republishIfEntryLost('after the sweep');
     expect(entryFilesIn(pair.dir)).toEqual([`${HOST}.json`, `${SIBLING}.json`]);
   });
 

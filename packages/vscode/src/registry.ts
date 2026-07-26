@@ -18,8 +18,19 @@
  */
 
 import { rmSync } from 'node:fs';
-import path from 'node:path';
-import { resolveRegistryDir, WINDOW_ENTRY_SCHEMA_VERSION, type WindowEntry } from './core.js';
+import { windowEntryPath, WINDOW_ENTRY_SCHEMA_VERSION, type WindowEntry } from './core.js';
+
+/**
+ * LA CONVENTION DE NOMMAGE VIENT DU COEUR, elle n'est plus redite ici.
+ *
+ * Elle y etait DUPLIQUEE, faute d'un equivalent exporte — dette signalee en commentaire et
+ * gardee par un test (`tests/unit/vscode/registry.test.ts`). Le coeur l'exporte depuis le gate
+ * final du lot B : `windowEntryPath` et `windowEntryFileName` vivent a cote de
+ * `resolveRegistryDir`, et l'ecriture comme la lecture du registre les emploient. La
+ * reexportation garde la porte unique de ce module — le reste de l'extension continue
+ * d'importer sa plomberie de registre ici, sans savoir d'ou vient la convention.
+ */
+export { windowEntryPath };
 
 /** Identite de la fenetre : les deux pid, releves ensemble. */
 export interface WindowIdentity {
@@ -79,19 +90,6 @@ export function buildWindowEntry(draft: WindowEntryDraft): WindowEntry {
     extensionVersion: draft.extensionVersion,
     startedAt: draft.startedAt,
   };
-}
-
-/**
- * Chemin du fichier d'entree d'UNE fenetre.
- *
- * DETTE ASSUMEE : le nommage `<extHostPid>.json` est une convention du coeur, que ce module
- * doit ici redire faute d'un equivalent exporte. C'est la seule connaissance du registre
- * dupliquee dans l'extension — signalee comme telle, a remonter dans
- * `core/registry/store.node.ts`. Elle est isolee dans cette unique fonction : le jour ou le
- * coeur l'exportera, il n'y aura qu'un corps a remplacer.
- */
-export function windowEntryPath(extHostPid: number, dir?: string): string {
-  return path.join(resolveRegistryDir(dir), `${extHostPid}.json`);
 }
 
 /**
