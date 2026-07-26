@@ -3,7 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  acquireHarnessLock,
   findHarnessLeftovers,
+  HARNESS_LOCK_FILE,
+  releaseHarnessLock,
   removeQuietly,
 } from '../../integration/src/cleanup.js';
 
@@ -156,5 +159,87 @@ describe('findHarnessLeftovers', () => {
 
   it('rend une liste vide sur un repertoire illisible, sans lever', () => {
     expect(findHarnessLeftovers(path.join(makeDir(), 'absent'))).toEqual([]);
+  });
+});
+
+/**
+ * LE VERROU D'EXECUTION — finding S7.
+ *
+ * Le balayage ci-dessus supprime les residus des executions PRECEDENTES, `--user-data-dir`
+ * compris. Il etait justifie par une affirmation FAUSSE : « deux executions simultanees sont
+ * deja impossibles par construction, `cmgr-b3-current.json` etant ecrit a un chemin fixe que la
+ * seconde ecraserait ». Un chemin fixe ecrase n'est PAS une exclusion mutuelle — il ne bloque
+ * rien, il perd une information. Les deux runs demarraient, et le balayage du premier
+ * supprimait le `--user-data-dir` d'un VSCode EN COURS D'EXECUTION.
+ *
+ * Ce qui suit eprouve l'exclusion mutuelle elle-meme, sur de vrais fichiers.
+ */
+describe('acquireHarnessLock', () => {
+  function lockPath(): string {
+    return path.join(makeDir(), HARNESS_LOCK_FILE);
+  }
+
+  it('prend le verrou quand il est libre, et inscrit le pid du detenteur', () => {
+    const file = lockPath();
+
+    expect(acquireHarnessLock(file)).toEqual({ acquired: true });
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it('REFUSE de le prendre quand un processus VIVANT le detient, et nomme ce processus', () => {
+    // LE GARDE-FOU DE NON-REGRESSION DE S7 : sans exclusion mutuelle, rien n'empechait le
+    // second run de demarrer et de balayer le temporaire du premier.
+    const file = lockPath();
+    // Le pid de CE processus : vivant par construction, aucun pid n'est invente ici.
+    writeFileSync(file, `${process.pid}\n`, 'utf8');
+
+    expect(acquireHarnessLock(file)).toEqual({ acquired: false, holder: process.pid });
+  });
+
+  it('REPREND le verrou d un run mort, sans quoi un harnais tue le bloquerait pour toujours', () => {
+    // Un pid libre du systeme, cherche plutot que choisi : `process.kill(pid, 0)` est la seule
+    // autorite sur la question, et c'est un test d'existence — aucun signal n'est envoye.
+    let dead = 4_000_000;
+    for (; dead > 0; dead -= 1) {
+      try {
+        process.kill(dead, 0);
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ESRCH') break;
+      }
+    }
+    expect(dead).toBeGreaterThan(0);
+
+    const file = lockPath();
+    writeFileSync(file, `${dead}\n`, 'utf8');
+
+    expect(acquireHarnessLock(file)).toEqual({ acquired: true });
+  });
+
+  it('refuse un verrou dont le detenteur est illisible plutot que de l ecraser', () => {
+    // On ne conclut pas sur ce qu'on ne sait pas lire : ecraser reviendrait a supprimer
+    // l'exclusion mutuelle d'un run peut-etre vivant.
+    const file = lockPath();
+    writeFileSync(file, 'pas un pid', 'utf8');
+
+    expect(acquireHarnessLock(file)).toEqual({ acquired: false });
+  });
+
+  it('le rend, et le rendre deux fois n est pas une defaillance', () => {
+    const file = lockPath();
+    acquireHarnessLock(file);
+
+    releaseHarnessLock(file);
+    releaseHarnessLock(file);
+
+    expect(existsSync(file)).toBe(false);
+    expect(acquireHarnessLock(file)).toEqual({ acquired: true });
+  });
+
+  it('n est JAMAIS balaye comme un residu : un run concurrent le detient legitimement', () => {
+    const dir = makeDir();
+    writeFileSync(path.join(dir, HARNESS_LOCK_FILE), `${process.pid}\n`, 'utf8');
+    writeFileSync(path.join(dir, 'cmgr-b3-current.json'), '{}', 'utf8');
+
+    expect(findHarnessLeftovers(dir)).toEqual([path.join(dir, 'cmgr-b3-current.json')]);
   });
 });

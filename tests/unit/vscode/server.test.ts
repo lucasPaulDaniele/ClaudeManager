@@ -64,6 +64,8 @@ function authorized(): Record<string, string> {
 }
 
 const errors: unknown[] = [];
+/** Combien de fois l'appelant a appris que son ecoute etait morte SANS qu'il l'ait demande. */
+let closures = 0;
 let handles: ServerHandle[] = [];
 
 async function open(health: () => HealthPayload = () => HEALTH): Promise<ServerHandle> {
@@ -71,9 +73,21 @@ async function open(health: () => HealthPayload = () => HEALTH): Promise<ServerH
     token: TOKEN,
     health,
     onError: (error) => errors.push(error),
+    onClosed: () => (closures += 1),
   });
   handles.push(handle);
   return handle;
+}
+
+/**
+ * Ferme la socket SANS passer par `close()` — le seul chemin DELIBERE.
+ *
+ * C'est la mort tardive que S5 decrit, produite pour de vrai plutot que simulee. Le rappel de
+ * `Server.close` est ajoute APRES l'ecouteur pose par `startServer` : quand il rend la main,
+ * la transition a donc deja ete signalee.
+ */
+function killListener(handle: ServerHandle): Promise<void> {
+  return new Promise((done) => handle.socket.close(() => done()));
 }
 
 afterEach(async () => {
@@ -81,6 +95,7 @@ afterEach(async () => {
   handles = [];
   for (const handle of opened) await handle.close();
   errors.length = 0;
+  closures = 0;
 });
 
 describe('ecoute', () => {
@@ -303,5 +318,49 @@ describe('fermeture', () => {
     await open();
 
     expect(errors).toEqual([]);
+  });
+
+  it('ne signale RIEN a l appelant quand c est LUI qui a ferme', async () => {
+    const handle = await open();
+    handles = handles.filter((h) => h !== handle);
+
+    await handle.close();
+
+    // Une fermeture voulue qui declencherait une republication rouvrirait une ecoute que plus
+    // rien ne fermerait : c'est exactement ce que la desactivation doit eviter.
+    expect(closures).toBe(0);
+  });
+});
+
+describe('S5 — une mort TARDIVE de l ecoute est une transition, pas une ligne de journal', () => {
+  it('previent l appelant quand la socket meurt sans qu il l ait demande', async () => {
+    // LE GARDE-FOU DE NON-REGRESSION DE S5. Avant le correctif, aucun ecouteur de `'close'`
+    // n'existait : l'entree du registre continuait d'annoncer `port` ET `token`, un couple
+    // dont la moitie ne correspond plus a rien. Le port ephemere revient au systeme, un
+    // processus local le reobtient, et le client du lot C presente le jeton de la fenetre a
+    // l'occupant — sans qu'aucune erreur d'authentification ne le signale.
+    const handle = await open();
+    handles = handles.filter((h) => h !== handle);
+
+    await killListener(handle);
+
+    expect(closures).toBe(1);
+    // Et l'ecoute est bien morte : ce n'est pas une alerte sur un serveur vivant.
+    await expect(call(handle, '/health', authorized())).rejects.toMatchObject({
+      code: 'ECONNREFUSED',
+    });
+  });
+
+  it('ne le previent QU UNE FOIS, quel que soit le chemin emprunte ensuite', async () => {
+    const handle = await open();
+    handles = handles.filter((h) => h !== handle);
+
+    await killListener(handle);
+    // Le retrait qui suit appelle `close()` sur une socket deja morte : il ne doit pas
+    // relancer une seconde reprise derriere la premiere.
+    await handle.close();
+    await killListener(handle);
+
+    expect(closures).toBe(1);
   });
 });

@@ -12,7 +12,15 @@ import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findHarnessLeftovers, removeQuietly, type RemovalOutcome } from './cleanup.js';
+import { windowEntryFileName, windowEntryPath } from '../../../packages/core/src/index.js';
+import {
+  acquireHarnessLock,
+  findHarnessLeftovers,
+  HARNESS_LOCK_FILE,
+  releaseHarnessLock,
+  removeQuietly,
+  type RemovalOutcome,
+} from './cleanup.js';
 import { neutralizeInheritedEnvironment, VSCODE_VERSION } from './environment.js';
 import { mask } from './redaction.js';
 
@@ -243,19 +251,32 @@ async function runScenario(
   // POINT 8 — la desactivation ne s'observe pas de l'interieur : on la constate ICI, une
   // fois la fenetre fermee. `deactivate` retire l'entree ; s'il n'a pas ete joue (fenetre
   // tuee), l'entree survit et c'est le balayage qui la reprendra. On le dit tel quel.
+  //
+  // LE CHEMIN VIENT DU COEUR (finding C5, alerte n.33). Cette ligne reencodait a la main le
+  // repertoire ET le nom du fichier, seul endroit du depot a le faire sans aucune garde. Une
+  // convention changee au lot C n'y aurait rien casse — l'`existsSync` aurait simplement
+  // toujours rendu `false` — et ce bloc aurait imprime « a DISPARU » a chaque execution : une
+  // preuve FAUSSE dans un journal joint a une PR, donc dans un critere de merge.
   if (report?.extHostPid !== undefined) {
-    const entry = path.join(os.homedir(), '.claudemanager', 'windows', `${report.extHostPid}.json`);
+    const entry = windowEntryPath(report.extHostPid);
+    const name = windowEntryFileName(report.extHostPid);
     say(
       fs.existsSync(entry)
-        ? `[point 8/${scenario.key}] l entree ${report.extHostPid}.json EXISTE ENCORE : deactivate n a pas ete joue, elle reste purgeable au prochain balayage.`
-        : `[point 8/${scenario.key}] l entree ${report.extHostPid}.json a DISPARU : deactivate a bien retire cette fenetre du registre.`
+        ? `[point 8/${scenario.key}] l entree ${name} EXISTE ENCORE : deactivate n a pas ete joue, elle reste purgeable au prochain balayage.`
+        : `[point 8/${scenario.key}] l entree ${name} a DISPARU : deactivate a bien retire cette fenetre du registre.`
     );
   }
 
   return { scenario, workspace, userDataDir, reportPath, failure, report };
 }
 
-async function main(): Promise<void> {
+/**
+ * Deroule les scenarios, verrou en main.
+ *
+ * Le corps de `main` d'avant le finding S7 : ce qui l'entoure desormais est l'exclusion
+ * mutuelle qui rend le balayage des residus d'autrui legitime.
+ */
+async function runAllScenarios(): Promise<boolean> {
   const here = __dirname;
   // `here` vaut <racine>/tests/integration/dist/tests/integration/src, soit SIX segments
   // sous la racine du depot — la double imbrication vient de `rootDir` place a la racine,
@@ -318,9 +339,13 @@ async function main(): Promise<void> {
   // de position n'etaient effaces par personne et s'accumulaient dans le repertoire
   // temporaire, tout comme le `user-data-dir` d'un run interrompu par cet EPERM meme.
   //
-  // Balayer le temporaire d'AUTRUI n'est pas un risque ici : deux executions simultanees
-  // sont deja impossibles par construction, `cmgr-b3-current.json` etant ecrit a un chemin
-  // fixe que la seconde ecraserait.
+  // BALAYER LE TEMPORAIRE D'AUTRUI EST SUR PARCE QU'UN VERROU LE GARANTIT, et c'est le
+  // correctif du finding S7 : la justification precedente — « deux executions simultanees sont
+  // deja impossibles par construction, `cmgr-b3-current.json` etant ecrit a un chemin fixe que
+  // la seconde ecraserait » — etait FAUSSE. Un chemin fixe ecrase ne bloque rien, il perd une
+  // information : les deux runs demarraient, et ce balayage-ci supprimait le `--user-data-dir`
+  // d'un VSCode EN COURS D'EXECUTION. Le verrou est pris au tout debut de `main`, avant le
+  // moindre lancement, et rendu ci-dessous.
   const ours = new Set([...workspace, ...userDataDir]);
   const leftovers = findHarnessLeftovers(os.tmpdir()).filter((item) => !ours.has(item));
   const outcomes: RemovalOutcome[] = [];
@@ -349,11 +374,50 @@ async function main(): Promise<void> {
 
   if (failure !== undefined) {
     say('[runTests] ECHEC : au moins un scenario n a pas passe ses assertions.');
-    process.exit(1);
+    // Le VERDICT est rendu a l'appelant plutot que joue ici : `process.exit` court-circuite
+    // les `finally`, et le verrou d'execution resterait derriere lui a chaque echec.
+    return false;
   }
   say(
     `[runTests] SUCCES — ${SCENARIOS.length} scenarios, tous les points verifies dans de vraies fenetres.`
   );
+  return true;
+}
+
+/**
+ * REFUSER DE DEMARRER PLUTOT QUE DE NUIRE A UN AUTRE RUN (finding S7).
+ *
+ * Un second harnais n'a de toute facon aucune chance d'etre juste : les deux ecrivent dans le
+ * registre REEL du poste, se disputent `cmgr-b3-current.json`, et le balayage de l'un
+ * supprimerait le `--user-data-dir` de l'autre pendant que VSCode y ecrit. Sortir en erreur,
+ * en NOMMANT le detenteur, vaut mieux que deux runs qui se sabotent — et mieux qu'une
+ * limitation tue.
+ *
+ * Le verrou est rendu dans un `finally` : un scenario qui echoue, ou une assertion qui leve,
+ * ne doit pas le laisser derriere lui. Un harnais TUE, lui, le laisse — c'est justement le cas
+ * que `acquireHarnessLock` reprend, en constatant que le pid inscrit ne vit plus.
+ */
+async function main(): Promise<void> {
+  const lockFile = path.join(os.tmpdir(), HARNESS_LOCK_FILE);
+  const lock = acquireHarnessLock(lockFile);
+  if (!lock.acquired) {
+    say(
+      '[runTests] REFUS DE DEMARRER : une autre execution du harnais detient le verrou' +
+        `${lock.holder === undefined ? '' : ` (pid ${lock.holder})`}. ` +
+        'Les deux ecriraient dans le registre reel du poste et se supprimeraient mutuellement ' +
+        `leur --user-data-dir. Attendre sa fin, ou retirer ${HARNESS_LOCK_FILE} du repertoire ` +
+        'temporaire si aucun run n est en cours.'
+    );
+    process.exit(1);
+  }
+
+  let passed = false;
+  try {
+    passed = await runAllScenarios();
+  } finally {
+    releaseHarnessLock(lockFile);
+  }
+  if (!passed) process.exit(1);
 }
 
 void main();

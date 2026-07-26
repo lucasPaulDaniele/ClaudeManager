@@ -155,6 +155,34 @@ export function resolveRegistryDir(dir?: string): string {
 }
 
 /**
+ * LA CONVENTION DE NOMMAGE DU REGISTRE — `<extHostPid>.json`, et elle vit ICI.
+ *
+ * Elle etait REECRITE a la main partout ou l'on voulait localiser une entree : dans le coeur
+ * (ecriture, confrontation du nom au contenu), dans l'extension, et — sans aucune garde — dans
+ * le harnais d'integration, qui reencodait a la fois le repertoire et le nom (alerte n.33).
+ * Le coeur, lui, est garde de toutes parts : changer la convention y fait tomber des tests. Le
+ * harnais ne faisait qu'un `existsSync` sur un chemin qui n'aurait alors jamais rien porte, et
+ * aurait imprime « l entree a DISPARU : deactivate a bien retire cette fenetre » — une preuve
+ * FAUSSE dans un journal joint a une PR, donc dans un critere de merge.
+ *
+ * Exporter la convention rend cette classe de defaut impossible : le jour ou elle change, elle
+ * change en un seul endroit, et tous ses consommateurs suivent sans le savoir.
+ *
+ * ELLE N'EST PAS DANS LE CONTRAT INTER-VERSIONS pour autant — celui-ci ne gele que
+ * `schemaVersion` et `extHostPid` (voir `judgeForeignLiveness`). Une version 2 a le droit de
+ * nommer ses fichiers autrement ; c'est precisement pourquoi la version 1 ne conclut jamais
+ * « ce pid est mort » sur la foi d'un nom de fichier.
+ */
+export function windowEntryFileName(extHostPid: number): string {
+  return `${extHostPid}${ENTRY_EXTENSION}`;
+}
+
+/** Chemin complet de l'entree d'UNE fenetre, registre par defaut sauf mention contraire. */
+export function windowEntryPath(extHostPid: number, dir?: string): string {
+  return path.join(resolveRegistryDir(dir), windowEntryFileName(extHostPid));
+}
+
+/**
  * Liste les fichiers du registre.
  *
  * Un repertoire absent est l'etat NOMINAL d'un poste ou aucune fenetre ne s'est encore
@@ -283,7 +311,7 @@ function claimsItsOwnName(file: string, identity: EntryIdentity): boolean {
   // Pid illisible : l'entree sera de toute facon rejetee, et jamais purgee faute de savoir
   // si sa fenetre vit. Rien a confronter ici.
   if (identity.extHostPid === undefined) return true;
-  return file === `${identity.extHostPid}${ENTRY_EXTENSION}`;
+  return file === windowEntryFileName(identity.extHostPid);
 }
 
 function classifyContent(file: string, content: string, snapshot: ProcessSnapshot): Classification {
@@ -566,7 +594,9 @@ export function writeWindowEntry(entry: WindowEntry, options: WriteWindowEntryOp
   }
 
   const dir = resolveRegistryDir(options.dir);
-  const file = path.join(dir, `${parsed.entry.extHostPid}${ENTRY_EXTENSION}`);
+  // MEME convention que la lecture et que tous les consommateurs, parce que c'est la MEME
+  // fonction : l'ecriture nomme, la lecture confronte, et rien ne peut plus les desaccorder.
+  const file = windowEntryPath(parsed.entry.extHostPid, dir);
   const temporary = path.join(
     dir,
     `${parsed.entry.extHostPid}.${randomUUID()}${TEMPORARY_EXTENSION}`

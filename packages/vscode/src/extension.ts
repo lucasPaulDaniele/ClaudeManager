@@ -81,11 +81,11 @@ async function sweepStaleEntries(current: WindowPublisher): Promise<void> {
   }
 
   // MOMENT NATUREL, et le seul GARANTI du cycle de vie : on vient de parcourir le registre
-  // en entier. Verifier que notre propre entree y est encore ne coute qu'un `existsSync`, et
-  // couvre le cas ou un balayage — le notre, ou celui d'une fenetre demarree en meme temps —
-  // vient de l'emporter. L'observateur ci-dessous couvre la suite ; celui-ci ne depend
-  // d'aucune API de surveillance (finding S6).
-  await current.republishIfEntryVanished('after the sweep');
+  // en entier. Verifier que notre propre entree y est encore et qu'elle est bien LA NOTRE ne
+  // coute qu'une lecture de fichier, et couvre le cas ou un balayage — le notre, ou celui
+  // d'une fenetre demarree en meme temps — vient de l'emporter. L'observateur ci-dessous
+  // couvre la suite ; celui-ci ne depend d'aucune API de surveillance (findings S6 et S2).
+  await current.republishIfEntryLost('after the sweep');
 }
 
 /**
@@ -95,6 +95,18 @@ async function sweepStaleEntries(current: WindowPublisher): Promise<void> {
  * survenue une heure plus tard. Cet observateur la voit — sans aucun sondage, VSCode
  * s'appuyant sur les notifications du systeme de fichiers. Le motif designe le SEUL fichier
  * de cette fenetre : aucune entree d'une autre fenetre n'est observee, encore moins touchee.
+ *
+ * LES MODIFICATIONS SONT OBSERVEES, ET C'EST LA CORRECTION DE S2. Elles etaient ignorees au
+ * motif que « ce sont les notres, et rien d'autre n'ecrit ce nom » — un presuppose FAUX : tout
+ * processus du compte peut ecraser ce fichier sous son propre nom, et c'est meme la voie la
+ * plus simple pour lui, puisqu'elle lui evite d'avoir a choisir un nom. L'observateur ne
+ * defendait donc que la suppression, c'est-a-dire le cas benin. `republishIfEntryLost`
+ * confronte desormais le contenu a ce que la fenetre a ecrit : nos propres republications
+ * declenchent bien cet evenement, et s'y reconnaissent sans rien reecrire.
+ *
+ * Les CREATIONS restent ignorees : l'ecriture du coeur est un `rename` sur un fichier qui, au
+ * moment ou l'on republie, existe deja — un remplacement se presente donc en modification, et
+ * une suppression suivie d'une reecriture declenche d'abord la suppression.
  *
  * Sa creation est gardee : le repertoire du registre est HORS du workspace, et rien ne
  * garantit qu'un observateur y soit possible partout. S'il ne l'est pas, on le DIT — la
@@ -107,14 +119,16 @@ function watchOwnEntry(current: WindowPublisher): vscode.Disposable | undefined 
         vscode.Uri.file(path.dirname(current.entryFile)),
         path.basename(current.entryFile)
       ),
-      // Creations et modifications ignorees : ce sont les notres, et rien d'autre n'ecrit ce
-      // nom. Seule la suppression appelle une reaction.
+      // ignoreCreateEvents, ignoreChangeEvents, ignoreDeleteEvents
       true,
-      true,
+      false,
       false
     );
+    watcher.onDidChange(() => {
+      void current.republishIfEntryLost('watcher, entry changed');
+    });
     watcher.onDidDelete(() => {
-      void current.republishIfEntryVanished('watcher');
+      void current.republishIfEntryLost('watcher, entry deleted');
     });
     return watcher;
   } catch (error) {

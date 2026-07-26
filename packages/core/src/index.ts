@@ -44,6 +44,8 @@ export {
   purgeStaleEntries,
   readRegistry,
   resolveRegistryDir,
+  windowEntryFileName,
+  windowEntryPath,
   writeWindowEntry,
   type KeptEntry,
   type KeptReason,

@@ -54,6 +54,18 @@ export interface ServerHandle {
   readonly port: number;
   /** Adresse REELLEMENT liee, relevee sur la socket. */
   readonly address: string;
+  /**
+   * La socket REELLE, exposee pour UNE raison, et elle est nommee : rien d'autre ne permet de
+   * PRODUIRE la mort tardive d'une ecoute. Un serveur HTTP qui ecoute sur la boucle locale ne
+   * se ferme pas de lui-meme a la demande — le garde-fou de non-regression de S5 la ferme donc
+   * directement, sans passer par `close()`, qui est le seul chemin DELIBERE. C'est exactement
+   * l'evenement que le correctif doit rattraper, et la seule facon de l'obtenir sans fabriquer
+   * un faux `http` (principe fondateur n.5).
+   *
+   * Le code de production n'en fait rien : `publication.ts` n'emploie que `port`, `address` et
+   * `close()`.
+   */
+  readonly socket: Server;
   close(): Promise<void>;
 }
 
@@ -66,6 +78,22 @@ export interface StartServerOptions {
   readonly health: () => HealthPayload;
   /** Defaillance survenant apres le demarrage — journalisee par l'appelant, jamais tue. */
   readonly onError: (error: unknown) => void;
+  /**
+   * L'ecoute s'est fermee SANS QU'ON L'AIT DEMANDE — appele AU PLUS UNE FOIS, et jamais
+   * derriere `close()`.
+   *
+   * DEFAUT S5 : apres le demarrage, toute defaillance de la socket n'etait que journalisee.
+   * L'entree du registre continuait d'annoncer `port` ET `token` — un couple dont la moitie ne
+   * correspond plus a rien. Le port ephemere retourne au systeme, un processus local le
+   * reobtient (la plage ephemere est reutilisee agressivement), et le client du lot C envoie
+   * alors `Authorization: Bearer <jeton de la fenetre>` a l'occupant : le jeton part a un
+   * tiers, sans qu'aucune erreur d'authentification ne signale quoi que ce soit.
+   *
+   * C'est la SYMETRIE de S6 — une entree sans serveur derriere, la ou S6 laissait un serveur
+   * sans entree devant. Une fermeture est donc une TRANSITION DU CYCLE DE VIE, pas une ligne
+   * de journal : l'appelant retire l'entree et republie.
+   */
+  readonly onClosed: () => void;
 }
 
 /**
@@ -127,6 +155,23 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
   // socket ne recoit rien tant qu'elle n'ecoute pas. La chaine vide n'est jamais servie.
   let boundAddress = '';
 
+  /**
+   * Ce qui distingue une fermeture VOULUE d'une mort subie, et rien d'autre ne le distingue.
+   *
+   * `close()` le pose AVANT de toucher la socket : le `'close'` qui suit est alors le notre, et
+   * ne doit surtout pas declencher une republication — elle rouvrirait une ecoute que plus
+   * rien ne fermerait, exactement le defaut que la file de transitions evite par ailleurs.
+   */
+  let deliberate = false;
+  /** L'appelant n'apprend la mort de son ecoute QU'UNE FOIS, quel que soit le chemin. */
+  let closedSignalled = false;
+
+  const signalClosed = (): void => {
+    if (deliberate || closedSignalled) return;
+    closedSignalled = true;
+    options.onClosed();
+  };
+
   const server: Server = createServer((request, response) => {
     // Le corps est draine meme s'il n'est pas lu : une requete non consommee laisserait
     // la socket en suspens.
@@ -160,23 +205,37 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
       server.removeListener('error', onStartupError);
       // Passe la main a l'appelant : une defaillance tardive se journalise, elle ne doit
       // ni rejeter une promesse deja tenue, ni remonter en exception non capturee.
+      //
+      // C'EST `'close'` QUI PORTE LA TRANSITION, PAS `'error'`, et ce n'est pas un choix par
+      // defaut : une erreur qui EMPORTE l'ecoute la fait fermer, donc emettre `'close'` — le
+      // signal est complet par ce seul bout. Une erreur qui LAISSE la socket en ecoute, elle,
+      // n'a rien a reprendre : republier fermerait un serveur parfaitement vivant pour en
+      // rouvrir un autre, en changeant de port au passage. Journaliser est alors la conduite
+      // juste, et la seule.
       server.on('error', options.onError);
 
       const address = server.address();
       if (address === null || typeof address === 'string') {
         // Impossible sur une ecoute TCP, mais un port devine ne serait jamais joignable.
+        // AVANT l'abonnement a `'close'` : cette fermeture-ci est la notre, et l'appelant
+        // n'a pas encore de handle a reprendre.
         server.close();
         reject(new Error('The local server is listening without a resolvable TCP port'));
         return;
       }
 
       boundAddress = address.address;
+      server.on('close', signalClosed);
 
       resolve({
         port: address.port,
         address: address.address,
+        socket: server,
         close: () =>
           new Promise<void>((done) => {
+            // POSE EN PREMIER : le `'close'` qui va suivre est voulu, et ne doit rien
+            // declencher chez l'appelant.
+            deliberate = true;
             // Les sockets en vie n'empechent pas la fermeture : `close` cesse d'accepter,
             // `closeAllConnections` acheve l'existant. Sans lui, la desactivation
             // pourrait attendre une connexion inactive.
