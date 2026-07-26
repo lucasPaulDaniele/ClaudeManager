@@ -1,0 +1,60 @@
+# Ce qui NE PART PAS dans le VSIX.
+#
+# Regle de lecture : `vsce` part de TOUT le contenu du repertoire du paquet, et ce fichier
+# retranche. Le raisonnement est donc inverse de celui d'un `files` npm — ce qu'on oublie
+# d'ecarter est embarque, jamais l'inverse. Un oubli ici ne casse rien a la compilation : il
+# se voit seulement dans l'archive livree, ce qui est exactement la defaillance silencieuse
+# que l'increment C3 existe pour rendre impossible.
+#
+# CE QUI DOIT RESTER, et pourquoi il n'y a donc aucune ligne le concernant :
+#   - `dist/vscode/**` : l'extension elle-meme, pointee par `main`.
+#   - `dist/core/**`   : LE COEUR, compile A COTE de l'extension et non recopie dans ses
+#                        sources (`tsconfig.build.json`, `rootDir: ".."`). Sans lui,
+#                        `extension.js` requiert un module absent — et cela ne se voit qu'A
+#                        L'EXECUTION, aucun `typecheck` ne le rattrape. C'est le piege
+#                        central de cet empaquetage ; `tests/packaging` l'eprouve sur
+#                        l'archive.
+
+# Les SOURCES TypeScript. Ce qui s'execute est `dist/`, et `main` n'y renvoie jamais.
+src/**
+
+# Le marqueur de format des sources — voir `src/package.json`. Il declare `type: module`,
+# c'est-a-dire l'exact contraire de ce que le chargeur d'extensions de VSCode exige. Il est
+# deja couvert par `src/**` ; il est redit ici parce que l'embarquer par accident produirait
+# une extension qui ne se charge pas, avec un message qui ne designerait pas la cause.
+src/package.json
+
+# La configuration d'EMISSION : elle sert a produire `dist/`, elle ne sert jamais a
+# l'executer.
+tsconfig.build.json
+
+# Les cartes de source.
+#
+# DECISION, ET SON MOTIF : elles sont ECARTEES parce que les sources ne partent pas. Chaque
+# carte pointe sur `../../../src/*.ts` (verifie : chemins RELATIFS, ni `sourceRoot`, ni
+# `sourcesContent`) — donc sur des fichiers absents de l'archive. Les embarquer livrerait des
+# references pendantes : un poids mort qui promet une symbolisation qu'il ne peut pas tenir.
+#
+# Le diagnostic de l'extension installee ne passe pas par la : il passe par son CANAL DE
+# JOURNAL, dont le repertoire est publie dans l'entree de registre (`logDirectory`). C'est un
+# chemin de diagnostic CONCU, pas un effet de bord d'outillage.
+#
+# Aucun secret n'est en jeu : les cartes ne portent ni chemin absolu, ni nom de compte du
+# poste de construction — mesure avant de trancher.
+**/*.map
+
+# Les dependances. L'extension n'en a AUCUNE a l'execution — le coeur est compile avec elle.
+# `npm run package:vscode` passe `--no-dependencies`, et un test refuse que le manifeste
+# gagne un jour un `dependencies` sans qu'on s'en apercoive.
+node_modules/**
+
+# Outillage et etats de travail, ecartes par principe plutot que parce qu'ils sont presents
+# aujourd'hui : ce fichier doit rester juste apres qu'on ait ajoute des repertoires.
+.vscodeignore
+**/.gitignore
+**/.gitkeep
+**/tsconfig*.json
+**/*.tsbuildinfo
+**/*.vsix
+coverage/**
+.vscode-test/**

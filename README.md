@@ -101,13 +101,106 @@ Une réserve, portée par le montage : VSCode refusant d'ouvrir un même dossier
 
 ## Installation
 
-> **Statut** : le socle et la conception sont posés, les paquets ne sont pas encore publiés.
-> Voir la [feuille de route](#feuille-de-route). Les commandes ci-dessous décrivent la cible.
+> **Statut** : rien n'est publié — ni sur npm, ni sur le Marketplace. On installe donc **depuis
+> les artefacts construits localement**, et c'est délibéré : voir la
+> [feuille de route](#feuille-de-route).
+
+**Prérequis** : Node ≥ 20, et le lanceur `code` sur le `PATH` (`code --version` doit répondre).
+
+### 1. Construire les deux paquets
 
 ```bash
-npm install -g @claudemanager/cli
-code --install-extension claudemanager-vscode
-cmgr doctor
+git clone https://github.com/lucasPaulDaniele/ClaudeManager.git
+cd ClaudeManager
+npm ci
+npm run package:all
+```
+
+`artifacts/` contient alors exactement deux fichiers :
+
+```
+artifacts/claudemanager-vscode-0.3.0.vsix    # l'extension compagnon
+artifacts/claudemanager-cli-0.2.0.tgz        # le binaire cmgr
+```
+
+Pour contrôler que ces archives portent bien ce qu'il faut — les **deux** racines compilées,
+et rien d'autre — avant de rien installer :
+
+```bash
+npm run verify:packaging
+```
+
+### 2. Installer l'extension compagnon
+
+```bash
+code --install-extension artifacts/claudemanager-vscode-0.3.0.vsix
+code --list-extensions --show-versions | grep claudemanager
+```
+
+La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.3.0`.
+
+> **L'extension s'active sans rechargement de fenêtre**, et c'est contre-intuitif : son
+> `activationEvents` est `onStartupFinished`, mais VSCode active une extension **fraîchement
+> installée** immédiatement. Les fenêtres déjà ouvertes publient donc leur entrée de registre
+> **sans être rechargées** — donc **sans casser les conversations Claude en cours**. Ne
+> rechargez pas les fenêtres : c'est inutile, et un rechargement tuerait les `claude.exe` qui
+> vivent sous chaque extension host.
+
+Constater l'activation, sans rien solliciter :
+
+```bash
+ls ~/.claudemanager/windows/
+```
+
+Un fichier `<extHostPid>.json` par fenêtre pilotable. Aucun fichier = aucune fenêtre n'a publié
+— dans ce cas seulement, rechargez une fenêtre.
+
+#### Si un répertoire `…-0.1.0` traîne encore
+
+Un travail hors-process a pu laisser sur le poste un
+`~/.vscode/extensions/claudemanager.claudemanager-vscode-0.1.0/`. Il porte **le même
+identifiant d'extension** que ce qui s'installe ici, mais il est **absent d'`extensions.json`** :
+VSCode l'ignore, il n'est ni chargé ni listé par `code --list-extensions`.
+
+`code --uninstall-extension` ne le retire pas — il n'est pas enregistré. Vérifiez d'abord que
+la version installée est bien celle attendue, puis supprimez le vestige à la main :
+
+```bash
+code --list-extensions --show-versions | grep claudemanager   # doit dire @0.3.0
+rm -rf ~/.vscode/extensions/claudemanager.claudemanager-vscode-0.1.0
+```
+
+C'est aussi la raison pour laquelle **aucun VSIX n'est livré en 0.1.0** : la version est le seul
+discriminant dans le nom de ce répertoire.
+
+### 3. Installer la CLI
+
+```bash
+npm install -g ./artifacts/claudemanager-cli-0.2.0.tgz
+cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.2.0"}
+cmgr windows       # les fenêtres pilotables, jeton masqué
+```
+
+Le tarball embarque **`dist/cli` et `dist/core`** : le paquet ne déclare aucune dépendance, tout
+ce qu'il exécute est dedans.
+
+### Ce que l'outil ne fait pas encore
+
+À lire **avant** la première utilisation, sous peine de prendre une limite connue pour un bug :
+
+| | |
+|---|---|
+| **Précondition — le CLI `claude` doit être autorisé** | `cmgr open` joue le tour 1 dans un terminal masqué. Si le CLI `claude` n'a jamais été lancé à la main sur cette machine, il s'arrête à son écran d'accueil puis à une **autorisation OAuth que seul le propriétaire du compte peut accorder** — le panneau s'ouvre alors **sans conversation**, et `cmgr open` ne le voit pas. Lancez `claude` une fois dans un terminal, accordez l'autorisation, et acceptez la confiance du dossier (`Quick safety check…`, posée **par répertoire**). |
+| **Pas de fermeture** | `cmgr close` et `cmgr conversations` ne sont pas livrés (incrément C4). |
+| **Pas de lecture de réponse** | La réponse du premier tour n'est pas restituée : `cmgr open` rend toujours `firstTurnVerified: false`. Il faudra le transcript ou le hook `Stop` (lot D). |
+| **Pas de `cmgr doctor`** | Le diagnostic des présupposés ci-dessus relève du lot D. En attendant, ils se vérifient à la main.  |
+
+### Désinstaller
+
+```bash
+npm uninstall -g @claudemanager/cli
+code --uninstall-extension claudemanager.claudemanager-vscode
+rm -rf ~/.claudemanager
 ```
 
 ## Utilisation
@@ -181,7 +274,7 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.
 - **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : `cmgr doctor` les vérifie et les nomme plutôt que de les franchir à l'aveugle.
 - **L'extension compagnon écrit dans votre répertoire personnel et ouvre une écoute locale.** Chaque fenêtre publie un fichier `~/.claudemanager/windows/<pid>.json` décrivant ce qu'elle est, et ouvre un serveur HTTP sur `127.0.0.1`, port éphémère, protégé par un **jeton porteur** que ce fichier porte en clair. Le répertoire est en `0700`, l'entrée en `0600`, le jeton n'est jamais journalisé ni rendu par `/health`, et il ne survit pas à un rechargement de fenêtre. Rien n'est joignable depuis le réseau. Le détail, et les raisons de chaque choix, sont dans [l'ADR-003](docs/adr/003-registre-et-serveur-local.md).
-- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture. Les tests d'intégration — une **vraie fenêtre VSCode**, via `@vscode/test-electron` — existent et tournent, mais **localement** : la CI publique devrait télécharger un éditeur complet et disposer d'un affichage. Leurs logs sont joints en preuve aux PR. Seul le **packaging VSIX** n'est pas encore outillé ; il relève de l'incrément **C3**.
+- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture. Les tests d'intégration — une **vraie fenêtre VSCode**, via `@vscode/test-electron` — existent et tournent, mais **localement** : la CI publique devrait télécharger un éditeur complet et disposer d'un affichage. Leurs logs sont joints en preuve aux PR. Le **packaging** est outillé depuis l'incrément **C3** (`npm run package:all`), et sa vérification — le contenu réel des deux archives, `cmgr --version` lancé depuis le tarball — est **locale** au même titre, pour la même raison : elle exige des artefacts bâtis (`npm run verify:packaging`). La **publication** sur npm et sur le Marketplace, elle, n'est pas outillée : elle relève du lot **E**.
 
 ## Architecture
 

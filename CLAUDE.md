@@ -15,7 +15,7 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 - **Tests d'extension** : `@vscode/test-electron` (vraie instance VSCode)
 - **Couverture** : `@vitest/coverage-v8`, deux seuils **configurés et vérifiés** dans `vitest.config.ts` — **100 %** sur `packages/core/src/**`, et un seuil global fixé **au plancher entier de ce qui est réellement atteint** (99 % lignes et instructions, 98 % branches, 98 % fonctions — mesure du 2026-07-26, incrément C1 : 99,31 · 98,60 · 98,30 · 99,31). Jamais un chiffre d'intention : un seuil qu'on n'atteint pas est un seuil qu'on désactivera. Le seuil se relève quand la couverture monte ; il ne s'abaisse **jamais en silence** — la seule soupape est une justification nommée et datée. Y figurent aussi **les exclusions nommées et datées, énumérées dans `vitest.config.ts`** *(pas de cardinal ici : il serait faux au prochain ajout)*, parce que l'API de l'éditeur en est la substance même et que `npm run test:integration` s'en charge. Toute nouvelle exclusion se justifie au même endroit, avec sa date.
 - **Lint** : ESLint flat config + `typescript-eslint`. **Zéro avertissement toléré**, y compris une directive `eslint-disable` devenue inutile.
-- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** est outillé (`build:cli`, `build:vscode`, `build:integration`) ; seul le **packaging VSIX** relève encore du **lot E**.
+- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** est outillé (`build:cli`, `build:vscode`, `build:integration`), et l'**empaquetage** l'est depuis l'incrément C3 (`package:vscode`, `package:cli`, `package:all`, `verify:packaging`) — aucun des deux n'est exécuté par la CI publique. Seule la **publication** — npm, Marketplace — relève encore du **lot E**.
 
 ## Principes fondateurs
 
@@ -62,6 +62,7 @@ ClaudeManager/
 ├── tests/
 │   ├── unit/
 │   ├── integration/        # vraie instance VSCode
+│   ├── packaging/          # le contenu RÉEL du VSIX et du tarball npm — artefacts bâtis
 │   ├── e2e/                # (lot C) scénarios multi-fenêtres
 │   └── fixtures/           # captures réelles (tables de processus, entrées de registre)
 ├── .github/workflows/ci.yml
@@ -225,6 +226,7 @@ sauvegarde de ce travail. Le hook protège sa **publication**, pas son existence
 
 - **Unitaires** (`tests/unit/`) : tout `core`, contre des fixtures capturées — couverture exigée **100 %**. Y figure aussi tout ce que `packages/vscode` peut éprouver **sans éditeur** : serveur local, cycle de publication, plomberie de registre, mise en forme des défaillances. Ce qui exige une vraie fenêtre est exclu **nommément et avec sa date** dans `vitest.config.ts`, jamais laissé hors mesure en silence.
 - **Intégration** (`tests/integration/`) : une **vraie fenêtre VSCode** via `@vscode/test-electron`, avec l'extension compagnon chargée. Valide le serveur local, le registre, et l'**énumération en lecture seule** de `tabGroups`. **`tabGroups.close` n'est appelé nulle part dans le dépôt** : la fermeture d'une conversation — la définition donnée plus haut — relève du **lot C**, et rien ne la couvre aujourd'hui.
+- **Empaquetage** (`tests/packaging/`) : le contenu **réel** des deux archives que `npm run package:all` vient de produire — jamais `.vscodeignore`, jamais `files`, jamais ce que `vsce ls` *prédit*. Un empaquetage se casse **en silence** : tout compile, la CI est verte, et l'archive livrée est inutilisable. On y **lance** aussi `cmgr --version` depuis le tarball extrait, hors de l'arbre de travail. **Local uniquement** — il exige des artefacts bâtis. La **règle** est isolée dans `rules.ts`, sans accès au disque, et `tests/unit/packaging/` l'éprouve à chaque CI, y compris sur des relevés qu'elle doit **refuser**.
 - **E2E** (`tests/e2e/`) : scénarios multi-fenêtres réels, avec l'extension Claude authentifiée. **Scénario de référence, non négociable** : deux fenêtres ouvrant **le même répertoire physique**, **A minimisée** — A étant la fenêtre **cible et agissante**, c'est la condition mesurée à l'ADR-002 → une commande émise depuis A n'affecte jamais B, et **A ne prend jamais le focus**.
   **Construction imposée : par jonction de répertoire.** VSCode 1.122.1 **refuse** d'ouvrir un même dossier dans deux fenêtres — trois mécanismes essayés, tous refusés (`docs/adr/002-ouverture-interactive.md`, « Écueils » n°3). Le second workspace doit donc être une **jonction** pointant sur le premier : c'est le **seul montage possible**, pas un montage choisi.
   **Ce que ce montage couvre** : le **répertoire physique commun** et le **processus `Code.exe` principal commun**. Ce dernier n'est d'ailleurs pas un effet de la jonction — deux fenêtres quelconques d'une même instance le partagent déjà (`docs/adr/001-pilotage-des-conversations.md`, §4 : cinq extension hosts distincts, tous de `ppid` 16196). Il n'en reste pas moins la preuve directe qu'un PID ne discrimine pas une fenêtre — seul l'`extHostPid` le fait.
@@ -241,18 +243,22 @@ Tout incrément de **correction de bug** embarque un test qui **reproduit le bug
 
 ```bash
 npm run ci                 # lint + typecheck + tests unitaires  (exécutable partout)
+npm run package:all        # le VSIX et le tarball de la CLI     (exécutable partout)
+npm run verify:packaging   # empaquette PUIS juge les archives   (LOCAL UNIQUEMENT)
 npm run test:integration   # vraie instance VSCode               (LOCAL UNIQUEMENT)
 npm run test:e2e           # multi-fenêtres, extension Claude     (LOCAL UNIQUEMENT — lot C)
 ```
 
 `npm run ci` et `npm run test:integration` **existent et s'exécutent** ; le second compile d'abord l'extension et le harnais (`build:vscode`, `build:integration`) puis lance une vraie instance VSCode via `@vscode/test-electron`. `npm run test:e2e` décrit la cible et sera outillé au **lot C**.
 
+`npm run verify:packaging` est **local** pour une raison propre à ce qu'il juge : il exige des artefacts **bâtis** — un `.vsix` produit par `vsce`, un `.tgz` produit par `npm pack` — et il **lance le binaire empaqueté**. Un test unitaire qui en dépendrait échouerait dans la CI publique, ou — bien pire — s'y ignorerait tout seul et ne prouverait plus rien. La **règle** d'empaquetage, elle, vit dans `tests/packaging/src/rules.ts` sans aucun accès au disque, et `tests/unit/packaging/` l'éprouve à **chaque CI** contre des relevés d'archives réels **et contre des relevés qu'elle doit refuser** : une seule règle, deux appelants, aucune dérive possible entre eux.
+
 **Deux limites assumées, et ce sont des choix :**
 
 - **`test:integration` n'est pas exécuté par la CI publique.** Elle téléchargerait une instance VSCode complète à chaque exécution et exige un affichage ; la commande est donc **locale**, et son log est joint en preuve à la PR. Ce n'est pas un manque d'outillage : la commande existe.
 - **`test:e2e` sera impossible en CI publique**, définitivement : il exige l'extension Claude propriétaire **authentifiée**.
 
-La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus**. Le build de la CLI, de l'extension et du harnais est outillé (`build:cli`, `build:vscode`, `build:integration`) ; seul le **packaging VSIX** relève encore du **lot E**. Les résultats d'intégration et E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
+La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus**. Le build de la CLI, de l'extension et du harnais est outillé (`build:cli`, `build:vscode`, `build:integration`), et l'**empaquetage** l'est depuis C3 (`package:all`), avec sa vérification (`verify:packaging`) — **locale**, comme `test:integration` et pour la même raison : elle exige des artefacts bâtis et lance le binaire empaqueté. Seule la **publication** — npm, Marketplace — relève encore du **lot E**. Les résultats d'intégration, d'empaquetage et E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
 
 ## Documentation obligatoire
 

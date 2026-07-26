@@ -65,7 +65,29 @@ import {
 } from '../../../../packages/core/src/index.js';
 
 const EXTENSION_ID = 'claudemanager.claudemanager-vscode';
-const EXPECTED_VERSION = '0.2.0';
+
+/**
+ * La version attendue est LUE DANS LE MANIFESTE, jamais recopiee ici.
+ *
+ * Elle etait codee en dur — `'0.2.0'`, avec un message d'assertion qui repetait le chiffre.
+ * C'etait un troisieme exemplaire du meme numero, donc un troisieme endroit ou il pouvait se
+ * desolidariser : toute montee de version faisait echouer un test d'INTEGRATION pour une
+ * raison purement redactionnelle, ce qui apprend a recopier le nouveau chiffre sans le lire.
+ * C'est arrive des l'increment C3, qui porte l'extension a 0.3.0.
+ *
+ * Ce que ce scenario doit prouver n'a jamais ete « la version vaut 0.2.0 » : c'est que
+ * l'entree de registre publie LA VERSION DU MANIFESTE DE L'EXTENSION CHARGEE. Le manifeste
+ * est donc la source, lue depuis `repoRoot` — que le lanceur fournit — et non depuis un
+ * `__dirname` dont la profondeur depend de la configuration d'emission.
+ *
+ * La garde d'ALIGNEMENT des numeros entre eux est dans `tests/unit/packaging/versions.test.ts`.
+ */
+function expectedVersion(repoRoot: string): string {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'packages', 'vscode', 'package.json'), 'utf8')
+  ) as { version: string };
+  return manifest.version;
+}
 
 /**
  * Entrees heritees REELLES du poste de reference.
@@ -101,6 +123,7 @@ function allTabs(): readonly vscode.Tab[] {
 
 export async function runNominal(context: ScenarioContext): Promise<void> {
   const { reportPath, userDataDir, repoRoot, scratchDir } = context;
+  const expected = expectedVersion(repoRoot);
 
   // ---- §1 : l'activation a lieu SANS SOLLICITATION ------------------------------------
   const extension = vscode.extensions.getExtension(EXTENSION_ID);
@@ -153,7 +176,11 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
 
   // ---- Points 2 et 3 : l'entree publiee decrit CETTE fenetre ---------------------------
   assert.equal(rawEntry.schemaVersion, WINDOW_ENTRY_SCHEMA_VERSION, 'schemaVersion must come from the core');
-  assert.equal(rawEntry.extensionVersion, EXPECTED_VERSION, 'extensionVersion must be 0.2.0');
+  assert.equal(
+    rawEntry.extensionVersion,
+    expected,
+    `extensionVersion must be the manifest version (${expected})`
+  );
   assert.equal(rawEntry.extHostPid, extHostPid, 'extHostPid must be this extension host');
   assert.equal(rawEntry.mainPid, mainPid, 'mainPid must be the real ppid of this extension host');
   assert.ok(rawEntry.workspaceFolders.length > 0, 'a publishable window always has a workspace');
@@ -187,7 +214,7 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
   assert.equal(health['extHostPid'], extHostPid);
   assert.equal(health['mainPid'], mainPid);
   assert.equal(health['schemaVersion'], WINDOW_ENTRY_SCHEMA_VERSION);
-  assert.equal(health['extensionVersion'], EXPECTED_VERSION);
+  assert.equal(health['extensionVersion'], expected);
 
   // Point 9 : aucune reponse ne porte le jeton. MESURE, sur les quatre reponses.
   const tokenInAnyResponse = probes.some((p) => p.carriesToken);
