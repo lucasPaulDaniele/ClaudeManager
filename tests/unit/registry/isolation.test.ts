@@ -108,6 +108,12 @@ describe('registre + identite — deux fenetres sur le meme dossier', () => {
  * processus du compte utilisateur peut ecrire — une autre extension VSCode, un
  * `postinstall` npm. Une entree forgee n'a pas besoin de casser la validation : il lui
  * suffit d'etre plus credible que la vraie.
+ *
+ * CE QUI EST EPROUVE ICI EST UNE MOITIE, ET IL FAUT LE DIRE : la forge qui S'AJOUTE au
+ * registre sous un nom choisi. Celle qui SE SUBSTITUE — l'intrus ecrase le fichier qui porte
+ * deja le bon nom — ne laisse aucune anomalie derriere elle, donc rien a assertir dans ce
+ * fichier : elle est mesuree en `tests/unit/vscode/publication.test.ts` (defaut S2), du seul
+ * point ou elle se voit, celui de la fenetre qui a ecrit l'entree.
  */
 describe('registre + identite — entrees forgees', () => {
   /** Nom de fichier qui precede toute entree honnete dans l ordre alphabetique. */

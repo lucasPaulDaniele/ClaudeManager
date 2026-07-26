@@ -507,8 +507,9 @@ describe('S2 — une entree SUBSTITUEE sous son propre nom doit etre vue', () =>
   }
 
   it('la substitution ne laisse AUCUNE anomalie derriere elle — c est ce qui la rend dangereuse', async () => {
-    // La decision 5 de l'ADR-003 affirme que « le nom du fichier est la seule chose qu'un
-    // intrus ne controle pas librement ». Mesure ici : il n'a pas besoin de le controler.
+    // La decision 5 de l'ADR-003 affirmait que « le nom du fichier est la seule chose qu'un
+    // intrus ne controle pas librement ». Mesure ici : il n'a pas besoin de le controler —
+    // c'est CE test qui a fait corriger l'ADR, le 2026-07-26.
     const harness = makePublisher();
     await harness.publisher.ensurePublished('activation');
     const forged = forgeEntry(harness, 65_000);

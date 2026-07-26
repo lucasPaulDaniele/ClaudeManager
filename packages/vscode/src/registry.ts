@@ -41,10 +41,13 @@ export interface WindowIdentity {
 /**
  * Releve l'identite de la fenetre — les deux pid AU MEME INSTANT (alerte n.18).
  *
- * `mainPid` est la garde anti-reemploi de pid du registre : si un pid libere est
- * reattribue, son nouveau parent trahit la substitution. Cette garde n'a de valeur que si
- * les deux valeurs decrivent le meme instant, d'ou leur lecture conjointe ici plutot qu'a
- * deux endroits du code d'activation.
+ * `mainPid` porte la MOITIE PAR LE PARENT de la garde anti-reemploi de pid du registre : un
+ * pid reattribue n'a le plus souvent pas le meme parent que l'extension host qu'il remplace.
+ * Elle SE FRANCHIT pourtant — sous Windows le parent enregistre est le `Code.exe` principal,
+ * qui engendre des enfants en permanence —, d'ou la seconde moitie, par la date de creation
+ * (`judgeCurrentSchemaLiveness` dans le coeur, et l'ADR-003, decision 6). Celle-ci n'a de
+ * valeur que si les deux valeurs decrivent le meme instant, d'ou leur lecture conjointe ici
+ * plutot qu'a deux endroits du code d'activation.
  *
  * `process.pid` EST l'extension host de cette fenetre — c'est ce que l'extension execute.
  * Jamais `VSCODE_PID` : un processus principal heberge plusieurs fenetres et le partage

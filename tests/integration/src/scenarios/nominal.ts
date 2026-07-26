@@ -337,11 +337,12 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
   /**
    * LE PIEGE DU PORT, MESURE PLUTOT QUE SUPPOSE.
    *
-   * L'ADR-003 annonce en consequence « la republication rouvre le serveur sur un port
+   * L'ADR-003 annoncait en consequence « la republication rouvre le serveur sur un port
    * different ». MESURE ICI : c'est FAUX d'une republication ordinaire. `publishNow` ne
    * redemarre le serveur que si `live` est `undefined` — donc uniquement APRES un retrait.
    * Une republication sur changement de dossiers ou octroi de confiance conserve le port ET
-   * le jeton.
+   * le jeton. L'ADR a ete corrige le 2026-07-26 sur la foi de cette mesure : il enumere
+   * desormais les TROIS cas ou le port change, et ne l'affirme plus d'aucun autre.
    *
    * Le port CHANGE bel et bien, mais dans l'autre scenario : refus de publication (retrait,
    * serveur ferme) puis reprise. `empty-workspace` le mesure. Un consommateur du lot C doit

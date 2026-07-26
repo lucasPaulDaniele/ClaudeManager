@@ -302,10 +302,23 @@ interface ScannedFile {
  * seul ordre alphabetique de `readdir` — le client s'adresse au serveur de l'attaquant en
  * croyant parler a sa propre fenetre.
  *
- * Le nom du fichier est la seule chose qu'un intrus ne controle pas librement : deux
- * fichiers ne peuvent pas porter le meme nom, donc un pid ne peut etre revendique qu'une
- * fois. Exiger l'egalite fait de cette contrainte du systeme de fichiers une contrainte
- * d'identite.
+ * CE QUE CE CONTROLE FAIT, ET CE QU'IL NE FAIT PAS. Ce commentaire a longtemps affirme que
+ * « le nom du fichier est la seule chose qu'un intrus ne controle pas librement ». L'enonce
+ * etait FAUX, et c'est un test execute qui l'a montre — corrige le 2026-07-26, gate final du
+ * lot B, defaut S2 (`tests/unit/vscode/publication.test.ts`) :
+ *
+ *   - il interdit de S'AJOUTER au registre sous un nom choisi : le `0000.json` ci-dessus est
+ *     mort-ne, et deux fichiers d'un meme repertoire ne peuvent pas porter le meme nom ;
+ *   - il n'interdit PAS de SE SUBSTITUER a une entree existante. Un intrus deja sous le
+ *     compte de l'utilisateur n'a aucun besoin de CHOISIR un nom : il ECRASE le fichier qui
+ *     porte deja le bon. Le nom est alors exact, la lecture ne rapporte AUCUNE anomalie, et
+ *     `resolveOwningWindow` rend le canal de l'attaquant.
+ *
+ * La contrainte du systeme de fichiers empeche donc la DUPLICATION, pas l'USURPATION. La
+ * parade vit ailleurs et elle REPARE, elle n'empeche pas : une fenetre publiee confronte le
+ * disque a l'entree qu'elle a reellement ecrite et republie sous un motif nomme
+ * (`WindowPublisher.inspectEntry`). Entre la substitution et sa detection, l'entree forgee
+ * est en place et sera lue par qui la consulte. Voir l'ADR-003, decision 5.
  */
 function claimsItsOwnName(file: string, identity: EntryIdentity): boolean {
   // Pid illisible : l'entree sera de toute facon rejetee, et jamais purgee faute de savoir
