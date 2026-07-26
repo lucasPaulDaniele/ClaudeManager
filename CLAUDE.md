@@ -52,9 +52,9 @@ ClaudeManager/
 │   │       ├── registry/   # registre des fenêtres pilotables, auto-nettoyant
 │   │       ├── sessions/   # (lot D) inventaire des sessions Claude vivantes
 │   │       ├── transcript/ # (lot D) lecture JSONL, fin de tour, extraction de réponse
-│   │       └── client/     # (lot C) client HTTP de l'extension compagnon
+│   │       └── client/     # client HTTP de l'extension compagnon, confirmation de canal
 │   ├── vscode/             # claudemanager-vscode — extension compagnon
-│   ├── cli/                # @claudemanager/cli — binaire `cmgr` (`windows`, `whoami`)
+│   ├── cli/                # @claudemanager/cli — binaire `cmgr` (`windows`, `whoami`, `open`)
 │   └── mcp/                # (lot E) @claudemanager/mcp — serveur MCP stdio
 ├── docs/
 │   ├── adr/                # décisions structurantes, datées
@@ -82,9 +82,38 @@ Le chantier est découpé pour la skill `/orchestrer` : **1 incrément = 1 PR**,
 | **0** | Socle : spike de faisabilité (jetable), squelette, conventions, CI |
 | **A** | Trancher le mécanisme d'ouverture interactive : spike comparatif des voies, ADR-002, réalignement du socle documentaire |
 | **B** | Noyau : identité, registre, extension compagnon, CLI de lecture, tests d'intégration |
-| **C** | Ouverture et fermeture : mécanisme V1 implémenté, client HTTP du cœur (`core/client`), `cmgr open`, `cmgr close`, E2E multi-fenêtres |
+| **C** | Ouverture, **installabilité**, fermeture : mécanisme V1 (C1), client HTTP du cœur et `cmgr open` (C2), **empaquetage VSIX et installation** (C3), `cmgr close` et `cmgr conversations` (C4) |
 | **D** | Observabilité : transcript, hook `Stop`, `cmgr read` / `cmgr wait` / `cmgr doctor` |
-| **E** | Diffusion : serveur MCP, packaging, README de diffusion, recette bout-en-bout |
+| **E** | Diffusion : serveur MCP, **E2E multi-fenêtres**, README de diffusion, recette bout-en-bout |
+| **F** | Audits finaux : findings documentaires consignés pendant les lots de livraison |
+
+**Décision n°17 du 2026-07-26 — l'empaquetage remonte du lot E au lot C.** *Tant que l'extension
+n'est pas installable, aucun incrément n'est livrable* : ce qui est mergé reste alors invérifiable
+ailleurs que sur le poste de développement. La fermeture recule en conséquence (C4), l'E2E
+multi-fenêtres passe au lot E — il exige l'extension **installée**, pas seulement compilée —, et
+un lot F est créé pour l'ordre du jour ci-dessous.
+
+### Politique de gate — ce qui se corrige, et ce qui se consigne
+
+Le gate d'audit tombe toutes les 3 PR mergées et en fin de lot. **Pendant les lots de
+livraison**, il ne traite pas toutes ses dimensions de la même façon :
+
+| Dimension | Traitement |
+|---|---|
+| **Correctness** — le code fait-il ce qu'il annonce ? | auditée **et corrigée** dans l'incrément |
+| **Sécurité** — jeton, chemin personnel, surface d'attaque, isolation de fenêtre | auditée **et corrigée** |
+| **Rattrapage de l'existant** — registres, hooks, conversations déjà en place | auditée **et corrigée** |
+| **Documentaire** — formulation, complétude, cohérence rédactionnelle | **consignée, pas corrigée** |
+
+Les findings documentaires deviennent l'**ordre du jour du lot F**. Motif : les corriger au fil
+de l'eau consomme le temps d'un lot de livraison pour un gain qui ne se voit qu'à la relecture,
+et disperse en dix endroits une revue rédactionnelle qui vaut mieux d'un bloc. Consigner n'est
+pas taire : un finding non traité reste écrit, daté, et attend son lot.
+
+**Exception non négociable** : une documentation qui **ment sur un fait opératoire** — une
+commande à taper, un chemin, un seuil, un présupposé de sécurité — se corrige **immédiatement**,
+dans l'incrément qui la rend fausse. Ce n'est pas un finding documentaire, c'est un défaut : un
+lecteur le paie en essayant de suivre ce qui est écrit.
 
 ## Mécanisme retenu
 
