@@ -139,21 +139,43 @@ code --list-extensions --show-versions | grep claudemanager
 
 La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.4.0`.
 
-> **L'extension s'active sans rechargement de fenêtre**, et c'est contre-intuitif : son
-> `activationEvents` est `onStartupFinished`, mais VSCode active une extension **fraîchement
-> installée** immédiatement. Les fenêtres déjà ouvertes publient donc leur entrée de registre
-> **sans être rechargées** — donc **sans casser les conversations Claude en cours**. Ne
-> rechargez pas les fenêtres : c'est inutile, et un rechargement tuerait les `claude.exe` qui
-> vivent sous chaque extension host.
+> **⚠️ Une fenêtre DÉJÀ OUVERTE ne prend pas cette installation — ni une première, ni une mise à
+> jour. Il faut une fenêtre NEUVE.** Le seul `activationEvents` de l'extension est
+> `onStartupFinished` : elle s'active au **démarrage d'une fenêtre**, et rien d'autre ne la
+> réveille.
+>
+> **Mesuré le 2026-07-26**, en installant la 0.4.0 sur un poste où trois fenêtres étaient
+> ouvertes, 40 s d'observation : **aucune n'a republié**. Y compris — et c'est le cas le plus
+> parlant — celle qui exécutait déjà l'extension en **0.3.0** : son entrée de registre annonçait
+> toujours `0.3.0` après l'installation. Une **mise à jour ne se réactive pas davantage** qu'une
+> première installation. Seule une fenêtre ouverte **après** l'installation a publié en 0.4.0.
+>
+> **Le geste, donc** : ouvrez une **nouvelle** fenêtre VSCode (`Fichier ▸ Nouvelle fenêtre`, puis
+> ouvrez-y votre dossier) — ou fermez et rouvrez celles dont vous avez besoin, **au moment de
+> votre choix**.
+>
+> **NE RECHARGEZ PAS une fenêtre qui héberge une conversation en cours** : `Developer: Reload
+> Window` redémarre l'extension host, et **tue avec lui les `claude.exe` qui en descendent**.
+> C'est vous qui choisissez quand renouveler une fenêtre, jamais l'outil.
+
+**Conséquence, tant qu'une fenêtre n'a pas été renouvelée** : elle sert **l'ancienne version** de
+l'extension à une CLI déjà à jour. Ce décalage n'est **jamais silencieux**, dans les deux sens —
+une fenêtre restée en 0.3.0 fait dire à `cmgr open` que le tour 1 **n'est pas vérifié**, en vous
+renvoyant à `cmgr windows` pour comparer les versions ; une CLI restée en 0.2.0, elle, **refuse**
+la réponse d'une fenêtre à jour par `WINDOW_RESPONSE_UNREADABLE`. **Installez donc les deux
+artefacts ensemble**, puis renouvelez les fenêtres.
 
 Constater l'activation, sans rien solliciter :
 
 ```bash
 ls ~/.claudemanager/windows/
+cmgr windows     # la version que chaque fenêtre SERT réellement, `extensionVersion`
 ```
 
-Un fichier `<extHostPid>.json` par fenêtre pilotable. Aucun fichier = aucune fenêtre n'a publié
-— dans ce cas seulement, rechargez une fenêtre.
+Un fichier `<extHostPid>.json` par fenêtre pilotable. **La version qui compte est celle que
+l'entrée annonce**, pas celle que `code --list-extensions` affiche : la seconde dit ce qui est
+installé sur le disque, la première ce que chaque fenêtre exécute. Aucun fichier, ou une version
+en retard = aucune fenêtre neuve depuis l'installation : ouvrez-en une.
 
 #### Si un répertoire `…-0.1.0` traîne encore
 
