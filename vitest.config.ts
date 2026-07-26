@@ -72,9 +72,20 @@ export default defineConfig({
          * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
          * que rien ne configurait.
          *
-         * MESURE DU 2026-07-26 (increment C1, reprise 1), les QUATRE metriques :
-         *   99,31 instructions · 98,60 branches · 98,30 fonctions · 99,31 lignes
-         * Plancher retenu : 99 / 98 / 98 / 99. Marges : 0,31 · 0,60 · 0,30 · 0,31 point.
+         * MESURE DU 2026-07-26 (increment C1), les QUATRE metriques, SUR LES DEUX PLATEFORMES :
+         *
+         *   Windows, poste de reference : 99,31 instructions · 98,61 branches · 98,30 fonctions · 99,31 lignes
+         *   Linux, CI GitHub (execution 30202106398) : 99,31 · 98,61 · 98,30 · 99,31 — IDENTIQUES
+         *
+         * Plancher retenu : 99 / 98 / 98 / 99. Marges : 0,31 · 0,61 · 0,30 · 0,31 point.
+         *
+         * LES DEUX MESURES SONT CITEES, ET C'EST LE POINT : un plancher releve sur la seule
+         * plateforme de developpement est un plancher qu'on n'a pas verifie la ou la porte se
+         * ferme. Les deux plateformes n'executent PAS les memes tests — 5 tests POSIX sont
+         * ignores sous Windows (3 du registre, 2 sur les droits du repertoire de transit du
+         * prompt), 1 test Windows est ignore sous Linux (le decoupage d'un `PATH` a lettres de
+         * lecteur). La couverture ressort pourtant identique au centieme : les lignes
+         * concernees sont EXECUTEES des deux cotes, seules les assertions different.
          *
          * CES QUATRE CHIFFRES SONT AUSSI DANS `CLAUDE.md`, ET C'EST LE PIEGE A EVITER : le
          * gate du lot B a passe une journee sur le symetrique de ce residu — un document qui
@@ -95,10 +106,6 @@ export default defineConfig({
          * omettait les INSTRUCTIONS, alors que le seuil, lui, en portait un. Les quatre sont
          * desormais citees — un chiffre configure sans mesure en regard est la divergence
          * meme que ce commentaire existe pour empecher.
-         *
-         * Mesure prise sous Windows, ou 5 tests POSIX sont ignores — les 3 du registre, plus
-         * les 2 que C1 ajoute sur les droits du repertoire de transit du prompt. La CI Linux
-         * les execute : elle ne peut donc que couvrir DAVANTAGE, jamais moins.
          *
          * TOUT L'ECART TIENT A QUATRE CHEMINS DE DEFAILLANCE QU'UNE VRAIE SOCKET NE PRODUIT
          * PAS, et qu'on refuse de forcer avec un faux `http` (principe fondateur n.5) :
