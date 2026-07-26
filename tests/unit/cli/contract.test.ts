@@ -247,6 +247,51 @@ describe('defaillances', () => {
   });
 });
 
+/**
+ * S6 — DEUX REGLES CONTRADICTOIRES SUR LE MEME FLUX, et c'est la sortie qui tranchait.
+ *
+ * `SkippedEntry.file` ne porte JAMAIS de chemin absolu, « parce que ce champ part vers un
+ * agent et vers des journaux, et que le chemin du registre porte le nom de l'utilisateur ».
+ * Deux champs plus loin, `windows[].workspaceFolders` rendait `c:\Users\<compte>\...` en
+ * clair, au MEME destinataire — et un agent colle cette sortie dans la PR d'un depot public,
+ * ce que ce chantier fait deja pour ses logs d'integration.
+ */
+describe('aucun chemin personnel nulle part', () => {
+  it('masque le repertoire personnel sans rien retirer du pouvoir de reconnaissance', async () => {
+    const dir = makeRegistryDir();
+    // Le VRAI repertoire personnel de la machine qui execute le test : un chemin invente ne
+    // prouverait que l'existence d'un remplacement, pas qu'il vise le bon repertoire.
+    const home = os.homedir();
+    const folder = path.join(home, 'Documents', 'Github', 'ClaudeManager');
+    const entry = {
+      ...currentSchemaEntry(WINDOWS_ROLES.owningExtHostPid),
+      workspaceFolders: [folder],
+    };
+    writeWindowEntry(entry, { dir });
+
+    // L'assertion serait vide si le chemin reel n'etait pas sur disque : on le verifie.
+    expect(readFileSync(path.join(dir, `${entry.extHostPid}.json`), 'utf8')).toContain(
+      JSON.stringify(home).slice(1, -1)
+    );
+
+    for (const command of ['windows', 'whoami']) {
+      const result = await runCli([command], contextFor(dir, CALLER));
+
+      for (const stream of [result.stdout, result.stderr]) {
+        expect(stream, `${command} — forme brute`).not.toContain(home);
+        // La sortie est du JSON : sous Windows le chemin y est ECHAPPE (`c:\\Users\\...`),
+        // et un masque qui ne connaitrait que la forme brute passerait a cote.
+        expect(stream, `${command} — forme echappee`).not.toContain(
+          JSON.stringify(home).slice(1, -1)
+        );
+      }
+      // Ce qui reste identifie toujours la fenetre parmi plusieurs : seul le nom du compte
+      // a disparu. Supprimer le champ aurait appauvri `cmgr windows`.
+      expect(result.stdout, `${command} — reconnaissance`).toContain('ClaudeManager');
+    }
+  });
+});
+
 describe('aucun jeton nulle part', () => {
   it('ni sur stdout, ni sur stderr, sur AUCUNE des deux commandes', async () => {
     const dir = makeRegistryDir();
