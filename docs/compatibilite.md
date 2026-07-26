@@ -33,6 +33,9 @@ elles ne valent pas toutes pour la même.
 > **2.1.219** ; l'increment **C1** a rejoué D1, D2, D3, D11 et D18 sur **2.1.220**, dans une
 > vraie fenêtre `@vscode/test-electron` chargeant l'extension Claude par jonction. Les lignes
 > **non re-mesurées** sur 2.1.220 le disent dans leur colonne de traçabilité.
+> **C3-FIX** a ajouté **D23** et re-mesuré **D19, D20 et D22** sur **2.1.220**, deux fois : par
+> sonde hors éditeur et dans une vraie fenêtre, **après** l'autorisation OAuth du CLI — laquelle
+> change ce que D22 dit, et c'est écrit sur sa ligne.
 > Le lot B, lui, n'avait touché **aucune** dépendance de cette matrice : son code n'appelait ni
 > le CLI `claude`, ni une commande `claude-vscode.*`, ni un fichier de `~/.claude/**`.
 
@@ -54,7 +57,7 @@ par défaut, relocalisable par `CLAUDE_CONFIG_DIR` (D17).
 | D4 | `claude agents --json` | Contrat CLI | Inventorier les sessions vivantes | ADR-001 §1, **mention incidente** — non exercé par le spike A1 | Sortie non-JSON ou schéma inattendu → repli sur D5, puis erreur |
 | D5 | `<CONFIG>/sessions/<pid>.json` (par défaut `~/.claude/sessions/`) | Fichier d'état interne | Repli d'inventaire des sessions | ADR-002 (V1) — lu sous la racine du bac à sable, voir D17 | Répertoire absent → l'inventaire se limite à D4 |
 | D6 | `<CONFIG>/projects/<cwd-slug>/<sessionId>.jsonl` (par défaut `~/.claude/projects/`) | Transcript interne | Lire une réponse, détecter la fin de tour | ADR-002 (V1) — lu sous la racine **par défaut**, voir D17 | Fichier introuvable ou lignes non parsables → repli sur le hook `Stop`, sinon erreur `TRANSCRIPT_UNREADABLE` |
-| D7 | Slugification du cwd (`:` et `\` → `-`) | Convention de nommage interne | Localiser le transcript d'une session | ADR-002 (V1) — observée sur le chemin du transcript relevé | Aucun répertoire ne correspond → balayage complet de `projects/`, puis erreur |
+| D7 | Slugification du cwd (`:` et `\` → `-`) | Convention de nommage interne | **Rien, et c'est une décision (C3-FIX).** Localiser le transcript se fait par **balayage + nom de fichier** (D23), jamais par ce calcul : le nom du fichier est l'identifiant que **nous** imposons, le slug est une convention que rien ne garantit | ADR-002 (V1) — observée sur le chemin du transcript relevé | Sans objet : aucun code du produit ne dérive ce slug. Un test d'unité vérifie même que le fichier est trouvé sous un slug **fantaisiste** |
 | D8 | Hook `Stop` de `~/.claude/settings.json` | Point d'extension documenté | Signal de fin de tour | **— non vérifié.** Aucune mesure ne l'étaie : ADR-001 ne le cite qu'au titre de ce dont le mécanisme d'alors se passait, ADR-002 pas du tout. **Dette du lot D** | Optionnel — repli automatique sur D6 |
 | D9 | L'extension host de la fenêtre figure dans la **chaîne d'ancêtres** du processus appelant, **à une profondeur non contractuelle** | Comportement du système d'exploitation | Résoudre « ma fenêtre » | **B1** · `tests/fixtures/identity/windows-process-table.roles.json` (capture du 2026-07-25, trois sauts mesurés) · ADR-002 (isolation multi-fenêtres) | **Remonter toute la chaîne**, jamais le seul `ppid`. Aucune fenêtre enregistrée ne figure dans la chaîne du processus appelant → erreur `OWNING_WINDOW_NOT_FOUND` ; deux fenêtres à la même profondeur → erreur `DUPLICATE_WINDOW_IDENTITY` |
 | D10 | Le `cwd` de la session doit correspondre au workspace de la fenêtre | Comportement non documenté de `editor.open` | Garantir que le panneau attache bien **la** session visée | ADR-002 (V1) — **cas nominal seul** : le cas d'échec est rapporté comme écueil connu, il n'a pas été rejoué. **C1 le rend impossible PAR CONSTRUCTION** : le `cwd` du terminal masqué **est** un dossier de travail de la fenêtre | **Aucune erreur n'est levée** : `editor.open` **réussit** en ouvrant un panneau **vide**. La détection annoncée — « vérifier le libellé, dérivé du contenu de la conversation » — **est mise en défaut par D19** : mesuré C1, le libellé reste `Claude Code` pendant 45 s. `PANEL_ATTACHED_EMPTY` n'est donc **implémenté nulle part**, et c'est dit : sa détection appartient au lot D, qui lit le transcript |
@@ -67,8 +70,9 @@ par défaut, relocalisable par `CLAUDE_CONFIG_DIR` (D17).
 | D17 | Variable d'environnement `CLAUDE_CONFIG_DIR` | Comportement du CLI `claude` | **Localiser la racine de configuration** — donc `sessions/` (D5) et, sauf jonction, `projects/` (D6) | **— non mesuré directement.** Déduction du montage du spike A1, où elle pointait sur un bac à sable dont `projects/` était jonctionné vers la racine par défaut ([ADR-002](adr/002-ouverture-interactive.md), « Erratum »). **Dette du lot D** | Variable absente → racine par défaut `~/.claude`. Variable présente → **ne jamais supposer** que `sessions/` et `projects/` sont sous la même racine : les résoudre séparément et vérifier leur existence. `cmgr doctor` doit rendre compte des deux racines effectives |
 | D18 | Le paramètre `sessionId` de `claude-vscode.editor.open` **attache une session existante** | Contrat implicite de la commande interne (précise D1) | Étape 4 du mécanisme retenu — c'est ce qui distingue V1 de V5 | ADR-002 (V1) pour le comportement nominal ; **la perte de ce paramètre n'est toujours pas observée**, c'est un scénario de rupture anticipé | La commande existe (D1 passe) mais l'appel avec un `sessionId` valide ouvre un panneau qui n'est pas celui de la session. **⚠️ NON DÉTECTABLE EN C1** — voir D19 : la commande ouvre un panneau **même pour une session jamais amorcée**, le diff d'onglets ne discrimine donc pas. Détection reportée au lot D (transcript) |
 | D19 | `claude-vscode.editor.open(<uuid>)` ouvre un panneau **même quand aucune session ne porte cet uuid** | Comportement non documenté de la commande interne (précise D1, D10, D18) | **Rien** — c'est une LIMITE, recensée pour qu'on cesse de croire le contraire | **Mesurée C1 le 2026-07-26 sur 2.1.220, par falsification** : appel avec `00000000-0000-4000-8000-0000000c1c1c`, jamais amorcé → un onglet `claudeVSCodePanel` apparaît (`ghostSessionOpensAPanel: true`). Le libellé reste `Claude Code` pendant 45 s, **sans jamais devenir dérivé du contenu** | **Conséquence directe** : le diff d'onglets prouve que la commande a répondu, **jamais** que la session est chargée. Il ne peut donc servir ni d'horloge, ni de preuve d'attachement réel. Le mécanisme attend à la place un **fait observé dans la table des processus** (D20) |
-| D20 | Le shell du terminal masqué engendre le processus du tour 1, observable dans la **table des processus** | Comportement du système d'exploitation, **pas** une API interne Claude | Savoir que le tour 1 a **démarré** avant d'attacher puis de supprimer le terminal | **Mesuré C1 le 2026-07-26** : `seedProcessObserved: true`, une seule lecture de table suffisant en pratique (ouverture complète en **1 733 ms**) | Aucun processus n'est né du shell dans l'échelle bornée → erreur `SEED_PROCESS_NOT_STARTED`. **Ce que cela n'établit PAS, et c'est un blanc ASSUMÉ** : que le tour soit **terminé**. Le terminal est supprimé ~1,7 s après, et sa suppression tue le `claude` du tour 1 (ADR-002). Trancher suppose le transcript ou le hook `Stop` — **dette du lot D** |
-| D22 | **L'onboarding du CLI (`showSetupScreens`) bloque toute session interactive tant qu'il n'a pas été franchi une fois** | Comportement du CLI au démarrage | **Rien** — c'est une **précondition de la machine**, recensée parce qu'elle rend le tour 1 impossible sans que rien ne le signale | **Mesurée C1 (reprise 1) le 2026-07-26 sur 2.1.220**, cinq variantes, `--debug-file` à l'appui. Dernière ligne du journal du CLI : `[STARTUP] Running showSetupScreens()...`, jamais suivie d'autre chose — **87 s** plus tard le processus vit toujours et n'a écrit **aucun** transcript | **Aucune erreur n'est levée, aucune sortie n'est produite.** Le processus `claude` existe, porte la ligne de commande exacte attendue (vérifié sur `Win32_Process.CommandLine`) et **ne fait rien**. Aucun signal n'est disponible depuis `packages/**` : la détection appartient à `cmgr doctor` (lot D), qui doit la **vérifier et la nommer** — jamais la franchir |
+| D20 | Le shell du terminal masqué engendre le processus du tour 1, observable dans la **table des processus** | Comportement du système d'exploitation, **pas** une API interne Claude | **Distinguer « rien n'a démarré du tout » de « démarré, mais aucun tour »** — deux causes, deux remédiations. Ce n'est **plus** ce qui autorise à attacher puis supprimer le terminal : c'est D23 | **Mesuré C1 le 2026-07-26** : `seedProcessObserved: true`, une lecture de table suffisant en pratique. **Re-mesuré C3-FIX** en vraie fenêtre : processus observé à **+1,6 s** après l'envoi, deux lectures | Aucun processus n'est né du shell dans l'échelle bornée → erreur `SEED_PROCESS_NOT_STARTED`. **LE BLANC QUI ÉTAIT ASSUMÉ ICI EST COMBLÉ, ET IL A COÛTÉ UN DÉFAUT DE RECETTE** : « le tour est prouvé démarré, pas terminé » a été lu comme une limite acceptable ; le terminal était donc supprimé ~2,1 s après l'envoi, et sa suppression **tue** le `claude` du tour 1 (ADR-002) — panneau vide, succès rendu. C'est D23 qui porte désormais la preuve du tour |
+| D22 | **`showSetupScreens()` bloque une session interactive — et ce qui reste à franchir, une fois l'OAuth accordé, est la CONFIANCE DU DOSSIER, posée PAR RÉPERTOIRE** | Comportement du CLI au démarrage | **Rien** — c'est une **précondition de la machine**, recensée parce qu'elle rend le tour 1 impossible sans que rien ne le signale. Depuis C3-FIX, elle est néanmoins **NOMMÉE** à l'appelant : faute de transcript, la route rend `SEED_TRANSCRIPT_NOT_FOUND` | **Mesurée C1 (reprise 1)** : `[STARTUP] Running showSetupScreens()...` jamais suivie d'autre chose, **87 s**, aucun transcript. **RE-MESURÉE C3-FIX le 2026-07-26, APRÈS l'autorisation OAuth**, et c'est ce qui la précise : dans un dossier **neuf**, même arrêt, **180 s** sans une ligne (`hasCompletedOnboarding` valant pourtant **vrai**) ; dans un dossier dont `projects.<chemin>.hasTrustDialogAccepted` vaut **vrai**, le **même** binaire, la **même** ligne et le **même** prompt écrivent leur transcript en **2 533 ms**. Le discriminant est donc le **répertoire**, pas le compte | **Aucune erreur n'est levée, aucune sortie n'est produite** : le processus `claude` existe, porte la ligne exacte attendue et **ne fait rien**. **La conclusion « le dossier est hors de cause » de C1 (reprise 1) EST DÉSORMAIS FAUSSE**, et son erreur est instructive : elle mesurait en amont, quand l'OAuth bloquait **partout** — deux causes superposées se lisent comme une. Franchir ces portes reste **interdit** (leur libellé n'est pas contractuel) : `cmgr doctor` (lot D) doit les vérifier et les nommer |
+| D23 | **Le transcript d'une session est nommé `<sessionId>.jsonl`, et il n'existe QUE si un tour a eu lieu** | Convention de nommage + comportement du CLI (précise D6) | **Le seul fait qui établisse que le tour 1 a eu lieu** : le mécanisme le cherche PAR NOM sous les racines de projets, avant d'attacher le panneau et avant de supprimer le terminal amorceur | **Mesuré C3-FIX le 2026-07-26**, deux fois. Sonde hors éditeur, dossier approuvé : apparition à **+2 533 ms** (8 enregistrements, `user` présent, `assistant` ABSENT), réponse écrite à **+6 417 ms** (11 enregistrements). Vraie fenêtre `test-electron`, journal de l'extension : apparition **+2,0 s**, sortie retombée **+5,5 s**, panneau attaché **+62 ms**, transcript final **12 lignes / 15 353 octets**, types `user` **et** `assistant` | Aucun fichier de ce nom sous aucune racine dans les 45 s → erreur `SEED_TRANSCRIPT_NOT_FOUND`, **puis** suppression du terminal. **Ce que l'existence n'établit PAS** : que la réponse soit complète — le fichier apparaît AVANT elle. D'où la grâce bornée accordée à la sortie du tour (croissance depuis l'apparition, puis silence de 3 s, plafond 30 s), qui ne lève jamais. **Aucune ligne n'est lue** : existence et taille seules |
 | D21 | Plafond de `lpCommandLine` (~32 767 unités UTF-16) atteint par le **prompt positionnel** | Limite du système d'exploitation, rendue atteignable par le **contrat CLI** (D3) | Refuser AVANT d'envoyer un prompt que la ligne ne peut pas porter | **Mesuré le 2026-07-26** ([ADR-004](adr/004-transport-du-prompt.md)) : 32 000 passe, 32 600 échoue, **identiquement** pour un prompt littéral et pour un prompt lu depuis un fichier (lignes de pty de 32 744 et 236 caractères) | **L'échec est SILENCIEUX** : aucune sortie, aucune erreur, aucun processus. La garde du cœur pèse la ligne du processus fils et lève `PROMPT_TOO_LARGE`, **puis** bascule sur le repli V5 — lequel passe le prompt en mémoire, sans ligne de commande |
 
 **Notes de conception** — consignes qui découlent des lignes ci-dessus, et qui ne sont pas des
@@ -84,17 +88,29 @@ moyens de détection :
   le chemin **change à chaque mise à jour de l'extension — ne jamais le coder en dur**. Corollaire
   mesuré : quand c'est l'extension qui lance (D12), elle exige `claude` sur le `PATH` et **refuse
   explicitement** de démarrer sinon.
-- **D17 — dette du lot D.** Toute la localisation des transcripts en dépend. La sémantique exacte
-  de `CLAUDE_CONFIG_DIR` doit être **mesurée** au lot D, pas déduite ; jusque-là, la traiter comme
-  un présupposé à vérifier au démarrage. **L'increment C1 ne s'y appuie sur aucun point** : ni
-  `CLAUDE_CONFIG_DIR`, ni `sessions/<pid>.json`, ni `projects/` n'entrent dans une décision du
-  mécanisme — c'est la table des processus qui porte l'observation (D20).
-- **D19 + D20 — ce que « la conversation est ouverte » veut dire en C1, exactement.** La
-  conjonction des deux lignes délimite une capacité, et il vaut mieux la lire que la deviner :
-  C1 établit que **le tour 1 a démarré** (processus observé) et que **la commande d'attachement
-  a répondu par un panneau** (diff d'onglets). Il n'établit **pas** que le panneau porte la
-  session, ni que le tour soit allé à son terme. `cmgr open --wait` (lot D) est la seule voie
-  vers cette garantie, et ce n'est donc pas une commodité d'affichage.
+- **D17 — dette du lot D, et ce que C3-FIX en consomme exactement.** La sémantique de
+  `CLAUDE_CONFIG_DIR` reste **non mesurée** et doit l'être au lot D. Le mécanisme n'en dépend
+  toujours pas pour **décider** : il **balaie** les deux racines possibles — celle par défaut
+  d'abord, puis `<CLAUDE_CONFIG_DIR>/projects` si la variable est posée — et reconnaît le fichier
+  par son **nom**. Une racine fausse ne produit donc qu'un `readdir` inutile, jamais une
+  conclusion fausse. `sessions/<pid>.json` n'est toujours lu **nulle part**.
+  **Raisonnement, non mesure, et il est écrit comme tel** : la session amorcée ne peut de toute
+  façon pas voir `CLAUDE_CONFIG_DIR`, puisqu'elle commence par `CLAUDE_` et que la neutralisation
+  d'environnement du mécanisme la **supprime** du terminal. Les deux racines sont balayées quand
+  même — un raisonnement sur notre propre code ne vaut pas une mesure.
+- **D19 + D20 + D23 — ce que « la conversation est ouverte » veut dire, exactement, depuis
+  C3-FIX.** La conjonction des trois lignes délimite la capacité réelle, et il vaut mieux la lire
+  que la deviner. **Ce qui est établi** : le tour 1 a **eu lieu** — son transcript existe (D23) —,
+  et la commande d'attachement a **répondu** par un panneau. **Ce qui ne l'est pas** : que le
+  panneau porte bien cette session (D19 : il s'ouvre même pour un identifiant jamais amorcé), et
+  que la **réponse** du tour soit complète — le transcript apparaît **avant** elle, d'où la grâce
+  bornée accordée à sa sortie. Restituer la réponse reste `cmgr open --wait` (lot D), et ce n'est
+  donc pas une commodité d'affichage.
+  **Un indice nouveau, relevé et non asserté (C3-FIX)** : sur une ouverture dont le tour a eu
+  lieu, le libellé de l'onglet est devenu `Respond with OK exactly` — dérivé du **contenu** de la
+  conversation — **511 ms** après l'attachement. C'est exactement le discriminant que D10
+  annonçait et que C1 n'avait jamais vu autrement que figé à `Claude Code`. Il n'est **pas**
+  asserté : il dépend de la latence du service, et un critère de merge ne s'y adosse pas.
 - **D21 — la limite est du système, sa portée vient du CLI.** Le jour où `[prompt]` accepterait
   un fichier ou une variable d'environnement, cette ligne cesserait de s'appliquer sans que
   Windows ait changé. C'est pourquoi elle figure dans cette matrice et non parmi les
@@ -165,6 +181,33 @@ C'est le piège qui a fait conclure **à tort** à l'échec de la voie retenue l
 
 ### Deux portes avant le tour 1 — onboarding CLI et confiance du dossier
 
+> **MESURE DU 2026-07-26 (C3-FIX) — LA SECONDE PORTE EST CONFIRMÉE, ET C'EST DÉSORMAIS ELLE QUI
+> BLOQUE.** L'autorisation OAuth a été accordée sur le poste de référence entre C1 et cet
+> incrément. Deux sondes, même binaire (`2.1.220`), même ligne, même prompt, environnement hérité
+> neutralisé de la même façon :
+>
+> | Sonde | `cwd` | `hasTrustDialogAccepted` | Transcript | Dernière ligne du journal CLI |
+> |---|---|---|---|---|
+> | 1 | dossier **neuf** | **absent** | **aucun en 180 s** | `[STARTUP] Running showSetupScreens()...` |
+> | 2 | dossier **déjà approuvé** | **vrai** | **+2 533 ms**, réponse à **+6 417 ms** | `[engine] turn 1 end (… stop=end_turn)` |
+>
+> Ce que ces deux lignes établissent, et qu'aucune ne pouvait établir seule : **le discriminant
+> est le RÉPERTOIRE**, pas le compte ni la machine. `hasCompletedOnboarding` vaut **vrai** dans les
+> deux cas — l'onboarding global est franchi. Ce qui reste est la question de confiance, posée
+> **par répertoire** et **jamais héritée**.
+>
+> **Ce que cela ne dit pas, et c'est un blanc nommé** : le **libellé exact** de ce qui s'affiche
+> dans la sonde 1 n'a **pas** été observé — la sortie d'un pty masqué n'est pas capturée, et
+> révéler le terminal pour la lire est interdit (vol de focus). L'attribution à la confiance du
+> dossier repose sur la **corrélation** du tableau ci-dessus et sur le nom du drapeau que le CLI
+> écrit lui-même. **Propriétaire de ce blanc : `cmgr doctor`, lot D**, dont c'est précisément la
+> raison d'être — vérifier et **nommer** ces portes, jamais les franchir.
+>
+> **Conséquence outillée** : le scénario d'intégration `open-conversation` **relève** cet état
+> avant d'agir et choisit son assertion en conséquence — tour vérifié d'un côté, erreur **nommée**
+> de l'autre. Aucun des deux côtés n'accepte le succès muet. Pour éprouver la voie complète, le
+> harnais accepte `CMGR_OPEN_WS=<dossier déjà approuvé>`.
+
 > **MESURE DU 2026-07-26 (incrément C1, reprise 1) — la porte n°1 est confirmée, et son
 > périmètre est resserré.** Cinq variantes jouées dans une vraie fenêtre, avec `--debug-file` :
 >
@@ -185,10 +228,11 @@ C'est le piège qui a fait conclure **à tort** à l'échec de la voie retenue l
 > - **le transport est hors de cause** — `Win32_Process.CommandLine` montre la ligne exacte
 >   attendue : binaire du bundle, `--session-id <uuid>`, prompt intact.
 >
-> **Conséquence opérationnelle** : sur une machine dont l'onboarding CLI n'a jamais été franchi
-> en session interactive, `POST /conversations` ouvre un panneau et amorce un processus, mais
-> **le tour 1 n'a pas lieu** — sans la moindre erreur. C'est pourquoi la réponse de la route
-> porte `firstTurnVerified: false` plutôt que de laisser croire à un succès complet.
+> **Conséquence opérationnelle, TELLE QU'ELLE ÉTAIT EN C1 — et elle ne suffisait pas.** La route
+> ouvrait un panneau et amorçait un processus sans que le tour ait lieu, en portant
+> `firstTurnVerified: false`. **Mesuré en recette le 2026-07-26** : ce champ n'a pas empêché le
+> défaut, parce qu'un `HTTP 200` accompagné d'un panneau attaché **se lit comme un succès**. La
+> route **refuse** désormais : `SEED_TRANSCRIPT_NOT_FOUND`, aucun panneau attaché (D23).
 
 Sur une machine où l'humain n'utilise que le panneau, le **CLI interactif** ouvre le sélecteur de thème au premier lancement et **attend** — alors même que `theme` est déjà renseigné dans `<HOME>/.claude/settings.json` : la porte est l'onboarding lui-même, pas la valeur du thème, et aucune variable d'environnement ne le court-circuite. Le CLI demande ensuite `Quick safety check: Is this a project you created or one you trust?`, **par répertoire**.
 

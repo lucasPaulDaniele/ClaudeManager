@@ -119,8 +119,8 @@ npm run package:all
 `artifacts/` contient alors exactement deux fichiers :
 
 ```
-artifacts/claudemanager-vscode-0.3.0.vsix    # l'extension compagnon
-artifacts/claudemanager-cli-0.2.0.tgz        # le binaire cmgr
+artifacts/claudemanager-vscode-0.4.0.vsix    # l'extension compagnon
+artifacts/claudemanager-cli-0.3.0.tgz        # le binaire cmgr
 ```
 
 Pour contrôler que ces archives portent bien ce qu'il faut — les **deux** racines compilées,
@@ -133,11 +133,11 @@ npm run verify:packaging
 ### 2. Installer l'extension compagnon
 
 ```bash
-code --install-extension artifacts/claudemanager-vscode-0.3.0.vsix
+code --install-extension artifacts/claudemanager-vscode-0.4.0.vsix
 code --list-extensions --show-versions | grep claudemanager
 ```
 
-La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.3.0`.
+La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.4.0`.
 
 > **L'extension s'active sans rechargement de fenêtre**, et c'est contre-intuitif : son
 > `activationEvents` est `onStartupFinished`, mais VSCode active une extension **fraîchement
@@ -166,7 +166,7 @@ VSCode l'ignore, il n'est ni chargé ni listé par `code --list-extensions`.
 la version installée est bien celle attendue, puis supprimez le vestige à la main :
 
 ```bash
-code --list-extensions --show-versions | grep claudemanager   # doit dire @0.3.0
+code --list-extensions --show-versions | grep claudemanager   # doit dire @0.4.0
 rm -rf ~/.vscode/extensions/claudemanager.claudemanager-vscode-0.1.0
 ```
 
@@ -176,8 +176,8 @@ discriminant dans le nom de ce répertoire.
 ### 3. Installer la CLI
 
 ```bash
-npm install -g ./artifacts/claudemanager-cli-0.2.0.tgz
-cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.2.0"}
+npm install -g ./artifacts/claudemanager-cli-0.3.0.tgz
+cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.3.0"}
 cmgr windows       # les fenêtres pilotables, jeton masqué
 ```
 
@@ -190,9 +190,9 @@ ce qu'il exécute est dedans.
 
 | | |
 |---|---|
-| **Précondition — le CLI `claude` doit être autorisé** | `cmgr open` joue le tour 1 dans un terminal masqué. Si le CLI `claude` n'a jamais été lancé à la main sur cette machine, il s'arrête à son écran d'accueil puis à une **autorisation OAuth que seul le propriétaire du compte peut accorder** — le panneau s'ouvre alors **sans conversation**, et `cmgr open` ne le voit pas. Lancez `claude` une fois dans un terminal, accordez l'autorisation, et acceptez la confiance du dossier (`Quick safety check…`, posée **par répertoire**). |
+| **Précondition — le CLI `claude` doit avoir été autorisé, ET le dossier approuvé** | `cmgr open` joue le tour 1 dans un terminal masqué. Le CLI interactif franchit deux portes avant d'écrire quoi que ce soit : l'**autorisation OAuth**, que seul le propriétaire du compte peut accorder, et la **confiance du dossier** (`Quick safety check…`), posée **par répertoire** et **jamais héritée d'un dossier voisin**. **Mesuré le 2026-07-26** sur une machine dont l'OAuth était accordé : dans un dossier **neuf**, le CLI reste dans son écran d'accueil et n'écrit **aucun** transcript — observé 180 s durant ; dans un dossier déjà approuvé, le même prompt écrit son transcript en **2,5 s**. `cmgr open` ne se laisse plus abuser : il **refuse en nommant** `SEED_TRANSCRIPT_NOT_FOUND` au lieu d'ouvrir un panneau vide. Remède : lancer `claude` **une fois à la main dans ce dossier**, accorder l'autorisation et approuver le dossier. |
 | **Pas de fermeture** | `cmgr close` et `cmgr conversations` ne sont pas livrés (incrément C4). |
-| **Pas de lecture de réponse** | La réponse du premier tour n'est pas restituée : `cmgr open` rend toujours `firstTurnVerified: false`. Il faudra le transcript ou le hook `Stop` (lot D). |
+| **Pas de lecture de réponse** | Le tour 1 est **vérifié** — `firstTurnVerified: true` atteste que le transcript de la session **existe** —, mais son **contenu** n'est pas lu : la réponse elle-même n'est pas restituée. Il faudra le transcript ou le hook `Stop` (lot D, `cmgr open --wait`). |
 | **Pas de `cmgr doctor`** | Le diagnostic des présupposés ci-dessus relève du lot D. En attendant, ils se vérifient à la main.  |
 
 ### Désinstaller
@@ -218,8 +218,9 @@ cmgr whoami       # ✅ résout la fenêtre hôte du processus appelant, par sa 
 cmgr open --prompt-file ./amorce.md
                   # ✅ ouvre une conversation dans la fenêtre hôte, avec un prompt d'amorçage.
                   #    Le canal est **confirmé** par `GET /health` — identité discordante,
-                  #    aucune ouverture. La sortie porte `firstTurnVerified`, **toujours
-                  #    `false`** : seul le transcript pourra dire que le tour a eu lieu (lot D).
+                  #    aucune ouverture. La sortie porte `firstTurnVerified: true` quand le
+                  #    **transcript de la session existe** — le tour a eu lieu ; la RÉPONSE,
+                  #    elle, reste à lire (lot D). Pas de transcript = refus nommé.
 cmgr --help       # ✅ (-h) la description complète, en JSON
 cmgr --version    # ✅ (-v) le nom et la version du binaire, en JSON
 ```
