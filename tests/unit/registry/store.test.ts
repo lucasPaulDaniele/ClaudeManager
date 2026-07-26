@@ -515,3 +515,78 @@ describe('purgeStaleEntries — temporaires orphelins', () => {
     expect(readdirSync(dir).sort()).toEqual([`${HOST}.json.tmp`, 'notes.txt', 'sauvegarde.tmp']);
   });
 });
+
+/**
+ * S3 — UNE suppression qui echoue ne doit jamais avorter le balayage.
+ *
+ * Le piege ne coute qu un `mkdir` a n importe quel processus du compte, et il etait
+ * DEFINITIF : `rmSync` hors de tout `try` faisait remonter une erreur `fs` nue — portant le
+ * chemin absolu, donc le nom du compte — et interrompait la purge de TOUTES les fenetres du
+ * poste. Le registre ne se nettoyait plus jamais, et le journal disait « sweep failed ».
+ */
+describe('purgeStaleEntries — une suppression qui resiste', () => {
+  /** Pid absent de la capture reelle : le temporaire qu il prefixe est donc orphelin. */
+  const TRAP_PID = 424_242;
+  const LATE_PID = 999_999;
+
+  /** Temporaire au motif exact de l ecriture atomique : `<pid>.<uuid>.tmp`. */
+  function temporaryNamed(extHostPid: number): string {
+    return `${extHostPid}.00000000-0000-0000-0000-000000000000.tmp`;
+  }
+
+  function writeOrphanTemporary(extHostPid: number): string {
+    const file = temporaryNamed(extHostPid);
+    writeRaw(dir, file, JSON.stringify(currentSchemaEntry(HOST)));
+    return file;
+  }
+
+  /**
+   * LE PIEGE, tel qu il a ete reproduit : un REPERTOIRE non vide portant le motif des
+   * temporaires. La purge le juge orphelin sur le seul pid — elle ne le lit pas — et
+   * `rmSync(..., { force: true })` sans `recursive` refuse de le retirer.
+   */
+  function plantTrap(): string {
+    const trap = temporaryNamed(TRAP_PID);
+    mkdirSync(path.join(dir, trap));
+    writeRaw(dir, path.join(trap, 'intrus'), 'x');
+    return trap;
+  }
+
+  it('va jusqu au bout du balayage et rapporte le fichier qui a resiste', () => {
+    const table = tableWithoutExtensionHosts();
+    expect(table.has(TRAP_PID), `${TRAP_PID} doit etre absent de la capture`).toBe(false);
+    expect(table.has(LATE_PID), `${LATE_PID} doit etre absent de la capture`).toBe(false);
+
+    const trap = plantTrap();
+    // Un temporaire de chaque cote du piege dans l ordre alphabetique : quel que soit
+    // l ordre de `readdir`, l un d eux est traite APRES lui.
+    const before = writeOrphanTemporary(HOST);
+    const after = writeOrphanTemporary(LATE_PID);
+    writeWindowEntry(currentSchemaEntry(HOST), { dir });
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(table), dir });
+
+    // (a) La purge est TOTALE : l entree morte et les deux temporaires sont bien partis.
+    expect(result.removed).toEqual([`${HOST}.json`]);
+    expect([...result.removedTemporaries].sort()).toEqual([before, after].sort());
+    expect(readdirSync(dir)).toEqual([trap]);
+    expect(result.kept).toEqual([{ file: trap, reason: 'removal-failed', cause: expect.any(String) }]);
+  });
+
+  it('ne rend du systeme QUE son code : ni chemin, ni message', () => {
+    const trap = plantTrap();
+
+    const result = purgeStaleEntries({ snapshot: snapshotOf(tableWithoutExtensionHosts()), dir });
+
+    const kept = result.kept.find((entry) => entry.file === trap);
+    expect(kept?.reason).toBe('removal-failed');
+    // La meme forme que partout ailleurs : un code systeme, et rien qu un code.
+    expect(String(kept?.cause)).toMatch(/^[A-Z][A-Z0-9_]*$/);
+    expect(String(kept?.cause)).not.toContain(path.sep);
+    // Le repertoire temporaire est SOUS le repertoire personnel : la seconde assertion
+    // couvre la premiere, et c est le nom du compte qui est en jeu.
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(dir);
+    expect(serialized).not.toContain(os.homedir());
+  });
+});
