@@ -1,0 +1,31 @@
+{
+  "//": "RELEVE REEL du tarball npm produit par `npm run package:cli`, increment C3, 2026-07-26.",
+  "//2": "Capture : `tar -tzf artifacts/claudemanager-cli-0.2.0.tgz | sort`.",
+  "//3": "Environnement : npm 11.6.2, Node 24.13.0, Windows 11.",
+  "//4": "Les DEUX racines compilees y sont — `dist/cli` ET `dist/core`. C'est ce que l'increment C2 a rendu necessaire : `cmgr open` passe par le client HTTP du coeur, et le paquet ne declare aucune dependance.",
+  "totalEntries": 22,
+  "entries": [
+    "package/dist/cli/src/cli.js",
+    "package/dist/cli/src/cmgr.js",
+    "package/dist/cli/src/commands.js",
+    "package/dist/cli/src/core.js",
+    "package/dist/cli/src/exit.js",
+    "package/dist/cli/src/prompt.js",
+    "package/dist/cli/src/run.js",
+    "package/dist/cli/src/usage.js",
+    "package/dist/core/src/client/loopback.node.js",
+    "package/dist/core/src/client/openConversation.node.js",
+    "package/dist/core/src/client/protocol.js",
+    "package/dist/core/src/commandLine.js",
+    "package/dist/core/src/errors.js",
+    "package/dist/core/src/identity/ancestry.js",
+    "package/dist/core/src/identity/owningWindow.js",
+    "package/dist/core/src/identity/processTable.js",
+    "package/dist/core/src/identity/processTable.node.js",
+    "package/dist/core/src/index.js",
+    "package/dist/core/src/registry/entry.js",
+    "package/dist/core/src/registry/redaction.node.js",
+    "package/dist/core/src/registry/store.node.js",
+    "package/package.json"
+  ]
+}
