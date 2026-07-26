@@ -21,6 +21,12 @@ import {
   removeQuietly,
   type RemovalOutcome,
 } from './cleanup.js';
+import {
+  dismantleClaudeExtension,
+  findClaudeExtension,
+  mountClaudeExtension,
+  type ClaudeExtensionMount,
+} from './claudeExtension.js';
 import { neutralizeInheritedEnvironment, VSCODE_VERSION } from './environment.js';
 import { mask } from './redaction.js';
 
@@ -114,7 +120,62 @@ interface Scenario {
    * Rend un chemin de FICHIER `.code-workspace` ou de dossier, selon le scenario.
    */
   prepare(workspace: string): string;
+  /**
+   * Arguments de lancement PROPRES a ce scenario, ajoutes aux communs.
+   *
+   * Le lot B lance tout avec `--disable-extensions` : la fenetre de test ne contient que la
+   * notre. L'increment C1 a besoin de l'extension Claude — ce crochet existe pour que ce
+   * besoin ne change RIEN aux scenarios existants, dont le comportement doit rester
+   * exactement celui qui a ete mesure.
+   */
+  launchArgs?(workspace: string): readonly string[];
+  /**
+   * Demonte ce que `launchArgs` a monte, AVANT tout menage recursif du lanceur.
+   *
+   * Rend une ligne de compte-rendu. LEVE si le demontage n'est pas complet : le lanceur ne
+   * doit alors rien balayer — voir `claudeExtension.ts`.
+   */
+  teardown?(workspace: string): string;
+  /** Variables supplementaires posees sur le processus VSCode de ce scenario. */
+  extraEnv?(): Readonly<Record<string, string>>;
 }
+
+/**
+ * LES NOMS D'UNE SESSION CLAUDE, REINJECTES A DESSEIN.
+ *
+ * Le lanceur ASSAINIT son propre environnement avant de demarrer VSCode — sans quoi
+ * `ELECTRON_RUN_AS_NODE` fait demarrer le binaire en Node. Consequence : dans la fenetre de
+ * test, l'extension host n'a AUCUN `CLAUDE*`, et l'assertion « aucune variable heritee n'a
+ * survecu » serait VRAIE SANS RIEN EPROUVER — mesure du premier passage : zero variable a
+ * neutraliser, donc zero garde exercee.
+ *
+ * On les remet donc, sous leurs VRAIS noms — ceux de la capture reelle
+ * (`tests/fixtures/environment/claude-session-env-names.json`) — avec des valeurs marquees.
+ * C'est la configuration de PRODUCTION de ClaudeManager : une fenetre VSCode lancee depuis
+ * une session Claude les porte toutes.
+ *
+ * `CLAUDE_CODE_SSE_PORT` n'y figure PAS, et c'est voulu : elle n'est jamais heritee, elle est
+ * injectee par l'extension Claude de la fenetre elle-meme.
+ */
+const REINJECTED_CLAUDE_ENVIRONMENT: Readonly<Record<string, string>> = {
+  CLAUDECODE: '1',
+  CLAUDE_AGENT_SDK_VERSION: 'cmgr-c1-marker',
+  CLAUDE_CODE_CHILD_SESSION: '1',
+  CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: '1',
+  CLAUDE_CODE_ENABLE_TASKS: '1',
+  CLAUDE_CODE_ENTRYPOINT: 'cli',
+  CLAUDE_CODE_EXECPATH: 'cmgr-c1-marker',
+  CLAUDE_CODE_SESSION_ID: 'cmgr-c1-marker',
+  CLAUDE_EFFORT: 'cmgr-c1-marker',
+  CLAUDE_PID: '424242',
+};
+
+/**
+ * `--disable-extensions` : la fenetre de test ne contient que la notre.
+ *
+ * DEFAUT DE TOUS LES SCENARIOS, retire par UN SEUL, qui doit charger l'extension Claude.
+ */
+const ISOLATED_EXTENSIONS: readonly string[] = ['--disable-extensions'];
 
 /** Cree un dossier de travail sous le workspace du scenario, et rend son chemin. */
 function makeFolder(workspace: string, name: string): string {
@@ -166,7 +227,43 @@ const SCENARIOS: readonly Scenario[] = [
       return writeWorkspaceFile(workspace, 'empty.code-workspace', []);
     },
   },
+  {
+    key: 'open-conversation',
+    title:
+      'mecanisme V1 — vraie conversation ouverte, attachement prouve par diff d onglets, repli V5',
+    prepare(workspace) {
+      // UN DOSSIER SIMPLE, pas un `.code-workspace` : c'est le `cwd` que le mecanisme donnera
+      // au terminal, et il doit etre un vrai dossier de travail de la fenetre.
+      return makeFolder(workspace, 'projet');
+    },
+    launchArgs(workspace) {
+      const installed = findClaudeExtension();
+      if (installed === undefined) {
+        // ECHOUER EN LE DISANT : sans l'extension Claude, ce scenario n'a rien a mesurer.
+        throw new Error(
+          "No anthropic.claude-code extension found under ~/.vscode/extensions: this scenario measures the real mechanism and cannot be run without it"
+        );
+      }
+      const mount = mountClaudeExtension(workspace, installed);
+      mounts.set(workspace, mount);
+      say(`[runTests] extension Claude jonctionnee : ${mount.installed} (version ${mount.version})`);
+      // `--disable-extensions` est RETIRE pour ce scenario, et pour lui seul.
+      return ['--extensions-dir', mount.extensionsDir];
+    },
+    extraEnv: () => REINJECTED_CLAUDE_ENVIRONMENT,
+    teardown(workspace) {
+      const mount = mounts.get(workspace);
+      if (mount === undefined) return 'aucune jonction posee';
+      // LEVE si un lien subsiste : le lanceur ne balaiera alors rien recursivement.
+      const dismantled = dismantleClaudeExtension(mount);
+      mounts.delete(workspace);
+      return `jonction(s) retiree(s) AVANT tout menage recursif : ${dismantled.removedLinks.join(', ') || 'aucune'}`;
+    },
+  },
 ];
+
+/** Les montages en cours, par workspace : `launchArgs` les pose, `teardown` les retire. */
+const mounts = new Map<string, ClaudeExtensionMount>();
 
 interface ScenarioRun {
   readonly scenario: Scenario;
@@ -208,6 +305,7 @@ async function runScenario(
 
   let failure: unknown;
   try {
+    const extraArgs = scenario.launchArgs?.(workspace) ?? ISOLATED_EXTENSIONS;
     await runTests({
       vscodeExecutablePath: common.executable,
       extensionDevelopmentPath: common.extensionDevelopmentPath,
@@ -222,19 +320,26 @@ async function runScenario(
         // Ou le scenario trouve ce que le lanceur lui a prepare — le dossier a ajouter en
         // cours de route, notamment : l'extension host ne connait pas nos temporaires.
         CMGR_B3_SCRATCH: workspace,
+        ...(scenario.extraEnv?.() ?? {}),
       },
       launchArgs: [
         launchTarget,
         '--disable-workspace-trust',
         '--user-data-dir',
         userDataDir,
-        // Aucune autre extension : la fenetre de test ne doit contenir que la notre.
-        '--disable-extensions',
+        ...extraArgs,
       ],
     });
   } catch (error) {
     failure = error;
   }
+
+  // LE DEMONTAGE PASSE AVANT TOUT LE RESTE, echec compris : ce qui a ete monte porte des
+  // JONCTIONS vers l'installation de l'utilisateur, et le balayage de fin de run est
+  // recursif. Une exception ici est VOLONTAIREMENT laissee remonter — mieux vaut un harnais
+  // qui s'arrete qu'un harnais qui efface l'extension Claude du poste.
+  const teardown = scenario.teardown?.(workspace);
+  if (teardown !== undefined) say(`[runTests] demontage ${scenario.key} : ${teardown}`);
 
   if (fs.existsSync(reportPath)) {
     say(`\n===== RAPPORT DU SCENARIO ${scenario.key} (rendu par l extension host) =====`);
