@@ -1,0 +1,239 @@
+/**
+ * Montage des tests du client HTTP du coeur.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * AUCUN FAUX `http`, AUCUN FAUX SERVEUR (principe fondateur n.5). Le client est eprouve
+ * contre :
+ *
+ *   - le VRAI serveur local de l'extension compagnon (`packages/vscode/src/server.ts`, qui
+ *     n'importe pas `vscode`), sur une VRAIE socket de boucle locale — c'est lui qui produit
+ *     les 401, 403, 404 et les reponses de succes ;
+ *   - de VRAIES reponses CAPTUREES (`tests/fixtures/client/companion-responses.json`), relevees
+ *     le 2026-07-26 par `npm run test:integration` dans une vraie fenetre VSCode ;
+ *   - un VRAI `http.createServer` nu pour les seuls cas que notre serveur ne peut pas produire
+ *     — un corps illisible, un occupant du port qui ne repond jamais.
+ *
+ * CE QUI EST ADAPTE DE LA CAPTURE, ET RIEN D'AUTRE : les `extHostPid` / `mainPid`. La capture
+ * decrit la fenetre du poste de mesure ; les tests, eux, travaillent sur la table des processus
+ * REELLE capturee en B1, dont les pid sont ceux-la. La FORME vient donc de la capture, les
+ * IDENTITES du scenario — et c'est exactement ce qu'il faut, puisque c'est la confrontation des
+ * identites qu'on eprouve.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+
+import { randomUUID } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {
+  OpenConversationRequest,
+  OpenConversationResult,
+} from '../../../packages/vscode/src/conversations.js';
+import { startServer, type HealthPayload } from '../../../packages/vscode/src/server.js';
+import {
+  writeWindowEntry,
+  type ProcessSnapshot,
+  type WindowEntry,
+} from '../../../packages/core/src/index.js';
+import { WINDOWS_ROLES } from '../identity/fixtures.js';
+import {
+  copyLegacyEntriesInto,
+  currentSchemaEntry,
+  makeRegistryDir,
+  REAL_TABLE,
+  snapshotOf,
+} from '../registry/fixtures.js';
+
+const FIXTURE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'fixtures',
+  'client',
+  'companion-responses.json'
+);
+
+interface CapturedExchange {
+  readonly status: number;
+  readonly body: string;
+}
+
+interface CapturedResponses {
+  readonly health: CapturedExchange;
+  readonly refusals: Readonly<Record<string, CapturedExchange>>;
+  readonly openSeeded: { readonly status: number; readonly result: Record<string, unknown> };
+  readonly openFallback: { readonly status: number; readonly result: Record<string, unknown> };
+}
+
+export const CAPTURED: CapturedResponses = JSON.parse(
+  readFileSync(FIXTURE, 'utf8')
+) as CapturedResponses;
+
+/** Le corps de `/health` REELLEMENT rendu par une fenetre, relu. */
+export const CAPTURED_HEALTH = JSON.parse(CAPTURED.health.body) as HealthPayload & {
+  readonly listenAddress: string;
+};
+
+/** La fenetre que la table capturee de B1 revendique pour le processus appelant. */
+export const OWNING_EXT_HOST_PID = WINDOWS_ROLES.owningExtHostPid;
+export const CALLER_PID = WINDOWS_ROLES.callerClaudePid;
+
+export function snapshot(): ProcessSnapshot {
+  return snapshotOf(REAL_TABLE);
+}
+
+/**
+ * La charge de `/health` de la capture, RECALEE sur l'identite du scenario.
+ *
+ * Seuls `extHostPid` et `mainPid` changent : tout le reste — `schemaVersion`,
+ * `extensionVersion`, `isTrusted`, `workspaceFolders`, `logDirectory` — vient de la fenetre
+ * reelle. `listenAddress` n'y figure pas : le serveur le releve lui-meme sur sa socket, et
+ * c'est bien ce qu'on veut mesurer.
+ */
+export function healthPayloadFor(entry: WindowEntry): HealthPayload {
+  return {
+    ok: true,
+    schemaVersion: CAPTURED_HEALTH.schemaVersion,
+    extensionVersion: CAPTURED_HEALTH.extensionVersion,
+    isTrusted: CAPTURED_HEALTH.isTrusted,
+    workspaceFolders: CAPTURED_HEALTH.workspaceFolders,
+    logDirectory: CAPTURED_HEALTH.logDirectory,
+    // Les DEUX seuls champs recales : la capture decrit la fenetre du poste de mesure, les
+    // tests travaillent sur la table des processus capturee en B1.
+    extHostPid: entry.extHostPid,
+    mainPid: entry.mainPid,
+  };
+}
+
+/** Le resultat d'ouverture CAPTURE, recale sur la fenetre du scenario. */
+export function seededResultFor(entry: WindowEntry): OpenConversationResult {
+  return {
+    ...CAPTURED.openSeeded.result,
+    extHostPid: entry.extHostPid,
+  } as unknown as OpenConversationResult;
+}
+
+export function fallbackResultFor(entry: WindowEntry): OpenConversationResult {
+  return {
+    ...CAPTURED.openFallback.result,
+    extHostPid: entry.extHostPid,
+  } as unknown as OpenConversationResult;
+}
+
+export interface Companion {
+  readonly entry: WindowEntry;
+  readonly registryDir: string;
+  readonly token: string;
+  readonly port: number;
+  /** Les prompts REELLEMENT recus par la route, dans l'ordre. */
+  readonly received: readonly string[];
+  close(): Promise<void>;
+}
+
+export interface CompanionOptions {
+  /** Ce que la route d'ouverture rend — ou leve. Defaut : le resultat `seeded` capture. */
+  readonly open?: (entry: WindowEntry, request: OpenConversationRequest) => Promise<OpenConversationResult>;
+  /** La charge de `/health`. Defaut : celle de la capture, recalee. */
+  readonly health?: (entry: WindowEntry) => HealthPayload;
+  /** Registre a reutiliser — sinon un neuf est cree. */
+  readonly registryDir?: string;
+  /** Identite publiee dans l'entree. Defaut : la fenetre hote de la table capturee. */
+  readonly extHostPid?: number;
+}
+
+/**
+ * Un VRAI serveur compagnon sur la boucle locale, et l'entree de registre qui le designe.
+ *
+ * L'entree est ecrite par `writeWindowEntry` — le vrai chemin de publication —, derivee de la
+ * capture 0.1.0 reelle et recalee sur le port et le jeton du serveur qui vient de demarrer.
+ * Rien n'est depose a la main dans le repertoire.
+ */
+export async function startCompanion(options: CompanionOptions = {}): Promise<Companion> {
+  const registryDir = options.registryDir ?? makeRegistryDir();
+  const token = randomUUID();
+  const received: string[] = [];
+
+  // L'entree definitive ne peut etre ecrite qu'une fois le port connu : on la construit en
+  // deux temps, le serveur ne connaissant son port qu'apres avoir ecoute.
+  const draft = currentSchemaEntry(options.extHostPid ?? OWNING_EXT_HOST_PID);
+
+  const handle = await startServer({
+    token,
+    health: () => (options.health ?? healthPayloadFor)(published),
+    openConversation: async (request) => {
+      received.push(request.prompt);
+      return await (options.open ?? ((entry) => Promise.resolve(seededResultFor(entry))))(
+        published,
+        request
+      );
+    },
+    onError: () => undefined,
+    onClosed: () => undefined,
+  });
+
+  const published: WindowEntry = { ...draft, port: handle.port, token };
+  writeWindowEntry(published, { dir: registryDir });
+
+  return {
+    entry: published,
+    registryDir,
+    token,
+    port: handle.port,
+    received,
+    close: () => handle.close(),
+  };
+}
+
+export interface RawServer {
+  readonly port: number;
+  close(): Promise<void>;
+}
+
+/**
+ * Un `http.createServer` NU — pour les seuls cas que le vrai serveur ne peut pas produire.
+ *
+ * Deux, et ils sont nommes : un corps que personne ne saurait relire (une extension compagnon
+ * d'une autre version), et un OCCUPANT DU PORT qui accepte la connexion sans jamais repondre —
+ * exactement le cas de l'alerte n.41, quand la plage ephemere a ete reattribuee.
+ */
+export function startRawServer(
+  handler: (request: IncomingMessage, response: ServerResponse) => void
+): Promise<RawServer> {
+  const server: Server = createServer(handler);
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      resolve({
+        port,
+        close: () =>
+          new Promise<void>((done) => {
+            server.closeAllConnections();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+}
+
+/** Un port sur lequel PLUS RIEN n'ecoute : une ecoute ouverte, puis refermee. */
+export async function deadPort(): Promise<number> {
+  const server = await startRawServer(() => undefined);
+  await server.close();
+  return server.port;
+}
+
+/** Publie une entree qui designe un port et un jeton donnes, sous la fenetre hote. */
+export function publishEntry(
+  registryDir: string,
+  port: number,
+  token: string,
+  extHostPid: number = OWNING_EXT_HOST_PID
+): WindowEntry {
+  const entry: WindowEntry = { ...currentSchemaEntry(extHostPid), port, token };
+  writeWindowEntry(entry, { dir: registryDir });
+  return entry;
+}
+
+export { copyLegacyEntriesInto, makeRegistryDir };

@@ -1,0 +1,70 @@
+{
+  "capturedOn": "2026-07-26",
+  "capturedBy": "npm run test:integration",
+  "vscodeVersion": "1.122.1",
+  "companionVersion": "0.2.0",
+  "claudeExtensionVersion": "2.1.220",
+  "health": {
+    "route": "GET /health",
+    "status": 200,
+    "body": "{\"ok\":true,\"schemaVersion\":1,\"extensionVersion\":\"0.2.0\",\"extHostPid\":14332,\"mainPid\":19520,\"isTrusted\":true,\"workspaceFolders\":[\"<tmp>\\\\cmgr-b3-ws-hNxwPo\\\\folder-a\",\"<tmp>\\\\cmgr-b3-ws-hNxwPo\\\\folder-b\"],\"logDirectory\":\"<tmp>\\\\cmgr-b3-uds-oJcxra\\\\logs\\\\20260726T150846\\\\window1\\\\exthost\\\\claudemanager.claudemanager-vscode\",\"listenAddress\":\"127.0.0.1\"}"
+  },
+  "refusals": {
+    "unauthorized": {
+      "status": 401,
+      "body": "{\"ok\":false,\"error\":\"UNAUTHORIZED\"}"
+    },
+    "notFound": {
+      "status": 404,
+      "body": "{\"ok\":false,\"error\":\"NOT_FOUND\"}"
+    },
+    "forbiddenHost": {
+      "status": 403,
+      "body": "{\"ok\":false,\"error\":\"FORBIDDEN_HOST\"}"
+    },
+    "forbiddenOrigin": {
+      "status": 403,
+      "body": "{\"ok\":false,\"error\":\"FORBIDDEN_ORIGIN\"}"
+    }
+  },
+  "openSeeded": {
+    "route": "POST /conversations",
+    "status": 200,
+    "openMs": 1743,
+    "result": {
+      "ok": true,
+      "mode": "seeded",
+      "sessionId": "ae19d1fc-9685-4542-ac59-b6f94d07bb88",
+      "extHostPid": 22424,
+      "humanActionRequired": false,
+      "firstTurn": "process-started",
+      "firstTurnVerified": false,
+      "panelViewType": "mainThreadWebview-claudeVSCodePanel"
+    }
+  },
+  "openFallback": {
+    "route": "POST /conversations",
+    "status": 200,
+    "result": {
+      "ok": true,
+      "mode": "fallback",
+      "sessionId": null,
+      "extHostPid": 22424,
+      "humanActionRequired": true,
+      "firstTurn": "not-attempted",
+      "firstTurnVerified": false,
+      "degradedFrom": {
+        "code": "PROMPT_TOO_LARGE",
+        "details": {
+          "promptLength": 40000,
+          "promptCost": 40002,
+          "fixedCost": 205,
+          "safetyMargin": 256,
+          "limit": 32767,
+          "total": 40463,
+          "overflowBy": 7696
+        }
+      }
+    }
+  }
+}

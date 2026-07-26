@@ -19,6 +19,13 @@
  * d'exploitation : ce qui le rend atteignable est le CONTRAT DU CLI — le prompt n'est
  * soumissible qu'en argument positionnel (D3). Le jour ou le CLI accepterait un prompt par
  * fichier, cette limite cesserait de s'appliquer sans que Windows ait change.
+ *
+ * LES CODES DU CLIENT — `WINDOW_UNREACHABLE`, `WINDOW_TOKEN_REJECTED`,
+ * `WINDOW_IDENTITY_MISMATCH`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_REQUEST_REFUSED` — N'Y
+ * FIGURENT PAS NON PLUS, et c'est exactement le motif du registre : le protocole qu'ils jugent
+ * est LE NOTRE — le serveur local de l'extension compagnon, arbitre a l'ADR-003 —, il n'est
+ * emprunte a personne et aucune mise a jour de l'extension Claude ne peut le changer. Idem
+ * pour `PROMPT_EMPTY` et `PROMPT_FILE_UNREADABLE`, qui portent sur ce que l'APPELANT fournit.
  */
 
 export const ERROR_CODES = {
@@ -60,9 +67,40 @@ export const ERROR_CODES = {
   REGISTRY_ENTRY_INVALID: 'REGISTRY_ENTRY_INVALID',
   /** La fenetre cible est en Restricted Mode : les extensions y sont desactivees. */
   WORKSPACE_NOT_TRUSTED: 'WORKSPACE_NOT_TRUSTED',
+  /** Le serveur local de la fenetre hote n'a pas repondu : connexion refusee, ou silence. */
+  WINDOW_UNREACHABLE: 'WINDOW_UNREACHABLE',
+  /** La fenetre hote a refuse le jeton porteur que son entree de registre annonce. */
+  WINDOW_TOKEN_REJECTED: 'WINDOW_TOKEN_REJECTED',
+  /** La fenetre qui a repondu n'est pas celle que l'entree de registre decrivait. */
+  WINDOW_IDENTITY_MISMATCH: 'WINDOW_IDENTITY_MISMATCH',
+  /** La reponse de la fenetre hote n'est pas du JSON, ou pas de la forme attendue. */
+  WINDOW_RESPONSE_UNREADABLE: 'WINDOW_RESPONSE_UNREADABLE',
+  /** La fenetre hote a NOMME son refus, et ce nom n'est pas une erreur du coeur. */
+  WINDOW_REQUEST_REFUSED: 'WINDOW_REQUEST_REFUSED',
+  /** Le prompt est vide : la conversation s'ouvrirait sans que rien ne soit soumis. */
+  PROMPT_EMPTY: 'PROMPT_EMPTY',
+  /** Le fichier de prompt designe par l'appelant n'a pas pu etre lu. */
+  PROMPT_FILE_UNREADABLE: 'PROMPT_FILE_UNREADABLE',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
+
+/**
+ * Cette chaine est-elle un code que NOUS connaissons ?
+ *
+ * Elle existe pour UN usage, et il est etroit : le serveur local d'une fenetre rend le CODE
+ * STABLE de ses erreurs nommees dans le champ `error` de ses reponses de refus. Le client doit
+ * pouvoir relever une erreur du coeur telle que la fenetre l'a formulee, plutot que de la
+ * reduire a « la fenetre a refuse » — ce qui reviendrait a perdre en chemin la remediation que
+ * le coeur avait deja ecrite.
+ *
+ * Le predicat est ce qui empeche d'en faire un blanc-seing : une chaine venue du reseau ne
+ * devient une erreur nommee QUE si elle designe un code existant. Tout le reste ressort en
+ * `WINDOW_REQUEST_REFUSED`, sans jamais etre recopie tel quel dans un message.
+ */
+export function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(ERROR_CODES, value);
+}
 
 /** Remediation affichee a l'utilisateur pour chaque code. */
 const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
@@ -104,6 +142,20 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     "L'entree de fenetre proposee ne respecte pas le schema du registre et n'a pas ete publiee. Une entree qu'on refuserait de relire ne doit jamais etre ecrite : consulter le motif dans les details.",
   [ERROR_CODES.WORKSPACE_NOT_TRUSTED]:
     "La fenetre cible est en Restricted Mode. Accorder la confiance au dossier dans VSCode ('Do you trust the authors of the files in this folder?').",
+  [ERROR_CODES.WINDOW_UNREACHABLE]:
+    "La fenetre hote est enregistree mais son serveur local n'a pas repondu sur le port de son entree. Trois causes connues, dans cet ordre : son ecoute est morte et l'entree n'a pas encore ete republiee, la fenetre a ete rechargee, ou le port ephemere a ete repris par un autre processus local. Relancer la commande : le port et le jeton sont relus dans le registre a chaque appel, jamais mis en cache.",
+  [ERROR_CODES.WINDOW_TOKEN_REJECTED]:
+    "La fenetre hote a refuse le jeton porteur que son entree de registre annonce. L'entree est donc perimee ou substituee — le port ephemere a probablement ete repris par un autre processus local. NE PAS REESSAYER EN BOUCLE : chaque tentative presente le jeton a ce qui occupe le port. Inspecter ~/.claudemanager/windows, et recharger la fenetre pour qu'elle republie.",
+  [ERROR_CODES.WINDOW_IDENTITY_MISMATCH]:
+    "La fenetre qui a repondu n'est pas celle que le registre decrivait : son extension host n'est pas celui de l'entree lue. L'entree a ete substituee entre sa lecture et cet appel, ou le port a ete repris par une autre fenetre. AUCUNE DEMANDE N'A ETE EMISE — c'est ce que la confirmation de canal existe pour empecher. Relancer la commande, puis inspecter le registre si le desaccord persiste.",
+  [ERROR_CODES.WINDOW_RESPONSE_UNREADABLE]:
+    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis recharger la fenetre apres mise a jour. Les details portent la route et ce qui manquait.",
+  [ERROR_CODES.WINDOW_REQUEST_REFUSED]:
+    "La fenetre hote a refuse la demande et a NOMME son refus ; le code exact figure dans les details. FORBIDDEN_HOST ou FORBIDDEN_ORIGIN signale qu'un intermediaire s'est interpose sur la boucle locale — aucun client de ClaudeManager ne produit ces refus. NOT_FOUND signale une extension compagnon trop ancienne pour cette route.",
+  [ERROR_CODES.PROMPT_EMPTY]:
+    "Le prompt est vide, ou ne porte que des blancs. Ouvrir une conversation sans prompt reviendrait a ouvrir un panneau pour rien : la demande est refusee AVANT toute ouverture. Verifier le fichier passe a --prompt-file, ou ce qui a ete ecrit sur stdin.",
+  [ERROR_CODES.PROMPT_FILE_UNREADABLE]:
+    "Le fichier de prompt n'a pas pu etre lu. Verifier que le chemin existe, qu'il designe un fichier et non un repertoire, et que les droits de lecture sont accordes. Le detail porte le seul code systeme : le message porterait le chemin, donc le nom du compte.",
 };
 
 /**
