@@ -95,8 +95,10 @@ describe('ouverture nominale', () => {
     expect(opening.conversation.mode).toBe('seeded');
     expect(opening.conversation.sessionId).toBe(CAPTURED.openSeeded.result['sessionId']);
     expect(opening.conversation.extHostPid).toBe(companion.entry.extHostPid);
-    // TOUJOURS false : seul le transcript peut dire que le tour a eu lieu (lot D).
-    expect(opening.conversation.firstTurnVerified).toBe(false);
+    // RENDU TEL QUE LA FENETRE LE DIT, et plus jamais code en dur cote client : la capture
+    // vient d'une fenetre qui a CONSTATE le transcript de la session.
+    expect(opening.conversation.firstTurn).toBe('transcript-observed');
+    expect(opening.conversation.firstTurnVerified).toBe(true);
     // Le prompt est bien arrive, mot pour mot.
     expect(companion.received).toEqual(['Reponds OK.']);
     expect(report.skipped).toEqual([]);

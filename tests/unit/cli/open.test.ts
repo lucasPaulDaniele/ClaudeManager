@@ -6,6 +6,7 @@ import { runCli } from '../../../packages/cli/src/cli.js';
 import { EXIT_CODES } from '../../../packages/cli/src/exit.js';
 import {
   fallbackResultFor,
+  legacySeededResultFor,
   publishEntry,
   startCompanion,
   type Companion,
@@ -241,9 +242,35 @@ describe('la ligne de commande ne porte NI prompt NI fenetre', () => {
 
 describe('ce que la sortie DIT, et ne doit pas taire', () => {
   it('rend firstTurnVerified au premier niveau, ET le redit en clair sur stderr', async () => {
-    // Un agent qui lit `ok: true` sans ce champ conclurait, a tort, que le tour a eu lieu.
+    // Un agent qui lit `ok: true` sans ce champ conclurait que le tour a eu lieu — a tort quand
+    // il vaut `false`. Le champ est dans la sortie machine, la phrase sur `stderr`.
     const companion = await companionIn();
     const file = promptFile('visible.md', 'Reponds exactement OK.');
+
+    const result = await runCli(
+      ['open', '--prompt-file', file],
+      contextFor(companion.registryDir, CALLER)
+    );
+    const payload = expectSuccess(result);
+
+    expect(payload['firstTurnVerified']).toBe(true);
+    expect(payload['firstTurn']).toBe('transcript-observed');
+    expect(result.stderr).toContain('firstTurnVerified: true');
+    // CE QUI RESTE AU LOT D, et que la phrase ne doit pas laisser croire acquis : la REPONSE.
+    expect(result.stderr).toContain('lot D');
+  });
+
+  it('DIT qu une fenetre trop ancienne ne verifie PAS le tour, et comment le voir', async () => {
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // LE TROISIEME ETAT, ET IL N'EST PAS THEORIQUE : la fenetre et cette CLI vivent dans deux
+    // processus mis a jour separement. Une fenetre en 0.3.0 rend `firstTurnVerified: false` sur
+    // une voie amorcee — elle n'observait que le demarrage d'un processus. Rendre la meme phrase
+    // que pour un tour verifie affirmerait ce que personne n'a constate.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    const companion = await companionIn({
+      open: (entry) => Promise.resolve(legacySeededResultFor(entry)),
+    });
+    const file = promptFile('ancienne.md', 'Reponds exactement OK.');
 
     const result = await runCli(
       ['open', '--prompt-file', file],
@@ -254,7 +281,8 @@ describe('ce que la sortie DIT, et ne doit pas taire', () => {
     expect(payload['firstTurnVerified']).toBe(false);
     expect(payload['firstTurn']).toBe('process-started');
     expect(result.stderr).toContain('firstTurnVerified: false');
-    expect(result.stderr).toContain('lot D');
+    // La remediation, et elle est ACTIONNABLE : comparer la version, puis mettre a jour.
+    expect(result.stderr).toContain('extensionVersion');
   });
 
   it('NOMME la confirmation de canal : une verification silencieuse ne se prouve pas', async () => {

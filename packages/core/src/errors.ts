@@ -47,6 +47,8 @@ export const ERROR_CODES = {
   PROMPT_FILE_UNWRITABLE: 'PROMPT_FILE_UNWRITABLE',
   /** Le shell du terminal masque n'a jamais engendre le processus `claude` du tour 1. */
   SEED_PROCESS_NOT_STARTED: 'SEED_PROCESS_NOT_STARTED',
+  /** Le processus a demarre, mais aucun transcript n'a ete ecrit : le tour 1 n'a pas eu lieu. */
+  SEED_TRANSCRIPT_NOT_FOUND: 'SEED_TRANSCRIPT_NOT_FOUND',
   /** La fenetre cible n'a aucun dossier de travail : rien ne peut y servir de `cwd`. */
   WORKSPACE_FOLDER_MISSING: 'WORKSPACE_FOLDER_MISSING',
   /** Le CLI n'a pas rendu la session demandee lors de l'amorcage headless. */
@@ -122,6 +124,8 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     "Le fichier transitoire portant le prompt n'a pas pu etre ecrit dans le repertoire de stockage de l'extension. Verifier les droits d'ecriture de ce repertoire et qu'aucun antivirus ne le verrouille.",
   [ERROR_CODES.SEED_PROCESS_NOT_STARTED]:
     "Le shell du terminal masque n'a engendre aucun processus : le tour 1 n'a pas demarre. Causes connues, dans cet ordre : une des deux portes du CLI attend une reponse (onboarding, ou 'Quick safety check' du dossier — les verifier avec cmgr doctor), le binaire claude a refuse de demarrer, ou le shell n'a pas execute la ligne.",
+  [ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND]:
+    "Le processus du tour 1 a demarre, mais aucun transcript <sessionId>.jsonl n'est apparu sous les racines de projets du CLI : le tour n'a PAS eu lieu, et le terminal a ete supprime. Trois causes, dans cet ordre de vraisemblance, toutes SILENCIEUSES cote CLI : (1) une porte du CLI attend une reponse dans ce repertoire — la confiance du dossier ('Quick safety check') se pose PAR REPERTOIRE et n'a jamais ete accordee pour celui-ci, cas MESURE le 2026-07-26 sur un dossier neuf ; (2) le CLI s'est cru agent enfant non interactif et a coupe la sauvegarde du transcript (contamination de l'environnement, voir docs/compatibilite.md) ; (3) la racine de configuration du CLI a change (CLAUDE_CONFIG_DIR, D17). Verifier avec cmgr doctor, qui doit NOMMER ces portes — jamais les franchir.",
   [ERROR_CODES.WORKSPACE_FOLDER_MISSING]:
     "La fenetre cible n'a aucun dossier de travail. Le tour 1 est joue dans le workspace de la fenetre — c'est ce qui garantit que le panneau attache bien la session ouverte. Ouvrir un dossier dans cette fenetre.",
   [ERROR_CODES.SEED_SESSION_ID_MISMATCH]:

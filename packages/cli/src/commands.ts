@@ -93,9 +93,10 @@ export interface Diagnostics {
   /**
    * Ce qu'un HUMAIN doit lire, et qu'un champ JSON seul laisserait passer.
    *
-   * `firstTurnVerified: false` est le cas d'espece : un agent qui lit `ok: true` sans le voir
-   * conclurait, a tort, que le tour 1 a eu lieu. Le champ est dans la sortie machine ; la
-   * phrase, elle, va sur `stderr`, ou un humain la lit sans avoir a interroger le JSON.
+   * `firstTurnVerified` est le cas d'espece : un agent qui lit `ok: true` sans le voir
+   * conclurait que le tour 1 a eu lieu — a tort quand le champ vaut `false`. Le champ est dans
+   * la sortie machine ; la phrase, elle, va sur `stderr`, ou un humain la lit sans avoir a
+   * interroger le JSON, et elle dit lequel des trois cas on a sous les yeux (`openingNote`).
    */
   notes?: readonly string[];
 }
@@ -268,6 +269,27 @@ export type OpenOutcome =
   | { readonly kind: 'usage'; readonly failure: Failure };
 
 /**
+ * CE QU'UN HUMAIN DOIT LIRE DE L'OUVERTURE, en une phrase — le JSON, lui, porte les champs.
+ *
+ * TROIS CAS, ET LE TROISIEME N'EST PAS DECORATIF : une fenetre portant une version anterieure
+ * de l'extension rend `firstTurnVerified: false` sur une voie amorcee, parce qu'elle n'observait
+ * que le demarrage d'un processus. Rendre la meme phrase que pour un tour verifie serait affirmer
+ * ce qu'on n'a pas constate ; la taire laisserait croire au succes complet. On dit donc lequel
+ * des deux on a sous les yeux, et quoi faire.
+ */
+function openingNote(conversation: {
+  readonly mode: string;
+  readonly firstTurnVerified: boolean;
+}): string {
+  if (conversation.mode === 'fallback') {
+    return 'repli V5 : la conversation est ouverte, le prompt est PRE-REMPLI dans le champ de saisie et N A PAS ete soumis. Un geste humain est requis.';
+  }
+  return conversation.firstTurnVerified
+    ? 'le tour 1 a EU LIEU (firstTurnVerified: true) : le transcript de la session existe sur le disque. Son CONTENU n est pas lu — la REPONSE du tour ne sera restituee que par cmgr open --wait, lot D.'
+    : 'le tour 1 n est PAS verifie (firstTurnVerified: false) : cette fenetre porte une version de l extension qui n observait que le demarrage d un processus, jamais le tour lui-meme. Comparer son extensionVersion avec cmgr windows, puis la mettre a jour.';
+}
+
+/**
  * « Ouvre une conversation dans MA fenetre, avec ce prompt. »
  *
  * TOUT CE QUI DECIDE EST DANS LE COEUR (`openConversationInWindow`) : resolution de la fenetre,
@@ -275,8 +297,9 @@ export type OpenOutcome =
  * lit le prompt, passe l'instantane des processus — LU UNE SEULE FOIS —, et met en forme.
  *
  * CE QUE LA SORTIE DIT, ET QU'ELLE NE DOIT PAS TAIRE :
- *   - `firstTurnVerified` est TOUJOURS `false`, et il est rendu au premier niveau. Le savoir
- *     suppose de lire le transcript — lot D. Un agent qui lirait `ok: true` sans ce champ
+ *   - `firstTurnVerified` est rendu AU PREMIER NIVEAU, tel que la fenetre le dit. Il vaut `true`
+ *     quand la fenetre a constate le transcript de la session, `false` en repli V5 comme sur une
+ *     fenetre trop ancienne pour le verifier. Un agent qui lirait `ok: true` sans ce champ
  *     conclurait, a tort, que le tour a eu lieu ; une ligne de `stderr` le redit en clair.
  *   - `channelConfirmed` NOMME la confirmation de canal : une verification silencieuse est une
  *     verification dont personne ne peut dire si elle a eu lieu.
@@ -316,14 +339,7 @@ export async function openCommand(
 
   const { conversation } = opening;
   diagnostics.degraded = conversation.mode === 'fallback';
-  diagnostics.notes =
-    conversation.mode === 'fallback'
-      ? [
-          'repli V5 : la conversation est ouverte, le prompt est PRE-REMPLI dans le champ de saisie et N A PAS ete soumis. Un geste humain est requis.',
-        ]
-      : [
-          'le tour 1 n est PAS verifie (firstTurnVerified: false) : la route observe qu un processus a demarre, jamais que le tour ait ete joue. Seul le transcript le dira — lot D.',
-        ];
+  diagnostics.notes = [openingNote(conversation)];
 
   return {
     kind: 'opened',

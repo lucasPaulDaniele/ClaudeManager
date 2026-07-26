@@ -2,7 +2,7 @@
   "capturedOn": "2026-07-26",
   "capturedBy": "npm run test:integration",
   "vscodeVersion": "1.122.1",
-  "companionVersion": "0.2.0",
+  "companionVersion": "voir chaque entree : DEUX versions de l extension compagnon coexistent ici, et c est delibere — le client doit lire les deux",
   "claudeExtensionVersion": "2.1.220",
   "health": {
     "route": "GET /health",
@@ -30,7 +30,28 @@
   "openSeeded": {
     "route": "POST /conversations",
     "status": 200,
+    "capturedOn": "2026-07-26",
+    "companionVersion": "code de l increment C3-FIX, publie en 0.4.0 — a l instant de la capture le manifeste portait encore 0.3.0, le numero ayant ete releve ensuite dans le meme increment",
+    "openMs": 9323,
+    "note": "Capture C3-FIX, vraie fenetre, dossier dont la confiance du CLI etait accordee (CMGR_OPEN_WS). openMs est passe de 1743 a 9323 ms parce que la route attend desormais que le TOUR ait eu lieu : transcript apparu a +2,0 s, sortie du tour retombee a +5,5 s, panneau attache a +62 ms. Le transcript ecrit portait 12 lignes et 15 353 octets, types `user` ET `assistant`.",
+    "result": {
+      "ok": true,
+      "mode": "seeded",
+      "sessionId": "f0bd7609-81b9-414f-bb6b-af35237ef276",
+      "extHostPid": 8188,
+      "humanActionRequired": false,
+      "firstTurn": "transcript-observed",
+      "firstTurnVerified": true,
+      "panelViewType": "mainThreadWebview-claudeVSCodePanel"
+    }
+  },
+  "openSeededLegacy": {
+    "route": "POST /conversations",
+    "status": 200,
+    "capturedOn": "2026-07-26",
+    "companionVersion": "0.2.0",
     "openMs": 1743,
+    "note": "CONSERVEE TELLE QUELLE, et ce n'est pas de l'archivage : c'est ce qu'une fenetre portant une version anterieure de l'extension rend ENCORE. La fenetre et la CLI vivent dans deux processus mis a jour separement — le client doit lire cette reponse sans casser, et un test l'exige.",
     "result": {
       "ok": true,
       "mode": "seeded",

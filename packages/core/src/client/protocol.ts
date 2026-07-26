@@ -84,8 +84,20 @@ export interface WindowHealth {
 /** Quel chemin l'ouverture a pris — voir `packages/vscode/src/conversations.ts`. */
 export type OpenMode = 'seeded' | 'fallback';
 
-/** Ce que l'ouverture a etabli du tour 1 — jamais plus que ce qui a ete observe. */
-export type FirstTurnOutcome = 'process-started' | 'not-attempted';
+/**
+ * Ce que l'ouverture a etabli du tour 1 — jamais plus que ce qui a ete observe.
+ *
+ * `'transcript-observed'` — le transcript de la session existe : le tour a eu lieu.
+ * `'not-attempted'` — repli V5, aucune session amorcee.
+ * `'process-started'` — CE QUE LES VERSIONS ANTERIEURES DE L'EXTENSION RENDENT, et rien d'autre.
+ *   Il est accepte EN LECTURE, et il ne faut pas le retirer sans y penser : la fenetre et cette
+ *   CLI vivent dans deux processus mis a jour separement, et une fenetre encore en 0.3.0 rend
+ *   cette valeur. La refuser transformerait un ecart de version en `WINDOW_RESPONSE_UNREADABLE`
+ *   sur une ouverture parfaitement reussie. Le mecanisme, lui, ne la produit plus : ce qu'elle
+ *   observait — « un enfant du shell existe » — ne discriminait pas un CLI qui joue le tour d'un
+ *   CLI arrete a une porte.
+ */
+export type FirstTurnOutcome = 'transcript-observed' | 'process-started' | 'not-attempted';
 
 export interface OpenedConversation {
   readonly mode: OpenMode;
@@ -96,19 +108,28 @@ export interface OpenedConversation {
   readonly humanActionRequired: boolean;
   readonly firstTurn: FirstTurnOutcome;
   /**
-   * TOUJOURS `false`, ET LE CLIENT LE VERIFIE.
+   * LE TOUR 1 A-T-IL EU LIEU ? RENDU TEL QUE LA FENETRE LE DIT — et il peut valoir `true`.
    *
-   * Le savoir suppose de lire le transcript ou le hook `Stop` — la frontiere du lot D, qui ne
-   * bouge pas. Le type de l'extension est LITTERAL (`false`), et son commentaire dit pourquoi :
-   * « une version ulterieure qui saurait le verifier devra elargir ce type, donc rompre la
-   * compilation de ses consommateurs. C'est voulu — la promesse change. »
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * CE CHAMP ETAIT LE LITTERAL `false`, ET LE CLIENT REFUSAIT TOUTE AUTRE VALEUR. C'etait juste
+   * tant que rien, dans la fenetre, ne pouvait verifier le tour : a travers une socket, aucun
+   * type ne rompt a la compilation, et refuser etait la seule facon d'honorer un litteral.
    *
-   * A TRAVERS UNE SOCKET, RIEN NE ROMPT A LA COMPILATION : la seule facon d'honorer cette
-   * intention est de refuser la reponse. Un `true` qu'on ne peut pas corroborer serait une
-   * promesse elargie en silence, c'est-a-dire exactement ce que le principe fondateur n.3
-   * interdit — et l'appelant conclurait que son tour a ete joue quand il n'en est rien.
+   * DEPUIS LE CORRECTIF DU 2026-07-26, LA FENETRE LE VERIFIE : elle constate l'existence de
+   * `<sessionId>.jsonl` avant de rendre la main. Laisser le refus en place ferait rejeter
+   * EXACTEMENT les ouvertures reussies — et la compilation resterait verte, puisque ce
+   * validateur lit un `unknown` venu d'une socket. C'est le piege que ce paragraphe existe pour
+   * empecher de reintroduire.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   *
+   * CE QUI RESTE VERIFIE, ET C'EST UN COUPLE, PAS UNE VALEUR : en repli V5, ce champ doit valoir
+   * `false`. Aucune session n'y est amorcee — un `true` designerait le tour d'une session que
+   * personne n'a ouverte.
+   *
+   * `false` en voie amorcee est LEGITIME : c'est ce qu'une fenetre portant une version
+   * anterieure de l'extension rend, et le client ne doit pas casser sur un ecart de version.
    */
-  readonly firstTurnVerified: false;
+  readonly firstTurnVerified: boolean;
   /** `viewType` de l'onglet apparu, releve tel quel. Absent en repli. */
   readonly panelViewType: string | undefined;
   /**
@@ -258,10 +279,30 @@ function requireMode(raw: Readonly<Record<string, unknown>>): OpenMode {
 
 function requireFirstTurn(raw: Readonly<Record<string, unknown>>): FirstTurnOutcome {
   const outcome = raw['firstTurn'];
-  if (outcome !== 'process-started' && outcome !== 'not-attempted') {
+  if (
+    outcome !== 'transcript-observed' &&
+    outcome !== 'process-started' &&
+    outcome !== 'not-attempted'
+  ) {
     throw unreadable(OPEN_ROUTE, 'firstTurn');
   }
   return outcome;
+}
+
+/**
+ * `firstTurnVerified` : un booleen, et `false` OBLIGATOIRE en repli.
+ *
+ * Le couple est le meme que celui de `sessionId` : le repli V5 n'amorce AUCUNE session, il
+ * pre-remplit un champ de saisie. Un tour « verifie » y designerait le tour d'une session que
+ * personne n'a ouverte — la fenetre ne le rend jamais, et le client refuse de le transmettre.
+ */
+function requireFirstTurnVerified(
+  raw: Readonly<Record<string, unknown>>,
+  mode: OpenMode
+): boolean {
+  const verified = requireBoolean(OPEN_ROUTE, raw, 'firstTurnVerified');
+  if (mode === 'fallback' && verified) throw unreadable(OPEN_ROUTE, 'firstTurnVerified');
+  return verified;
 }
 
 /**
@@ -318,9 +359,6 @@ export function readOpenedConversation(response: WindowResponse): OpenedConversa
 
   const raw = asRecord(OPEN_ROUTE, response.body);
   if (raw['ok'] !== true) throw unreadable(OPEN_ROUTE, 'ok');
-  // Voir `OpenedConversation.firstTurnVerified` : a travers une socket, refuser est la seule
-  // facon d'honorer un type litteral.
-  if (raw['firstTurnVerified'] !== false) throw unreadable(OPEN_ROUTE, 'firstTurnVerified');
 
   const mode = requireMode(raw);
   return {
@@ -329,7 +367,9 @@ export function readOpenedConversation(response: WindowResponse): OpenedConversa
     extHostPid: requireInteger(OPEN_ROUTE, raw, 'extHostPid'),
     humanActionRequired: requireBoolean(OPEN_ROUTE, raw, 'humanActionRequired'),
     firstTurn: requireFirstTurn(raw),
-    firstTurnVerified: false,
+    // RENDU TEL QUEL, et plus jamais code en dur : c'est la fenetre qui sait si elle a
+    // constate le transcript de la session.
+    firstTurnVerified: requireFirstTurnVerified(raw, mode),
     panelViewType: requirePanelViewType(raw, mode),
     degradedFrom: requireDegradedFrom(raw, mode),
   };

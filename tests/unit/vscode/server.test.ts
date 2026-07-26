@@ -85,8 +85,11 @@ const OPENED: OpenConversationResult = {
   sessionId: '11111111-2222-3333-4444-555555555555',
   extHostPid: 11172,
   humanActionRequired: false,
-  firstTurn: 'process-started',
-  firstTurnVerified: false,
+  // Ce que le mecanisme etablit depuis le correctif du 2026-07-26 : le transcript de la session
+  // EXISTE. Le serveur, lui, ne juge rien de ce couple — il transporte le resultat tel quel, et
+  // c'est precisement ce que les tests ci-dessous verifient.
+  firstTurn: 'transcript-observed',
+  firstTurnVerified: true,
 };
 
 function authorized(): Record<string, string> {

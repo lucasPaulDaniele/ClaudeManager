@@ -118,8 +118,12 @@ interface Scenario {
   /**
    * Prepare le contenu du workspace et rend ce qu'il faut passer a VSCode pour l'ouvrir.
    * Rend un chemin de FICHIER `.code-workspace` ou de dossier, selon le scenario.
+   *
+   * `imposed` dit que le repertoire vient de l'utilisateur (`CMGR_OPEN_WS`) et non de
+   * `mkdtemp` : le scenario ouvre alors CE dossier, sans en creer un sous-dossier — c'est son
+   * chemin exact qui porte la reponse de confiance du CLI.
    */
-  prepare(workspace: string): string;
+  prepare(workspace: string, imposed?: boolean): string;
   /**
    * Arguments de lancement PROPRES a ce scenario, ajoutes aux communs.
    *
@@ -128,7 +132,7 @@ interface Scenario {
    * besoin ne change RIEN aux scenarios existants, dont le comportement doit rester
    * exactement celui qui a ete mesure.
    */
-  launchArgs?(workspace: string): readonly string[];
+  launchArgs?(workspace: string, mountRoot: string): readonly string[];
   /**
    * Demonte ce que `launchArgs` a monte, AVANT tout menage recursif du lanceur.
    *
@@ -231,12 +235,16 @@ const SCENARIOS: readonly Scenario[] = [
     key: 'open-conversation',
     title:
       'mecanisme V1 — vraie conversation ouverte, attachement prouve par diff d onglets, repli V5',
-    prepare(workspace) {
+    prepare(workspace, imposed) {
       // UN DOSSIER SIMPLE, pas un `.code-workspace` : c'est le `cwd` que le mecanisme donnera
       // au terminal, et il doit etre un vrai dossier de travail de la fenetre.
-      return makeFolder(workspace, 'projet');
+      //
+      // IMPOSE : on ouvre CE dossier, sans sous-dossier. La reponse de confiance du CLI est
+      // enregistree pour un CHEMIN EXACT — creer un `projet/` dedans la rendrait sans effet, et
+      // le scenario retomberait sur la porte qu'on voulait justement avoir franchie.
+      return imposed === true ? workspace : makeFolder(workspace, 'projet');
     },
-    launchArgs(workspace) {
+    launchArgs(workspace, mountRoot) {
       const installed = findClaudeExtension();
       if (installed === undefined) {
         // ECHOUER EN LE DISANT : sans l'extension Claude, ce scenario n'a rien a mesurer.
@@ -244,7 +252,11 @@ const SCENARIOS: readonly Scenario[] = [
           "No anthropic.claude-code extension found under ~/.vscode/extensions: this scenario measures the real mechanism and cannot be run without it"
         );
       }
-      const mount = mountClaudeExtension(workspace, installed);
+      // LA JONCTION NE VA PAS TOUJOURS DANS LE WORKSPACE, et c'est necessaire : quand le dossier
+      // ouvert EST le workspace (cas impose), une jonction posee dedans ferait indexer par la
+      // fenetre l'installation entiere de l'extension Claude. Le lanceur designe donc la racine
+      // de montage ; par defaut, c'est le workspace, comme au premier jour.
+      const mount = mountClaudeExtension(mountRoot, installed);
       mounts.set(workspace, mount);
       say(`[runTests] extension Claude jonctionnee : ${mount.installed} (version ${mount.version})`);
       // `--disable-extensions` est RETIRE pour ce scenario, et pour lui seul.
@@ -272,7 +284,40 @@ interface ScenarioRun {
   readonly reportPath: string;
   readonly failure: unknown;
   readonly report: { readonly extHostPid?: number } | undefined;
+  /**
+   * Le harnais a-t-il CREE ce workspace ? S'il ne l'a pas cree, il ne le supprime pas.
+   *
+   * Un seul cas rend cette distinction necessaire, et il est nomme : `CMGR_OPEN_WS`. Le
+   * repertoire designe appartient alors a l'utilisateur — c'est meme tout son interet, la
+   * confiance du CLI y ayant ete accordee une fois — et le menage de fin de run est RECURSIF.
+   */
+  readonly removable: boolean;
 }
+
+/**
+ * WORKSPACE IMPOSE POUR `open-conversation` — et voici pourquoi ce levier existe.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * Le CLI interactif pose la question de confiance PAR REPERTOIRE (ADR-002), et ce harnais
+ * travaille par construction sur un dossier temporaire NEUF (piege n.2 : jamais le dossier du
+ * depot). MESURE DU 2026-07-26 : dans un dossier neuf, le CLI s'arrete dans `showSetupScreens()`
+ * et n'ecrit AUCUN transcript — 180 s d'observation. La voie COMPLETE du mecanisme n'y est donc
+ * pas atteignable, et le franchissement de cette porte est INTERDIT (son libelle n'est pas
+ * contractuel ; c'est `cmgr doctor`, lot D, qui devra la nommer).
+ *
+ * Le scenario ne s'en accommode pas en silence : il RELEVE l'etat de la confiance et choisit son
+ * assertion — tour verifie d'un cote, erreur NOMMEE de l'autre. Aucun des deux cotes n'accepte le
+ * succes muet, qui etait precisement le defaut.
+ *
+ * Ce levier permet de jouer la voie complete sur un dossier dont un HUMAIN a accorde la confiance
+ * une fois, sans rien franchir a la place de personne :
+ *
+ *     CMGR_OPEN_WS=<dossier deja approuve par le CLI> npm run test:integration
+ *
+ * Il ne change RIEN au comportement par defaut, et le repertoire designe n'est jamais supprime.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+const IMPOSED_OPEN_WORKSPACE = 'CMGR_OPEN_WS';
 
 async function runScenario(
   scenario: Scenario,
@@ -286,14 +331,25 @@ async function runScenario(
   // PIEGE n.2 : jamais le dossier du depot — un dossier DEDIE, sinon VSCode route la
   // demande vers la fenetre qui l'a deja ouvert et la fenetre de test se retrouve sans
   // workspace, donc sans entree publiee.
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cmgr-b3-ws-'));
+  const imposed = scenario.key === 'open-conversation' ? process.env[IMPOSED_OPEN_WORKSPACE] : undefined;
+  const removable = imposed === undefined || imposed.length === 0;
+  const workspace = removable
+    ? fs.mkdtempSync(path.join(os.tmpdir(), 'cmgr-b3-ws-'))
+    : (fs.mkdirSync(imposed as string, { recursive: true }), imposed as string);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmgr-b3-uds-'));
   const reportPath = path.join(os.tmpdir(), `cmgr-b3-report-${process.pid}-${scenario.key}.json`);
-  const launchTarget = scenario.prepare(workspace);
+  const launchTarget = scenario.prepare(workspace, !removable);
 
   say('');
   say(`===== SCENARIO ${scenario.key} : ${scenario.title} =====`);
   say(`[runTests] workspace de test    : ${workspace}`);
+  if (!removable) {
+    say(
+      `[runTests] workspace IMPOSE par ${IMPOSED_OPEN_WORKSPACE} : il n est ni cree ni supprime par ` +
+        'le harnais. La voie complete du mecanisme y est jouable si le CLI y a deja recu sa reponse ' +
+        'de confiance.'
+    );
+  }
   say(`[runTests] user-data-dir        : ${userDataDir}`);
   say(`[runTests] rapport              : ${reportPath}`);
   // Le script de mesure du focus s'en sert pour reperer puis minimiser la fenetre.
@@ -305,7 +361,11 @@ async function runScenario(
 
   let failure: unknown;
   try {
-    const extraArgs = scenario.launchArgs?.(workspace) ?? ISOLATED_EXTENSIONS;
+    // La racine de montage est le workspace au cas ordinaire, et le `--user-data-dir` quand le
+    // dossier ouvert appartient a l'utilisateur : dans les deux cas un temporaire que le harnais
+    // supprime, jamais l'installation du poste.
+    const extraArgs =
+      scenario.launchArgs?.(workspace, removable ? workspace : userDataDir) ?? ISOLATED_EXTENSIONS;
     await runTests({
       vscodeExecutablePath: common.executable,
       extensionDevelopmentPath: common.extensionDevelopmentPath,
@@ -372,7 +432,7 @@ async function runScenario(
     );
   }
 
-  return { scenario, workspace, userDataDir, reportPath, failure, report };
+  return { scenario, workspace, userDataDir, reportPath, failure, report, removable };
 }
 
 /**
@@ -431,7 +491,9 @@ async function runAllScenarios(): Promise<boolean> {
     );
   }
 
-  const workspace = runs.map((run) => run.workspace);
+  // CE QUI EST A NOUS, ET RIEN D'AUTRE : un workspace impose par `CMGR_OPEN_WS` appartient a
+  // l'utilisateur, et le menage ci-dessous est RECURSIF. On ne supprime que ce qu'on a cree.
+  const workspace = runs.filter((run) => run.removable).map((run) => run.workspace);
   const userDataDir = runs.map((run) => run.userDataDir);
   const failure = runs.find((run) => run.failure !== undefined)?.failure;
 
@@ -451,10 +513,16 @@ async function runAllScenarios(): Promise<boolean> {
   // information : les deux runs demarraient, et ce balayage-ci supprimait le `--user-data-dir`
   // d'un VSCode EN COURS D'EXECUTION. Le verrou est pris au tout debut de `main`, avant le
   // moindre lancement, et rendu ci-dessous.
-  const ours = new Set([...workspace, ...userDataDir]);
-  const leftovers = findHarnessLeftovers(os.tmpdir()).filter((item) => !ours.has(item));
+  //
+  // DEUX ENSEMBLES, ET NON UN : ce qu'on SUPPRIME, et ce qu'on PROTEGE du balayage des residus
+  // d'autrui. Un workspace impose par `CMGR_OPEN_WS` est dans le second et pas dans le premier —
+  // sans cette distinction, un dossier de l'utilisateur nomme comme un temporaire du harnais
+  // serait efface par le balayage alors meme qu'on vient de refuser de le supprimer.
+  const removals = new Set([...workspace, ...userDataDir]);
+  const protectedPaths = new Set(runs.flatMap((run) => [run.workspace, run.userDataDir]));
+  const leftovers = findHarnessLeftovers(os.tmpdir()).filter((item) => !protectedPaths.has(item));
   const outcomes: RemovalOutcome[] = [];
-  for (const target of [...ours, ...leftovers]) {
+  for (const target of [...removals, ...leftovers]) {
     outcomes.push(await removeQuietly(target));
   }
   const failed = outcomes.filter((outcome) => !outcome.removed);

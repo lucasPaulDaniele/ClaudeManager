@@ -14,8 +14,10 @@
  *
  * Ce qu'il verifie, point par point :
  *   1. l'extension Claude se charge, et ses commandes n'existent QU'APRES activation ;
- *   2. `POST /conversations` ouvre une conversation, tour 1 REELLEMENT joue ;
- *   3. l'attachement est prouve par DIFF DES ONGLETS, `viewType` releve tel quel ;
+ *   2. `POST /conversations` ouvre une conversation, tour 1 REELLEMENT joue — OU BIEN nomme la
+ *      porte du CLI qui l'en a empeche. Jamais un succes muet : c'est le defaut de recette du
+ *      2026-07-26, et c'est la que ce scenario MORD desormais ;
+ *   3. l'onglet apparu est releve, `viewType` tel quel — un RELEVE, jamais une preuve (D19) ;
  *   4. le terminal n'est JAMAIS visible, ni pendant ni apres ;
  *   5. l'environnement REELLEMENT recu par le terminal, dans la configuration complete ;
  *   6. `Host` etranger -> 403, `Origin` -> refus, sur la vraie socket ;
@@ -140,11 +142,16 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
       60_000
     );
     const authorization = { authorization: `Bearer ${entry.token}` };
+    const health = await probe(entry.port, '/health', authorization);
     assert.equal(
-      (await probe(entry.port, '/health', authorization)).status,
+      health.status,
       200,
       'the companion must answer /health before we ask it to act'
     );
+    // Le repertoire du journal N'EST PAS dans l'entree de registre — c'est une decision d'ADR-003,
+    // le contenu de l'entree etant un contrat entre versions. Il est publie ICI, et c'est par lui
+    // que la chronologie du mecanisme devient lisible de l'exterieur.
+    const logDirectory = (JSON.parse(health.body) as { logDirectory?: string }).logDirectory ?? '';
 
     // ---- Point 6 : les deux gardes de transport, sur la VRAIE socket ---------------------
     //
@@ -208,6 +215,30 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
       () => (visibleTerminals().some((name) => name.includes('env probe')) ? undefined : true),
       30_000
     );
+    // ---- LA PRECONDITION MACHINE, OBSERVEE ET NOMMEE — jamais supposee -------------------
+    //
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // MESURE DU 2026-07-26 : dans un dossier NEUF, le CLI interactif s'arrete dans
+    // `showSetupScreens()` et n'ecrit AUCUN transcript — constate 180 s durant, journal
+    // `--debug-file` a l'appui. Dans un dossier dont la confiance a ete accordee une fois, le
+    // meme prompt ecrit son transcript en 2 533 ms. La porte qui reste sur cette machine est
+    // donc la CONFIANCE DU DOSSIER, qui se pose PAR REPERTOIRE — l'onboarding global, lui, est
+    // franchi (`hasCompletedOnboarding` vaut vrai).
+    //
+    // CE SCENARIO TOURNE SUR UN DOSSIER TEMPORAIRE NEUF : la porte s'y presente donc, et elle
+    // NE DOIT PAS ETRE FRANCHIE (son libelle n'est pas contractuel ; c'est `cmgr doctor`, lot D,
+    // qui devra la nommer). On RELEVE l'etat de la confiance, et l'assertion se choisit en
+    // consequence — mais il n'existe AUCUN cas ou ce scenario ne mord pas : ou le tour a eu
+    // lieu, ou la route a nomme son echec. Le succes muet, lui, est refuse des deux cotes.
+    //
+    // Pour eprouver la voie complete, pointer le harnais sur un dossier dont la confiance est
+    // deja accordee — voir `CMGR_OPEN_WS` dans `runTests.ts`.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    const cwd = (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? '';
+    const folderTrust = readCliFolderTrust(cwd);
+    report['cliFolderTrust'] = folderTrust;
+    flush();
+
     const panelsBefore = claudePanels();
     const terminalsBefore = visibleTerminals();
     const promptDirectory = path.join(
@@ -243,42 +274,71 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
     for (const subscription of subscriptions) subscription.dispose();
 
     const openedBody = JSON.parse(opened.body) as Record<string, unknown>;
+    /** LE VERDICT DE LA ROUTE, tel qu'elle le rend — jamais deduit d'autre chose. */
+    const turnVerified = opened.status === 200 && openedBody['firstTurnVerified'] === true;
     report['seeded'] = {
       status: opened.status,
-      // MESUREE : c'est elle qui dit si l'attachement attend la session ou la precede.
+      // MESUREE, ET C'EST LE CHIFFRE DU CORRECTIF : la route ne rend plus la main avant que le
+      // transcript n'existe. Elle valait 2 s quand le tour n'avait pas lieu.
       openMs,
       mode: openedBody['mode'],
       sessionId: openedBody['sessionId'],
       extHostPid: openedBody['extHostPid'],
       humanActionRequired: openedBody['humanActionRequired'],
-      // CE QUE LA ROUTE PROMET, releve tel quel : elle ne doit jamais promettre le tour.
       firstTurn: openedBody['firstTurn'],
       firstTurnVerified: openedBody['firstTurnVerified'],
       panelViewType: openedBody['panelViewType'],
+      // Le CODE de l'erreur nommee, quand la porte du CLI a empeche le tour. Jamais son message.
+      error: openedBody['error'],
+      errorDetails: openedBody['details'],
       bodyCarriesToken: opened.body.includes(entry.token),
+      turnVerified,
     };
     flush();
-    assert.equal(opened.status, 200, `POST /conversations must succeed; got ${mask(opened.body)}`);
-    assert.equal(openedBody['mode'], 'seeded', 'the seeded V1 path must have been taken');
-    assert.equal(openedBody['extHostPid'], extHostPid, 'the acting window must be THIS one');
-    assert.equal(typeof openedBody['sessionId'], 'string', 'a session id must be returned');
     assert.equal(opened.body.includes(entry.token), false, 'no response may carry the token');
-    assert.equal(
-      openedBody['firstTurn'],
-      'process-started',
-      'the first-turn process must have been OBSERVED before the panel was attached'
-    );
-    // ELLE NE DOIT JAMAIS PROMETTRE LE TOUR. C'est le garde-fou du défaut de la reprise 1 :
-    // la route rendait un succes qui se lisait « le tour est joue » pour un cas ou, mesure a
-    // l'appui, rien n'avait ete joue.
-    assert.equal(
-      openedBody['firstTurnVerified'],
-      false,
-      'the route must never claim the first turn was played: only the transcript can say so'
-    );
 
-    // Point 3 — DIFF DES ONGLETS. L'absence d'erreur ne prouve rien : `editor.open` reussit
-    // en ouvrant un panneau VIDE quand le `cwd` ne correspond pas au workspace.
+    if (folderTrust.accepted) {
+      // ---- LA VOIE COMPLETE, et elle MORD ------------------------------------------------
+      assert.equal(opened.status, 200, `POST /conversations must succeed; got ${mask(opened.body)}`);
+      assert.equal(openedBody['mode'], 'seeded', 'the seeded V1 path must have been taken');
+      assert.equal(openedBody['extHostPid'], extHostPid, 'the acting window must be THIS one');
+      assert.equal(typeof openedBody['sessionId'], 'string', 'a session id must be returned');
+      assert.equal(
+        openedBody['firstTurn'],
+        'transcript-observed',
+        'the transcript of the session must have been OBSERVED before the terminal was disposed'
+      );
+      assert.equal(
+        openedBody['firstTurnVerified'],
+        true,
+        'the first turn must be VERIFIED: the route may not hand back before the transcript exists'
+      );
+    } else {
+      // ---- LA PORTE DU CLI EST NOMMEE, ET SURTOUT : PAS DE SUCCES MUET -------------------
+      //
+      // C'est ICI que ce scenario mord sur cette machine. AVANT le correctif, la route rendait
+      // `HTTP 200 · firstTurnVerified: false` en 2 s sur ce meme cas — un succes pour une
+      // conversation vide. Elle doit desormais NOMMER son echec.
+      assert.equal(
+        opened.status,
+        500,
+        `no trust record for this brand-new folder: the route must NAME its failure, not report success; got ${mask(opened.body)}`
+      );
+      assert.equal(
+        openedBody['error'],
+        'SEED_TRANSCRIPT_NOT_FOUND',
+        `the named failure must be the missing transcript; got ${mask(opened.body)}`
+      );
+      assert.equal(
+        openedBody['firstTurnVerified'],
+        undefined,
+        'a refusal carries no first-turn verdict at all'
+      );
+    }
+
+    // Point 3 — L'ONGLET APPARU. RELEVE, ET NON PREUVE : `editor.open` ouvre un panneau meme
+    // pour une session jamais amorcee (D19), et reussit en ouvrant un panneau VIDE quand le
+    // `cwd` ne correspond pas au workspace (D10).
     const panelsAfter = claudePanels();
     const appeared = panelsAfter.filter(
       (tab) => !panelsBefore.some((seen) => seen.viewType === tab.viewType && seen.label === tab.label)
@@ -295,16 +355,27 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
       closeEverCalled: false,
     };
     flush();
-    assert.equal(appeared.length, 1, 'exactly one Claude conversation tab must have appeared');
-    assert.ok(
-      (appeared[0]?.viewType ?? '').includes(CLAUDE_PANEL_VIEW_TYPE),
-      'the appeared tab must be recognised by CONTAINS, never by equality'
-    );
-    assert.notEqual(
-      appeared[0]?.viewType,
-      CLAUDE_PANEL_VIEW_TYPE,
-      'measured: VSCode prefixes the viewType — an equality check would never match'
-    );
+    if (turnVerified) {
+      assert.equal(appeared.length, 1, 'exactly one Claude conversation tab must have appeared');
+      assert.ok(
+        (appeared[0]?.viewType ?? '').includes(CLAUDE_PANEL_VIEW_TYPE),
+        'the appeared tab must be recognised by CONTAINS, never by equality'
+      );
+      assert.notEqual(
+        appeared[0]?.viewType,
+        CLAUDE_PANEL_VIEW_TYPE,
+        'measured: VSCode prefixes the viewType — an equality check would never match'
+      );
+    } else {
+      // AUCUN PANNEAU SUR UNE SESSION SANS TOUR, et c'est une assertion, pas une tolerance :
+      // attacher un panneau ici produirait exactement l'onglet « Untitled » vide de la recette,
+      // avec une erreur en plus. Le mecanisme s'arrete AVANT l'attachement.
+      assert.equal(
+        appeared.length,
+        0,
+        'no panel may be attached when the first turn never took place: that is the very defect'
+      );
+    }
 
     // Point 4 — LE TERMINAL, ET CE QUE CHAQUE OBSERVATION PROUVE EXACTEMENT.
     //
@@ -346,38 +417,53 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
 
     // ---- LE TOUR 1 A-T-IL EU LIEU ? On va le CHERCHER, on ne le suppose pas -------------
     //
-    // LIRE LE TRANSCRIPT EST AUTORISE **ICI, DANS LE TEST, ET LA SEULEMENT** : un test a le
-    // droit de constater ce que le code de production n'a pas le droit de supposer.
-    // `packages/**` reste interdit de toute dependance au transcript, a `CLAUDE_CONFIG_DIR`
-    // et a `sessions/<pid>.json` — cette frontiere ne bouge pas, c'est celle du lot D.
+    // LIRE LE CONTENU DU TRANSCRIPT EST AUTORISE **ICI, DANS LE TEST, ET LA SEULEMENT**.
+    //
+    // LA FRONTIERE A BOUGE, ET IL FAUT DIRE OU ELLE EST DESORMAIS : depuis le correctif du
+    // 2026-07-26, `packages/vscode` CHERCHE `<sessionId>.jsonl` par son NOM et releve sa TAILLE —
+    // c'est le seul fait qui etablisse qu'un tour a eu lieu. Ce qui reste au lot D, et reste
+    // interdit au produit, est de LIRE ce fichier : ses enregistrements, la fin de tour,
+    // l'extraction de la reponse. Ce test, lui, en lit les TYPES — c'est ainsi qu'il verifie que
+    // la route ne ment pas.
     const turn = await lookForFirstTurn(
-      openedBody['sessionId'] as string,
-      (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? '',
-      45_000
+      // En cas de refus il n'y a pas de `sessionId` : on cherche alors un fichier qui ne peut
+      // pas exister, et c'est exactement ce que l'assertion ci-dessous demande de constater.
+      typeof openedBody['sessionId'] === 'string' ? openedBody['sessionId'] : 'aucune-session',
+      cwd,
+      // 45 s SUFFISENT ET NE PROUVENT PLUS RIEN A ELLES SEULES : quand la route rend `true`, le
+      // fichier est deja la — c'est elle qui l'a attendu. Ce delai ne sert plus qu'au cas de
+      // refus, ou l'on veut CONFIRMER une absence.
+      turnVerified ? 45_000 : 5_000
     );
     report['firstTurnOnDisk'] = turn;
-    flush();
-
-    // CE QUI EST ASSERTE, ET POURQUOI PAS DAVANTAGE.
-    //
-    // On N'ASSERTE PAS `transcriptFound === true`, et c'est un blanc MESURE, pas une facilite.
-    // Banc de reprise du 2026-07-26, cinq variantes : un `claude` lance avec la ligne EXACTE
-    // attendue reste bloque dans `showSetupScreens()` — l'ecran d'accueil du CLI — sans jamais
-    // ecrire une ligne de transcript. Le blocage est le MEME dans un dossier temporaire neuf
-    // et a la racine du depot (donc ce n'est pas la porte de confiance du dossier), et le MEME
-    // que le terminal soit masque ou revele (donc ce n'est pas la detection du theme : revele,
-    // la requete OSC 11 obtient sa reponse, et le CLI bloque quand meme).
-    //
-    // C'est une PRECONDITION DE LA MACHINE — l'onboarding du CLI n'a jamais ete franchi pour
-    // une session interactive —, pas un defaut de ce mecanisme, et la franchir est interdit :
-    // `cmgr doctor` (lot D) doit la verifier et la NOMMER, jamais la franchir a l'aveugle.
-    //
-    // Ce qui EST asserte : la route ne ment pas, et le transcript, s'il existe, est coherent.
-    // Sur une machine dont l'onboarding est fait, cette preuve devient donc automatiquement
-    // plus forte, sans qu'on ait a y revenir.
+    // La MEME ligne d'assertion pour les deux mondes, et c'est ce qui la rend forte : le disque
+    // doit dire EXACTEMENT ce que la route a dit. Une route qui promettrait un tour sans
+    // transcript, ou qui nierait un transcript existant, echoue ici.
+    assert.equal(
+      turn['transcriptFound'],
+      turnVerified,
+      `the disk must confirm what the route claimed (firstTurnVerified=${String(turnVerified)})`
+    );
     if (turn['transcriptFound'] === true) {
       assert.ok((turn['lines'] as number) > 0, 'a transcript that exists must carry at least one record');
+      // LE PROMPT ET LA REPONSE, tous deux enregistres : c'est la conversation que l'humain
+      // ouvre. RELEVE dans le rapport (les types d'enregistrements) et asserte ici sur le seul
+      // fait qui compte pour l'utilisateur — le tour ne s'est pas arrete au prompt.
+      const types = turn['recordTypes'] as readonly string[];
+      assert.ok(types.includes('user'), `the prompt must be recorded; got ${types.join(', ')}`);
+      assert.ok(
+        types.includes('assistant'),
+        `the RESPONSE must be recorded too: disposing the terminal must not truncate the turn; got ${types.join(', ')}`
+      );
     }
+
+    // ---- LE JOURNAL DE LA FENETRE — la chronologie REELLE du mecanisme -------------------
+    //
+    // C'est la seule source qui date chaque etape : le canal de journal est PERSISTE par VSCode
+    // sous `logDirectory`, que `/health` publie. Ce qu'on en tire ici est le chiffre qui
+    // justifie l'echelle d'attente, mesure dans une VRAIE fenetre plutot que par une sonde.
+    report['mechanismTimeline'] = readMechanismTimeline(logDirectory);
+    flush();
 
     // ---- CE QUE LE DIFF D ONGLETS PROUVE, ET CE QU IL NE PROUVE PAS ---------------------
     //
@@ -561,6 +647,92 @@ async function lookForFirstTurn(
       ),
     ].sort(),
   };
+}
+
+/**
+ * LA CONFIANCE DU CLI POUR CE REPERTOIRE — observee dans SON etat, jamais supposee.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * POURQUOI CE RELEVE EXISTE. Le CLI interactif pose la question de confiance PAR REPERTOIRE
+ * (« Quick safety check », ADR-002) et l'enregistre dans son propre fichier d'etat, sous
+ * `projects.<chemin>.hasTrustDialogAccepted`. Ce scenario tourne sur un dossier temporaire NEUF :
+ * la question s'y pose donc, et le mecanisme NE DOIT PAS y repondre — le libelle de cette porte
+ * n'est pas contractuel, et c'est `cmgr doctor` (lot D) qui devra la nommer.
+ *
+ * MESURE DU 2026-07-26 qui rend ce releve necessaire : dans un dossier neuf, le CLI s'arrete dans
+ * `showSetupScreens()` et n'ecrit AUCUN transcript — 180 s d'observation, journal `--debug-file` a
+ * l'appui. Dans un dossier dont la confiance a ete accordee une fois, le meme prompt ecrit son
+ * transcript en 2 533 ms et sa reponse a 6 417 ms.
+ *
+ * CE N'EST PAS UNE INTERPRETATION DE FORMAT AU SENS DU PRODUIT : c'est un TEST qui lit un etat
+ * pour choisir laquelle de ses deux assertions s'applique. `packages/**` n'en depend en RIEN.
+ * Et si le fichier changeait de forme, ce releve rendrait `recordPresent: false` — le scenario
+ * exigerait alors l'erreur nommee, c'est-a-dire le cote le plus severe des deux.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * AUCUN CHEMIN N'EST RAPPORTE : ce rapport part dans une PR d'un depot public, et les cles de ce
+ * fichier sont des chemins de travail de l'utilisateur.
+ */
+function readCliFolderTrust(cwd: string): Record<string, unknown> {
+  const stateFile = path.join(os.homedir(), '.claude.json');
+  if (!fs.existsSync(stateFile) || cwd.length === 0) {
+    return { stateFileExists: fs.existsSync(stateFile), recordPresent: false, accepted: false };
+  }
+
+  let projects: Record<string, { hasTrustDialogAccepted?: unknown }> = {};
+  try {
+    projects =
+      (JSON.parse(fs.readFileSync(stateFile, 'utf8')) as {
+        projects?: Record<string, { hasTrustDialogAccepted?: unknown }>;
+      }).projects ?? {};
+  } catch {
+    // Illisible : on le DIT, et le scenario exigera l'erreur nommee.
+    return { stateFileExists: true, unreadable: true, recordPresent: false, accepted: false };
+  }
+
+  // Les cles de ce fichier portent des separateurs `/` la ou `vscode` rend `\`, et une casse de
+  // lettre de lecteur qui varie d'une entree a l'autre — c'est CONSTATE sur le poste de reference,
+  // ou le meme dossier figure deux fois, en `c:/` et en `C:/`. La comparaison normalise donc les
+  // deux, et c'est `path.sep` qui la porte plutot qu'un `\` code en dur.
+  const normalize = (value: string): string => value.split(/[\\/]/).join('/').toLowerCase();
+  const wanted = normalize(cwd);
+  const record = Object.entries(projects).find(([key]) => normalize(key) === wanted);
+
+  return {
+    stateFileExists: true,
+    // Des CHIFFRES et des BOOLEENS, jamais une cle : ce sont des chemins de travail.
+    projectsKnown: Object.keys(projects).length,
+    recordPresent: record !== undefined,
+    accepted: record?.[1]?.hasTrustDialogAccepted === true,
+  };
+}
+
+/**
+ * LA CHRONOLOGIE DU MECANISME, tiree du journal PERSISTE de la fenetre.
+ *
+ * Le canal de journal de l'extension (`{ log: true }`) est ecrit dans un fichier sous
+ * `logDirectory`, que `/health` publie. C'est la seule source qui DATE chaque etape du mecanisme :
+ * l'envoi de la ligne, le demarrage du processus, l'apparition du transcript, son retour au
+ * silence, la reponse de la commande d'attachement.
+ *
+ * Les lignes sont rendues MASQUEES et filtrees sur les etapes : le journal porte par ailleurs des
+ * chemins et des identifiants de session.
+ */
+function readMechanismTimeline(logDirectory: string): Record<string, unknown> {
+  const file = path.join(logDirectory, 'ClaudeManager.log');
+  if (logDirectory.length === 0 || !fs.existsSync(file)) {
+    return { logFileFound: false, logDirectoryPublished: logDirectory.length > 0 };
+  }
+
+  const interesting =
+    /seed line sent|seed process started|transcript appeared|turn output settled|had not settled|attach command answered/;
+  const lines = fs
+    .readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .filter((line) => interesting.test(line))
+    .map((line) => mask(line));
+
+  return { logFileFound: true, steps: lines };
 }
 
 /** Combien de temps un terminal met a QUITTER `window.terminals` apres sa suppression. */
