@@ -109,6 +109,10 @@ function makeWindow(label: string, extHostPid: number, dir: string): Window {
     token: `token-de-la-fenetre-${label}`,
     logDirectory: path.join(dir, `logs-${label}`),
     readWorkspace: () => SHARED_WORKSPACE,
+    // Ce module eprouve l'ISOLATION du registre et de l'ecoute : la route d'ouverture n'y
+    // est jamais sollicitee. Elle leve donc plutot que de rendre un succes de complaisance —
+    // un appel qu'on n'attend pas doit se voir.
+    openConversation: () => Promise.reject(new Error('not exercised by this suite')),
     log: (message) => lines.push(message),
     registryDir: dir,
   });

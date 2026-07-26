@@ -1,13 +1,17 @@
 /**
  * Serveur de controle local de CETTE fenetre, et d'aucune autre.
  *
- * B3 n'expose qu'une route de diagnostic : c'est `cmgr doctor` (lot D) qui l'interrogera.
- * Ouvrir et fermer des conversations relevent du lot C — aucune commande `claude-vscode.*`
- * n'est appelee ici.
+ * DEUX ROUTES : `GET /health`, de diagnostic, et `POST /conversations`, LA PREMIERE ROUTE A
+ * EFFET DE BORD DU PRODUIT. C'est ce changement de nature qui impose les gardes ci-dessous —
+ * tant qu'aucune route n'agissait, le seul jeton suffisait ; il ne suffit plus.
+ *
+ * Fermer une conversation releve de l'increment C3 : `tabGroups.close` n'est appele nulle part.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { isClaudeManagerError, systemErrorCode } from './core.js';
+import type { OpenConversationRequest, OpenConversationResult } from './conversations.js';
 
 /** Ce que la FENETRE dit d'elle-meme. Elle ne porte JAMAIS le jeton (principe n.6). */
 export interface HealthPayload {
@@ -69,6 +73,11 @@ export interface ServerHandle {
   close(): Promise<void>;
 }
 
+/** Ce que la route d'ouverture confie au mecanisme V1 — voir `conversations.ts`. */
+export type OpenConversationRoute = (
+  request: OpenConversationRequest
+) => Promise<OpenConversationResult>;
+
 export interface StartServerOptions {
   readonly token: string;
   /**
@@ -76,6 +85,11 @@ export interface StartServerOptions {
    * et les dossiers du workspace changer pendant la vie de la fenetre.
    */
   readonly health: () => HealthPayload;
+  /**
+   * Le mecanisme d'ouverture, injecte : le serveur ne connait ni `vscode`, ni terminal, ni
+   * commande interne. Il transporte une demande et met en forme un resultat.
+   */
+  readonly openConversation: OpenConversationRoute;
   /** Defaillance survenant apres le demarrage — journalisee par l'appelant, jamais tue. */
   readonly onError: (error: unknown) => void;
   /**
@@ -111,6 +125,83 @@ const LOOPBACK = '127.0.0.1';
 const EPHEMERAL_PORT = 0;
 
 const HEALTH_ROUTE = 'GET /health';
+const OPEN_ROUTE = 'POST /conversations';
+
+/**
+ * Taille maximale du corps LU, en octets.
+ *
+ * Un serveur qui accumule un corps non borne se fait epuiser la memoire de l'extension host
+ * par une seule requete authentifiee mal formee — et c'est l'editeur de l'utilisateur qui
+ * tombe avec lui. La borne est LARGE au regard du besoin : le prompt utile plafonne bien plus
+ * bas (~32 Ko, voir la garde de plafond du coeur), et c'est ELLE qui rend le refus PRECIS.
+ * Celle-ci ne protege que la memoire, elle ne juge pas le prompt.
+ */
+const MAX_BODY_BYTES = 1_048_576;
+
+/**
+ * Le `Host` designe-t-il la boucle locale, sur NOTRE port ?
+ *
+ * MOTIF : LA RE-LIAISON DNS. Un nom de domaine tiers qui resout vers `127.0.0.1` permet a une
+ * page web quelconque d'atteindre ce serveur — la liaison a la boucle locale n'y peut rien,
+ * la requete PART de la machine. Le jeton protege encore, mais une route a EFFET DE BORD ne
+ * doit pas s'en remettre au seul jeton : la premiere ligne de defense doit refuser la requete
+ * avant meme de regarder l'autorisation.
+ *
+ * Le port est EXIGE et confronte a celui sur lequel on ecoute reellement : un `Host` qui
+ * n'annonce pas notre port ne peut pas venir d'un client qui nous a resolus par le registre.
+ */
+function hostDesignatesLoopback(request: IncomingMessage, port: number): boolean {
+  const header = request.headers.host;
+  if (typeof header !== 'string') return false;
+  // Aucune forme IPv6 attendue : l'ecoute est liee a `127.0.0.1`, `[::1]` ne l'atteint pas.
+  const match = /^([^:]+):(\d+)$/.exec(header.trim());
+  if (match === null) return false;
+  const name = (match[1] as string).toLowerCase();
+  return (name === '127.0.0.1' || name === 'localhost') && Number.parseInt(match[2] as string, 10) === port;
+}
+
+/**
+ * Lit un corps BORNE.
+ *
+ * La borne est appliquee AU FIL DE L'EAU, jamais apres coup : accumuler puis mesurer serait
+ * exactement l'epuisement qu'on veut empecher. `content-length` n'est pas cru sur parole — un
+ * client peut mentir, ou ne rien annoncer du tout en `chunked`.
+ */
+function readBoundedBody(request: IncomingMessage): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        // On cesse de lire : la suite serait de la memoire consentie a un appelant fautif.
+        request.destroy();
+        resolve(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    // Une socket qui meurt en cours de lecture n'est pas un corps : la promesse doit
+    // neanmoins se resoudre, sans quoi la requete resterait en suspens pour toujours.
+    request.on('error', () => resolve(undefined));
+  });
+}
+
+/** Le prompt tel que la route l'accepte, ou `undefined` si le corps ne le porte pas. */
+function promptFrom(body: string): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== 'object' || value === null) return undefined;
+  const prompt = (value as Record<string, unknown>)['prompt'];
+  // LE PROMPT PASSE PAR LE CORPS, JAMAIS PAR UN CHEMIN DE FICHIER fourni par l'appelant : un
+  // chemin venu du reseau est une surface de traversee, un corps n'en est pas une.
+  return typeof prompt === 'string' && prompt.trim().length > 0 ? prompt : undefined;
+}
 
 /**
  * Compare deux jetons sans laisser fuir leur contenu par le temps de reponse.
@@ -150,10 +241,56 @@ function routeOf(request: IncomingMessage): string {
   return `${request.method ?? 'GET'} ${path}`;
 }
 
+/**
+ * Sert `POST /conversations` — la seule route a effet de bord.
+ *
+ * La reponse porte le CODE STABLE de l'erreur nommee, jamais un texte libre : le
+ * consommateur est un agent. Le statut HTTP n'est qu'un signal grossier de transport ; c'est
+ * `error` qui fait contrat.
+ */
+async function serveOpenConversation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  open: OpenConversationRoute
+): Promise<void> {
+  const body = await readBoundedBody(request);
+  if (body === undefined) {
+    send(response, 413, { ok: false, error: 'BODY_TOO_LARGE', limitBytes: MAX_BODY_BYTES });
+    return;
+  }
+
+  const prompt = promptFrom(body);
+  if (prompt === undefined) {
+    // Rien de la requete n'est reflete : ni le corps recu, ni sa longueur.
+    send(response, 400, { ok: false, error: 'BAD_REQUEST' });
+    return;
+  }
+
+  try {
+    // Le resultat porte `sessionId`, `extHostPid` et `mode`. JAMAIS le jeton, jamais un
+    // chemin absolu : ni le mecanisme ni les erreurs nommees n'en mettent dans leurs details.
+    send(response, 200, await open({ prompt }));
+  } catch (error) {
+    if (isClaudeManagerError(error)) {
+      // `error` porte le CODE, comme sur toutes les autres reponses de refus de ce serveur
+      // (`UNAUTHORIZED`, `NOT_FOUND`, `FORBIDDEN_*`) : un consommateur qui est un agent lit
+      // UN champ, pas deux selon la nature de l'echec.
+      const { code, ...rest } = error.toJSON();
+      send(response, 500, { ok: false, error: code, ...rest });
+      return;
+    }
+    // Tout le reste est reduit a son seul CODE systeme, comme partout ailleurs : un message
+    // d'erreur `fs` porterait le chemin, donc le nom du compte, dans une reponse.
+    send(response, 500, { ok: false, error: 'UNEXPECTED_FAILURE', cause: systemErrorCode(error) });
+  }
+}
+
 export function startServer(options: StartServerOptions): Promise<ServerHandle> {
   // Relevee dans le rappel d'ecoute, donc AVANT que la moindre requete puisse arriver : une
   // socket ne recoit rien tant qu'elle n'ecoute pas. La chaine vide n'est jamais servie.
   let boundAddress = '';
+  /** Meme chose pour le port : il est confronte au `Host` de chaque requete. */
+  let boundPort = 0;
 
   /**
    * Ce qui distingue une fermeture VOULUE d'une mort subie, et rien d'autre ne le distingue.
@@ -173,28 +310,60 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
   };
 
   const server: Server = createServer((request, response) => {
-    // Le corps est draine meme s'il n'est pas lu : une requete non consommee laisserait
-    // la socket en suspens.
-    request.resume();
+    /**
+     * Draine un corps qu'on ne lira pas : une requete non consommee laisserait la socket en
+     * suspens. Les chemins qui LISENT le corps ne passent pas par la.
+     */
+    const drain = (): void => void request.resume();
+
+    // ---- LES DEUX GARDES DE TRANSPORT, AVANT L'AUTHENTIFICATION -------------------------
+    //
+    // Elles valent pour TOUT le serveur, pas pour la seule route nouvelle : une garde qui ne
+    // couvrirait que la route a effet de bord laisserait `/health` — qui publie le
+    // `logDirectory` et l'etat de la fenetre — joignable par une page web.
+    if (!hostDesignatesLoopback(request, boundPort)) {
+      drain();
+      // Rien de la requete n'est reflete, pas meme le `Host` refuse.
+      send(response, 403, { ok: false, error: 'FORBIDDEN_HOST' });
+      return;
+    }
+    // TOUTE requete portant un `Origin` est refusee, QUELLE QUE SOIT SA VALEUR. Notre client
+    // n'en pose JAMAIS ; un navigateur en pose TOUJOURS, y compris `Origin: null`. C'est la
+    // regle la plus simple qui soit COMPLETE, et elle ne depend d'aucune liste blanche a
+    // tenir a jour.
+    if (request.headers.origin !== undefined) {
+      drain();
+      send(response, 403, { ok: false, error: 'FORBIDDEN_ORIGIN' });
+      return;
+    }
 
     const token = presentedToken(request);
     // L'authentification passe AVANT le routage : une reponse 404 sur une route inconnue
-    // apprendrait a un appelant non authentifie quelles routes existent.
+    // apprendrait a un appelant non authentifie quelles routes existent. Cet ordre est acquis.
     if (token === undefined || !tokensMatch(token, options.token)) {
+      drain();
       // Aucun indice sur la valeur attendue, ni sur la raison exacte du refus.
       send(response, 401, { ok: false, error: 'UNAUTHORIZED' });
       return;
     }
 
-    if (routeOf(request) !== HEALTH_ROUTE) {
-      // Ni la route demandee, ni trace de pile, ni chemin de fichier : la reponse d'erreur
-      // ne reflete rien de ce qu'on lui a envoye.
-      send(response, 404, { ok: false, error: 'NOT_FOUND' });
+    const route = routeOf(request);
+    if (route === HEALTH_ROUTE) {
+      drain();
+      const payload: HealthResponse = { ...options.health(), listenAddress: boundAddress };
+      send(response, 200, payload);
+      return;
+    }
+    if (route === OPEN_ROUTE) {
+      // Le seul chemin qui LIT le corps : il ne draine pas, il consomme.
+      void serveOpenConversation(request, response, options.openConversation);
       return;
     }
 
-    const payload: HealthResponse = { ...options.health(), listenAddress: boundAddress };
-    send(response, 200, payload);
+    drain();
+    // Ni la route demandee, ni trace de pile, ni chemin de fichier : la reponse d'erreur
+    // ne reflete rien de ce qu'on lui a envoye.
+    send(response, 404, { ok: false, error: 'NOT_FOUND' });
   });
 
   return new Promise<ServerHandle>((resolve, reject) => {
@@ -225,6 +394,7 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
       }
 
       boundAddress = address.address;
+      boundPort = address.port;
       server.on('close', signalClosed);
 
       resolve({

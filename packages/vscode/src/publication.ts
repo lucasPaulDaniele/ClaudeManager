@@ -43,7 +43,12 @@ import {
   windowEntryPath,
   type WindowIdentity,
 } from './registry.js';
-import { startServer, type HealthPayload, type ServerHandle } from './server.js';
+import {
+  startServer,
+  type HealthPayload,
+  type OpenConversationRoute,
+  type ServerHandle,
+} from './server.js';
 
 /** Ce que l'editeur sait de son workspace, et qu'il est seul a savoir. */
 export interface WorkspaceState {
@@ -94,6 +99,14 @@ export interface PublisherOptions {
    * republication — laquelle n'a d'interet que parce que l'etat a bouge.
    */
   readonly readWorkspace: () => WorkspaceState;
+  /**
+   * Le mecanisme d'ouverture, traverse tel quel jusqu'au serveur.
+   *
+   * Il n'est PAS appele ici : ce module porte le cycle de vie de la publication, pas les
+   * effets de bord du produit. Il ne fait que le transmettre a chaque serveur qu'il ouvre —
+   * y compris a celui d'une reouverture apres une mort d'ecoute.
+   */
+  readonly openConversation: OpenConversationRoute;
   readonly log: (message: string) => void;
   /** Registre par defaut du poste sauf mention contraire — surcharge par les tests. */
   readonly registryDir?: string;
@@ -241,6 +254,7 @@ export class WindowPublisher {
         const server = await startServer({
           token: this.options.token,
           health: () => this.health(),
+          openConversation: this.options.openConversation,
           onError: (error) => this.options.log(`local server error — ${describe(error)}`),
           onClosed: () => this.handleServerLoss(),
         });
