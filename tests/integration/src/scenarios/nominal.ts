@@ -34,6 +34,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
+import {
+  plantForeignEntry,
+  unplantForeignEntry,
+  type PlantedEntry,
+} from '../foreignEntry.js';
 import { mask } from '../redaction.js';
 import {
   findLogFile,
@@ -52,6 +57,8 @@ import {
   redactWindowEntry,
   resolveOwningWindow,
   resolveRegistryDir,
+  windowEntryFileName,
+  windowEntryPath,
   WINDOW_ENTRY_SCHEMA_VERSION,
   type ProcessSnapshot,
   type WindowEntry,
@@ -76,58 +83,16 @@ const LEGACY_FIXTURE = ['tests', 'fixtures', 'registry', 'legacy-0.1.0', '11172.
 /** Le `viewType` que ce scenario depose lui-meme pour eprouver l'enumeration d'onglets. */
 const PROBE_VIEW_TYPE = 'claudemanagerB5TabProbe';
 
-interface PlantedEntry {
-  readonly pid: number;
-  readonly file: string;
-  readonly content: string;
-}
-
 /**
- * Depose dans le registre REEL une entree d'un schema etranger, nommee d'apres un pid VIVANT
- * choisi a l'execution.
+ * Le pid dont l'entree fabriquee porte le nom : `process.ppid`, le `Code.exe` principal de
+ * l'instance de test.
  *
- * Le pid retenu est `process.ppid` — le `Code.exe` principal de l'instance de test —, vivant
- * par construction puisqu'il nous heberge, et qui n'est jamais un extension host, donc jamais
- * le nom d'une entree legitime. Le CONTENU est la fixture 0.1.0 reelle : seul l'`extHostPid`
- * y est repointe, le nom du fichier devant correspondre a l'identite revendiquee.
- *
- * Rend `undefined` si un fichier porte deja ce nom : on n'ecrase jamais une entree qui n'est
- * pas la notre, quitte a perdre le point.
+ * Vivant par construction puisqu'il nous heberge, et jamais un extension host — donc jamais le
+ * nom d'une entree legitime. C'est ce qui rend l'entree deposee VIVANTE au regard du coeur,
+ * sans quoi le point eprouverait la purge et non l'isolation.
  */
-function plantForeignEntry(repoRoot: string, registryDir: string): PlantedEntry | undefined {
-  const pid = process.ppid;
-  const file = path.join(registryDir, `${pid}.json`);
-  if (fs.existsSync(file)) return undefined;
-
-  const fixture = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, ...LEGACY_FIXTURE), 'utf8')
-  ) as Record<string, unknown>;
-  const content = `${JSON.stringify({ ...fixture, extHostPid: pid }, null, 2)}\n`;
-
-  fs.mkdirSync(registryDir, { recursive: true });
-  fs.writeFileSync(file, content, 'utf8');
-  return { pid, file, content };
-}
-
-/**
- * Retire l'entree fabriquee — et ELLE SEULE.
- *
- * Garde de contenu : si le fichier a change depuis qu'on l'a ecrit, il n'est plus le notre et
- * on n'y touche pas.
- */
-function unplantForeignEntry(planted: PlantedEntry | undefined): string {
-  if (planted === undefined) return 'aucune entree fabriquee';
-  let onDisk: string;
-  try {
-    onDisk = fs.readFileSync(planted.file, 'utf8');
-  } catch {
-    return 'deja disparue';
-  }
-  if (onDisk !== planted.content) {
-    return 'LAISSEE EN PLACE : le contenu a change, elle n est plus la notre';
-  }
-  fs.rmSync(planted.file, { force: true });
-  return 'retiree';
+function foreignEntryPid(): number {
+  return process.ppid;
 }
 
 function allTabs(): readonly vscode.Tab[] {
@@ -148,7 +113,8 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
   const extHostPid = process.pid;
   const mainPid = process.ppid;
   const registryDir = resolveRegistryDir();
-  const entryFile = path.join(registryDir, `${extHostPid}.json`);
+  // Le chemin vient du COEUR (finding C5) : le harnais ne redit plus la convention de nommage.
+  const entryFile = windowEntryPath(extHostPid, registryDir);
 
   const readEntry = (): WindowEntry | undefined =>
     fs.existsSync(entryFile)
@@ -245,24 +211,38 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
 
   // ---- Point 6 : isolation ------------------------------------------------------------
   const snapshot: ProcessSnapshot = await readProcessTable();
-  const planted = plantForeignEntry(repoRoot, registryDir);
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, ...LEGACY_FIXTURE), 'utf8')
+  ) as Record<string, unknown>;
+
+  let planted: PlantedEntry | undefined;
   let isolation: Record<string, unknown> = {};
   let unplanted = 'jamais tentee';
+  // LE `try` S'OUVRE AVANT LA POSE (finding S8). Il ne s'ouvrait qu'APRES le retour de
+  // `plantForeignEntry` : une ecriture qui echouait en cours de route laissait un fichier
+  // tronque dans le registre REEL du poste, hors de toute protection, et `unplantForeignEntry`
+  // n'etait jamais appele. Un tel residu est classe `unparsable` — donc IMPURGEABLE par
+  // conception. `foreignEntry.ts` efface desormais son ecriture partielle, et ce `try` couvre
+  // en plus tout ce qui pourrait echouer entre la pose et le retrait.
   try {
+    planted = plantForeignEntry(fixture, foreignEntryPid(), registryDir);
     assert.ok(planted, 'the foreign entry must have been planted (a file already claimed that pid?)');
-    assert.ok(fs.existsSync(planted.file), 'the planted foreign entry must be on disk');
-    assert.ok(snapshot.table.has(planted.pid), 'the planted entry must name a LIVE pid');
+    // Copie locale : le retrecissement de type d'un `let` ne survit pas a une fermeture, et
+    // deux des predicats ci-dessous en sont. `planted` reste la variable que le `finally` lit.
+    const foreign = planted;
+    assert.ok(fs.existsSync(foreign.file), 'the planted foreign entry must be on disk');
+    assert.ok(snapshot.table.has(foreign.pid), 'the planted entry must name a LIVE pid');
 
     const registry = readRegistry({ snapshot, dir: registryDir });
     const owner = resolveOwningWindow(extHostPid, snapshot.table, registry.windows);
     assert.ok(owner, 'this window must claim its own extension host');
     assert.equal(owner.extHostPid, extHostPid, 'resolveOwningWindow must return THIS window');
 
-    const skip = registry.skipped.find((s) => s.file === `${planted.pid}.json`);
+    const skip = registry.skipped.find((s) => s.file === windowEntryFileName(foreign.pid));
     assert.ok(skip, 'the planted foreign entry must be reported among the skipped ones');
     assert.equal(skip.reason, 'foreign-schema', 'a live entry of another schema is foreign, never invalid');
     assert.ok(
-      !registry.windows.some((w) => w.extHostPid === planted.pid),
+      !registry.windows.some((w) => w.extHostPid === foreign.pid),
       'a foreign entry must never appear among steerable windows, even with a live pid'
     );
 
@@ -270,7 +250,7 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
       resolvedExtHostPid: owner.extHostPid,
       steerableWindows: registry.windows.map((w) => w.extHostPid),
       skipped: registry.skipped,
-      plantedForeignEntry: { pid: planted.pid, classification: skip.reason },
+      plantedForeignEntry: { pid: foreign.pid, classification: skip.reason },
       // Observation, PAS une preuve : ce que le poste porte au moment du rejeu.
       legacyEntriesObserved: registry.skipped.filter((s) => LEGACY_ENTRIES.includes(s.file)),
     };

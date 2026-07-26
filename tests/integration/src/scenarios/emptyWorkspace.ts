@@ -51,6 +51,7 @@ import {
 import {
   redactWindowEntry,
   resolveRegistryDir,
+  windowEntryPath,
   type WindowEntry,
 } from '../../../../packages/core/src/index.js';
 
@@ -64,7 +65,8 @@ export async function runEmptyWorkspace(context: ScenarioContext): Promise<void>
 
   const extHostPid = process.pid;
   const registryDir = resolveRegistryDir();
-  const entryFile = path.join(registryDir, `${extHostPid}.json`);
+  // Le chemin vient du COEUR (finding C5) : le harnais ne redit plus la convention de nommage.
+  const entryFile = windowEntryPath(extHostPid, registryDir);
   const readEntry = (): WindowEntry | undefined =>
     fs.existsSync(entryFile)
       ? (JSON.parse(fs.readFileSync(entryFile, 'utf8')) as WindowEntry)
