@@ -67,11 +67,26 @@ export default defineConfig({
           statements: 100,
         },
         /**
-         * SEUIL GLOBAL FIXE A CE QUI EST REELLEMENT ATTEINT (mesure du 2026-07-25 :
-         * 98,43 lignes / 97,88 branches / 96,82 fonctions), jamais a un chiffre d'intention :
-         * un seuil qu'on n'atteint pas est un seuil qu'on desactivera — c'est exactement ce
-         * qui est arrive au « 90 % global » que le CLAUDE.md annoncait et que rien ne
-         * configurait.
+         * SEUIL GLOBAL FIXE AU PLANCHER ENTIER DE CE QUI EST REELLEMENT ATTEINT, jamais a un
+         * chiffre d'intention : un seuil qu'on n'atteint pas est un seuil qu'on desactivera —
+         * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
+         * que rien ne configurait.
+         *
+         * MESURE DU 2026-07-26 (gate final du lot B), les QUATRE metriques :
+         *   98,96 instructions · 98,25 branches · 97,72 fonctions · 98,96 lignes
+         * Plancher retenu : 98 / 98 / 97 / 98. Marges : 0,96 · 0,25 · 0,72 · 0,96 point.
+         *
+         * La mesure precedente (2026-07-25 : 98,43 lignes / 97,88 branches / 96,82 fonctions)
+         * omettait les INSTRUCTIONS, alors que le seuil, lui, en portait un. Les quatre sont
+         * desormais citees — un chiffre configure sans mesure en regard est la divergence
+         * meme que ce commentaire existe pour empecher.
+         *
+         * RELEVE LE 2026-07-26 : branches 97 -> 98, fonctions 96 -> 97. Lignes et
+         * instructions restent a 98, qui est deja leur plancher.
+         *
+         * Mesure prise sous Windows, ou 3 tests POSIX sont ignores ; la couverture de la CI
+         * Linux a ete relevee et elle est IDENTIQUE — le plancher ne depend donc pas de la
+         * plateforme.
          *
          * TOUT L'ECART TIENT A QUATRE CHEMINS DE DEFAILLANCE QU'UNE VRAIE SOCKET NE PRODUIT
          * PAS, et qu'on refuse de forcer avec un faux `http` (principe fondateur n.5) :
@@ -86,8 +101,8 @@ export default defineConfig({
          * Le seuil se releve quand la couverture monte, jamais l'inverse sans justification.
          */
         lines: 98,
-        functions: 96,
-        branches: 97,
+        functions: 97,
+        branches: 98,
         statements: 98,
       },
     },
