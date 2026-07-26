@@ -209,7 +209,6 @@ describe('defaillances', () => {
     const result = await runCli(['windows'], {
       pid: CALLER,
       registryDir: makeRegistryDir(),
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       readSnapshot: () => Promise.reject('c:\\Users\\quelqu-un\\quelque-chose'),
     });
     const error = expectFailure(result, EXIT_CODES.UNEXPECTED_ERROR);

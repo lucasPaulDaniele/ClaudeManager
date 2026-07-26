@@ -114,17 +114,29 @@ cmgr doctor
 
 ### En ligne de commande
 
+**Livré et exécutable aujourd'hui** — `cmgr` est en **lecture seule** : il ne purge pas, n'écrit
+rien, n'ouvre ni ne ferme aucune conversation, et ne fait **aucun réseau**.
+
 ```bash
-cmgr whoami                              # quelle fenêtre, quelle conversation
-cmgr conversations                       # les conversations ouvertes ici
-cmgr open --prompt-file ./amorce.md      # ouvrir, avec un prompt d'amorçage
-cmgr open --prompt-file ./a.md --wait    # ... et attendre la réponse
-cmgr close <id>                          # fermer une conversation
-cmgr read <sessionId>                    # relire la dernière réponse
-cmgr doctor                              # diagnostiquer l'environnement
+cmgr windows      # ✅ énumère les fenêtres pilotables, jeton masqué, et restitue tout ce
+                  #    qui a été écarté du registre avec son motif
+cmgr whoami       # ✅ résout la fenêtre hôte du processus appelant, par sa chaîne d'ancêtres
+cmgr --help       # ✅ (-h) la description complète, en JSON
+cmgr --version    # ✅ (-v) le nom et la version du binaire, en JSON
 ```
 
-Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain.
+**Cible, pas encore livré** — chaque ligne renvoie au lot qui la porte :
+
+```bash
+cmgr open --prompt-file ./amorce.md      # 🚧 lot C — ouvrir, avec un prompt d'amorçage
+cmgr close <id>                          # 🚧 lot C — fermer une conversation
+cmgr conversations                       # 🚧 lot C — les conversations ouvertes ici
+cmgr read <sessionId>                    # 🚧 lot D — relire la dernière réponse
+cmgr open --prompt-file ./a.md --wait    # 🚧 lot D — ouvrir, puis attendre la réponse
+cmgr doctor                              # 🚧 lot D — diagnostiquer l'environnement
+```
+
+Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain. Cela vaut **sans exception**, y compris pour `--help` et pour les erreurs — un agent doit pouvoir faire `JSON.parse(stdout)` sans condition.
 
 Le prompt passe **toujours par fichier**, jamais en argument — l'échappement des prompts longs en shell (a fortiori PowerShell) est une source de bugs inépuisable. Cette règle porte sur **l'interface de `cmgr` vis-à-vis de son appelant**, et seulement sur elle : le **transport interne** vers le pty est aujourd'hui un prompt positionnel — c'est la forme mesurée — et il **reste à trancher au lot C**, la ligne de commande Windows plafonnant autour de 32 Ko quand un prompt d'orchestration en pèse couramment 15 à 25.
 
@@ -162,7 +174,7 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 packages/core      logique pure — identité, registre, sessions, transcripts
                    (n'importe jamais `vscode` : c'est ce qui la rend testable)
 packages/vscode    extension compagnon — attache et ferme, rien de plus
-packages/cli       binaire `cmgr`                          (lot B, pas encore livré)
+packages/cli       binaire `cmgr` — `windows` et `whoami`, en lecture seule
 packages/mcp       serveur MCP                             (lot E, pas encore livré)
 ```
 

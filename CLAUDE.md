@@ -13,9 +13,9 @@ Le besoin naît de la skill `/orchestrer` : elle impose « une conversation orch
 - **Extension VSCode** : API `vscode` ^1.90, packagée en VSIX (`@vscode/vsce`)
 - **Tests unitaires/intégration** : Vitest
 - **Tests d'extension** : `@vscode/test-electron` (vraie instance VSCode)
-- **Couverture** : `@vitest/coverage-v8`, deux seuils **configurés et vérifiés** dans `vitest.config.ts` — **100 %** sur `packages/core/src/**`, et un seuil global fixé **aux valeurs réellement atteintes** (98 % lignes et instructions, 97 % branches, 96 % fonctions). Jamais un chiffre d'intention : un seuil qu'on n'atteint pas est un seuil qu'on désactivera. Deux **exclusions nommées et datées** y figurent, parce que l'API de l'éditeur en est la substance même et que `npm run test:integration` s'en charge : `packages/vscode/src/extension.ts` (activation, abonnements, canal de journal, observateur) et `packages/vscode/src/core.ts` (réexport pur). Toute nouvelle exclusion se justifie au même endroit, avec sa date.
-- **Lint** : ESLint flat config + `typescript-eslint`
-- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** est outillé (`build:vscode`, `build:integration`) ; seul le **packaging VSIX** relève encore du **lot E**.
+- **Couverture** : `@vitest/coverage-v8`, deux seuils **configurés et vérifiés** dans `vitest.config.ts` — **100 %** sur `packages/core/src/**`, et un seuil global fixé **au plancher entier de ce qui est réellement atteint** (98 % lignes et instructions, 98 % branches, 97 % fonctions — mesure du 2026-07-26). Jamais un chiffre d'intention : un seuil qu'on n'atteint pas est un seuil qu'on désactivera. Le seuil se relève quand la couverture monte ; il ne s'abaisse **jamais en silence** — la seule soupape est une justification nommée et datée. Y figurent aussi **les exclusions nommées et datées, énumérées dans `vitest.config.ts`** *(pas de cardinal ici : il serait faux au prochain ajout)*, parce que l'API de l'éditeur en est la substance même et que `npm run test:integration` s'en charge. Toute nouvelle exclusion se justifie au même endroit, avec sa date.
+- **Lint** : ESLint flat config + `typescript-eslint`. **Zéro avertissement toléré**, y compris une directive `eslint-disable` devenue inutile.
+- **CI** : GitHub Actions (lint, typecheck, tests unitaires avec seuils de couverture). Le **build** est outillé (`build:cli`, `build:vscode`, `build:integration`) ; seul le **packaging VSIX** relève encore du **lot E**.
 
 ## Principes fondateurs
 
@@ -54,7 +54,7 @@ ClaudeManager/
 │   │       ├── transcript/ # (lot D) lecture JSONL, fin de tour, extraction de réponse
 │   │       └── client/     # (lot C) client HTTP de l'extension compagnon
 │   ├── vscode/             # claudemanager-vscode — extension compagnon
-│   ├── cli/                # (lot B) @claudemanager/cli — binaire `cmgr`
+│   ├── cli/                # @claudemanager/cli — binaire `cmgr` (`windows`, `whoami`)
 │   └── mcp/                # (lot E) @claudemanager/mcp — serveur MCP stdio
 ├── docs/
 │   ├── adr/                # décisions structurantes, datées
@@ -163,11 +163,39 @@ Ces exclusions sont des **décisions**, pas des manques. Ne pas les réintroduir
 - **Un commit = un changement logique.**
 - **Toujours inclure les tests** dans le même commit que le code qu'ils couvrent.
 - **Supprimer la branche** après merge.
+- **Ne jamais publier une branche `archive/*`.** Elles ne sont conservées qu'en **local**, comme sauvegarde d'un travail hors règles ; elles portent des données du poste qui n'ont rien à faire sur un dépôt public.
+
+### Garde-fous outillés — `.githooks/`
+
+Deux règles ci-dessus n'étaient tenues par **rien** d'autre que l'attention de l'auteur, et l'une
+des deux a effectivement été enfreignée : **les 9 commits du lot B portaient un trailer
+`Co-authored-by`**, injecté par le squash-merge de GitHub — pas par l'auteur. Une règle qu'aucun
+outil ne vérifie n'est pas une règle, c'est un vœu.
+
+Le dépôt versionne donc deux hooks. **Ils ne sont pas actifs par défaut** : Git n'exécute jamais un
+hook versionné tant qu'on ne le lui a pas dit. Activation, une fois par clone :
+
+```bash
+git config core.hooksPath .githooks
+```
+
+| Hook | Refuse | Motif |
+|---|---|---|
+| `.githooks/commit-msg` | tout message portant un trailer `Co-authored-by` (**insensible à la casse**) | La règle est posée depuis le lot 0 et a été enfreinte 9 fois sans que rien ne le signale |
+| `.githooks/pre-push` | toute référence poussée dont le nom commence par `archive/` | `archive/bootstrap-hors-regles` a été retirée d'`origin`, mais **un seul `git push --all` ou `--mirror` la republierait sans avertissement** |
+
+Les deux sont du `sh` portable, sans aucune dépendance : sur un poste sans outillage particulier,
+ils s'exécutent ou ne font rien — jamais ils ne cassent un `git commit` pour une raison étrangère à
+la règle qu'ils portent. Un contournement ponctuel reste possible par `--no-verify`, et c'est
+voulu : ces hooks sont un garde-fou contre l'inattention, pas un dispositif de sécurité.
+
+**La copie locale d'`archive/bootstrap-hors-regles` ne se supprime pas** — c'est la seule
+sauvegarde de ce travail. Le hook protège sa **publication**, pas son existence.
 
 ## Tests
 
 - **Unitaires** (`tests/unit/`) : tout `core`, contre des fixtures capturées — couverture exigée **100 %**. Y figure aussi tout ce que `packages/vscode` peut éprouver **sans éditeur** : serveur local, cycle de publication, plomberie de registre, mise en forme des défaillances. Ce qui exige une vraie fenêtre est exclu **nommément et avec sa date** dans `vitest.config.ts`, jamais laissé hors mesure en silence.
-- **Intégration** (`tests/integration/`) : une **vraie fenêtre VSCode** via `@vscode/test-electron`, avec l'extension compagnon chargée. Valide le serveur local, le registre, `tabGroups`.
+- **Intégration** (`tests/integration/`) : une **vraie fenêtre VSCode** via `@vscode/test-electron`, avec l'extension compagnon chargée. Valide le serveur local, le registre, et l'**énumération en lecture seule** de `tabGroups`. **`tabGroups.close` n'est appelé nulle part dans le dépôt** : la fermeture d'une conversation — la définition donnée plus haut — relève du **lot C**, et rien ne la couvre aujourd'hui.
 - **E2E** (`tests/e2e/`) : scénarios multi-fenêtres réels, avec l'extension Claude authentifiée. **Scénario de référence, non négociable** : deux fenêtres ouvrant **le même répertoire physique**, **A minimisée** — A étant la fenêtre **cible et agissante**, c'est la condition mesurée à l'ADR-002 → une commande émise depuis A n'affecte jamais B, et **A ne prend jamais le focus**.
   **Construction imposée : par jonction de répertoire.** VSCode 1.122.1 **refuse** d'ouvrir un même dossier dans deux fenêtres — trois mécanismes essayés, tous refusés (`docs/adr/002-ouverture-interactive.md`, « Écueils » n°3). Le second workspace doit donc être une **jonction** pointant sur le premier : c'est le **seul montage possible**, pas un montage choisi.
   **Ce que ce montage couvre** : le **répertoire physique commun** et le **processus `Code.exe` principal commun**. Ce dernier n'est d'ailleurs pas un effet de la jonction — deux fenêtres quelconques d'une même instance le partagent déjà (`docs/adr/001-pilotage-des-conversations.md`, §4 : cinq extension hosts distincts, tous de `ppid` 16196). Il n'en reste pas moins la preuve directe qu'un PID ne discrimine pas une fenêtre — seul l'`extHostPid` le fait.
@@ -195,7 +223,7 @@ npm run test:e2e           # multi-fenêtres, extension Claude     (LOCAL UNIQUE
 - **`test:integration` n'est pas exécuté par la CI publique.** Elle téléchargerait une instance VSCode complète à chaque exécution et exige un affichage ; la commande est donc **locale**, et son log est joint en preuve à la PR. Ce n'est pas un manque d'outillage : la commande existe.
 - **`test:e2e` sera impossible en CI publique**, définitivement : il exige l'extension Claude propriétaire **authentifiée**.
 
-La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus**. Le build de l'extension et du harnais est outillé ; seul le **packaging VSIX** relève encore du **lot E**. Les résultats d'intégration et E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
+La CI GitHub exécute `npm run lint`, `npm run typecheck` et `npm run test:coverage`, puis publie le rapport de couverture — **rien de plus**. Le build de la CLI, de l'extension et du harnais est outillé (`build:cli`, `build:vscode`, `build:integration`) ; seul le **packaging VSIX** relève encore du **lot E**. Les résultats d'intégration et E2E locaux sont joints en preuve à la PR — ne jamais prétendre qu'une PR est vérifiée sans ce log.
 
 ## Documentation obligatoire
 

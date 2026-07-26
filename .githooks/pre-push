@@ -1,0 +1,68 @@
+#!/bin/sh
+#
+# Refuse de POUSSER toute reference `archive/*`.
+#
+# POURQUOI CE HOOK EXISTE. `archive/bootstrap-hors-regles` a bien ete retiree d'`origin`, mais
+# la copie LOCALE est conservee volontairement : c'est la seule sauvegarde de ce travail, et
+# elle ne doit jamais etre supprimee. Elle porte en revanche le prefixe d'un jeton reel et le
+# nom de compte, sur un depot PUBLIC.
+#
+# Le risque n'est pas un `git push origin archive/...` delibere — personne ne le tape. C'est
+# `git push --all` ou `git push --mirror`, qui republieraient la branche SANS AVERTISSEMENT,
+# au milieu d'un lot de references parfaitement legitimes.
+#
+# Ce hook protege la PUBLICATION de ces branches, jamais leur existence locale.
+#
+# ACTIVATION (une fois par clone, jamais automatique) :
+#   git config core.hooksPath .githooks
+#
+# Contournement ponctuel assume : `git push --no-verify`.
+
+set -u
+
+# Git fournit sur stdin une ligne par reference poussee :
+#   <ref locale> <sha local> <ref distante> <sha distant>
+# Aucune ligne (rien a pousser) : la boucle ne s'execute pas et le hook laisse passer.
+refused=''
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # `remote_sha` n'est pas utilise : seul le nom des references nous interesse.
+  : "$remote_sha"
+
+  # SUPPRESSION D'UNE REFERENCE DISTANTE — sha local a zero, ref locale `(delete)`.
+  # On l'AUTORISE, y compris sur `archive/*` : retirer ces branches d'`origin` est
+  # exactement ce que l'on veut pouvoir faire, et le refuser rendrait le menage impossible.
+  case "$local_sha" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+
+  # Les deux cotes sont verifies : renommer a la volee ne doit pas suffire a contourner.
+  for ref in "$local_ref" "$remote_ref"; do
+    case "$ref" in
+      refs/heads/archive/* | archive/*)
+        refused="${refused}  - ${ref}
+"
+        ;;
+    esac
+  done
+done
+
+if [ -n "$refused" ]; then
+  cat >&2 <<MESSAGE
+
+  PUSH REFUSE — une reference \`archive/*\` allait etre publiee :
+
+${refused}
+  Ces branches sont conservees EN LOCAL uniquement (CLAUDE.md, « Workflow Git > Regles ») :
+  elles portent des donnees du poste — prefixe de jeton reel, nom de compte — et ce depot
+  est public.
+
+  Si vous avez lance \`git push --all\` ou \`--mirror\`, poussez plutot la branche voulue
+  nommement. Ne supprimez PAS la copie locale : c'est la seule sauvegarde de ce travail.
+
+MESSAGE
+  exit 1
+fi
+
+exit 0

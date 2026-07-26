@@ -5,3 +5,13 @@ coverage/
 *.log
 .DS_Store
 .vscode-test/
+
+# Etat de travail de la skill `/orchestrer` : journaux de chantier, rapports de lot,
+# transcriptions. Il porte des donnees du POSTE — prefixe de jeton reel, uuid de sessions,
+# adresse IP interne, nom de compte — et ce depot est PUBLIC.
+#
+# Ces motifs vivaient dans `.git/info/exclude`, qui ne fait PAS partie du depot : ils ne
+# survivaient ni a un clone, ni a une reinitialisation, ni a un checkout sur une autre
+# machine. Un `git add -A` apres re-clone aurait tout publie. Ici, ils suivent le depot.
+orchestration-*.md
+orchestration-*/
