@@ -35,6 +35,14 @@ const HARNESS_LEFTOVERS: readonly RegExp[] = [
   /^cmgr-b3-current\.json$/,
 ];
 
+/**
+ * Le verrou N'EST PAS un residu balayable, et il n'a rien a faire dans la liste ci-dessus : un
+ * run concurrent le detient legitimement, et l'effacer reviendrait a supprimer l'exclusion
+ * mutuelle qu'on vient de poser. Il est retire par son detenteur, ou repris quand le pid qu'il
+ * porte est mort.
+ */
+export const HARNESS_LOCK_FILE = 'cmgr-b3-harness.lock';
+
 export interface RemovalOutcome {
   readonly target: string;
   readonly removed: boolean;
@@ -112,6 +120,89 @@ export async function removeQuietly(
  * Rend des chemins absolus, tries, et RIEN qui ne corresponde exactement a un motif du
  * harnais : ce repertoire est partage avec tout le systeme.
  */
+/**
+ * Verrou d'execution du harnais — un VRAI, parce que l'ancienne justification etait FAUSSE.
+ *
+ * Le balayage des residus supprime des `--user-data-dir` que le harnais a laisses derriere
+ * lui. Il etait justifie ainsi : « deux executions simultanees sont deja impossibles par
+ * construction, `cmgr-b3-current.json` etant ecrit a un chemin fixe que la seconde
+ * ecraserait ». UN CHEMIN FIXE ECRASE N'EST PAS UNE EXCLUSION MUTUELLE : il ne bloque rien, il
+ * perd une information. Deux `npm run test:integration` lances en parallele demarrent tous les
+ * deux, et le balayage du premier supprime le `--user-data-dir` d'un VSCode EN COURS
+ * D'EXECUTION (finding S7).
+ *
+ * `wx` est l'exclusion mutuelle elle-meme : la creation echoue si le fichier existe, et
+ * l'operation est atomique cote systeme de fichiers. Le pid du detenteur y est ecrit — non
+ * pour departager, mais pour que le second run puisse DIRE qui le tient.
+ */
+export interface HarnessLock {
+  readonly acquired: boolean;
+  /** Pid du run qui le detient deja, quand `acquired` est faux et qu'il a pu etre lu. */
+  readonly holder?: number;
+}
+
+/**
+ * Prend le verrou, ou dit qui le tient.
+ *
+ * RESIDU D'UN RUN MORT : un harnais tue en cours de route laisse son verrou. On ne l'ecrase
+ * jamais a l'aveugle — on demande au systeme si le pid inscrit vit encore, et on ne le reprend
+ * que s'il est mort. `process.kill(pid, 0)` n'envoie AUCUN signal : c'est un test d'existence,
+ * jamais une terminaison. Un `EPERM` signifie « il existe mais il n'est pas a nous » — donc
+ * vivant, donc on ne prend pas.
+ */
+export function acquireHarnessLock(file: string): HarnessLock {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      fs.writeFileSync(file, `${process.pid}\n`, { encoding: 'utf8', flag: 'wx' });
+      return { acquired: true };
+    } catch (error) {
+      if (systemCodeOf(error) !== 'EEXIST') return { acquired: false };
+    }
+
+    const holder = readLockHolder(file);
+    if (holder === undefined || isAlive(holder)) {
+      return holder === undefined ? { acquired: false } : { acquired: false, holder };
+    }
+    // Le detenteur est mort : son verrou n'est plus qu'un residu, et on le retire une fois.
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      return { acquired: false, holder };
+    }
+  }
+
+  return { acquired: false };
+}
+
+/** Rend le verrou. Ne leve jamais : l'hygiene ne fait pas echouer un run (regle n.1). */
+export function releaseHarnessLock(file: string): void {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // Rien a dire de plus : le prochain run le reprendra en constatant que ce pid est mort.
+  }
+}
+
+function readLockHolder(file: string): number | undefined {
+  try {
+    const pid = Number.parseInt(fs.readFileSync(file, 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    // Signal 0 : aucun signal n'est envoye, seule l'existence est testee.
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // `EPERM` : le processus existe, il ne nous appartient pas. Vivant, donc.
+    return systemCodeOf(error) === 'EPERM';
+  }
+}
+
 export function findHarnessLeftovers(dir: string): readonly string[] {
   let entries: readonly string[];
   try {
