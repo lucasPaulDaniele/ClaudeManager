@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Refuse tout message de commit portant un trailer `Co-authored-by`.
+#
+# POURQUOI CE HOOK EXISTE. Le CLAUDE.md interdit ce trailer depuis le lot 0, et la regle
+# n'etait tenue par RIEN : les 9 commits du lot B le portaient tous. Il n'avait pas ete ecrit
+# par l'auteur mais injecte par le SQUASH-MERGE de GitHub, ce qui est precisement le cas
+# qu'aucune relecture humaine n'attrape — le message fautif n'existe qu'apres coup.
+#
+# Ce hook ne couvre donc PAS le squash-merge distant, qu'aucun hook local ne peut atteindre.
+# Il couvre les commits faits ICI, et rend la regle verifiable au lieu d'esperee. Les deux
+# autres parades — identite git locale au depot, corps de merge explicite — vivent hors du
+# depot ; celle-ci est la seule qui le suive.
+#
+# ACTIVATION (une fois par clone, jamais automatique) :
+#   git config core.hooksPath .githooks
+#
+# Contournement ponctuel assume : `git commit --no-verify`. C'est un garde-fou contre
+# l'inattention, pas un dispositif de securite.
+
+set -u
+
+# Git passe le chemin du fichier de message en premier argument. S'il manque ou n'est pas
+# lisible, on ne bloque rien : un hook ne doit jamais casser un commit pour une raison
+# etrangere a la regle qu'il porte.
+[ "$#" -ge 1 ] || exit 0
+[ -r "$1" ] || exit 0
+
+# `grep -i` seul suffit : POSIX, present partout, aucune dependance. Le motif tolere les
+# espaces avant le deux-points, la ou un trailer mal forme passerait sinon.
+if grep -qi '^[[:space:]]*co-authored-by[[:space:]]*:' "$1"; then
+  # Sur stderr : c'est un diagnostic destine a un humain.
+  cat >&2 <<'MESSAGE'
+
+  COMMIT REFUSE — trailer `Co-authored-by` interdit.
+
+  Le CLAUDE.md l'interdit depuis le lot 0 (section « Workflow Git > Regles »).
+
+  Retirez la ou les lignes `Co-authored-by:` du message, puis recommencez.
+  Attention au squash-merge de GitHub, qui reinjecte ce trailer cote distant : ce hook
+  ne peut pas l'en empecher, seul un corps de merge explicite le peut.
+
+MESSAGE
+  exit 1
+fi
+
+exit 0

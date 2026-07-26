@@ -1,8 +1,9 @@
 # ADR-003 — Registre des fenêtres pilotables et serveur de contrôle local
 
 - **Date** : 2026-07-25
+- **Révisé le** : 2026-07-26 — gate final du lot B. Une affirmation **corrigée** (le port, section « Conséquences »), une garantie **ramenée à ce qu'elle tient** (décision 5), une ligne **ajoutée** au contrat inter-versions (décision 2), un soupçon **consigné comme non mesuré** (décision 8), et les décisions du gate **actées** dans une section datée. Rien n'a été réécrit dans l'histoire du document.
 - **Statut** : **accepté**
-- **Portée** : lot B (incréments B2 `core/registry` et B3 `vscode/companion`), et le gate d'audit qui les a corrigés
+- **Portée** : lot B (incréments B2 `core/registry` et B3 `vscode/companion`), et les gates d'audit qui les ont corrigés
 - **Méthode** : décisions prises pendant la mise en œuvre, éprouvées par les suites unitaire et d'intégration du dépôt ; cet ADR les **acte après coup** — il ne reconstruit rien qui n'ait été livré
 
 > Cet ADR comble un vide relevé au gate du lot B (finding R11) : le registre est qualifié **dans
@@ -53,7 +54,7 @@ sur le même dossier se collisionneraient, et c'est le cas de référence du pro
 Conséquence directe, exploitée par la décision 5 : le système de fichiers interdit deux fichiers
 de même nom, donc **un PID ne peut être revendiqué qu'une fois**.
 
-## Décision 2 — le contrat inter-versions tient en deux champs
+## Décision 2 — le contrat inter-versions tient en deux champs, **et un nom de fichier**
 
 Le schéma courant est `schemaVersion: 1` (`packages/core/src/registry/entry.ts`). Une entrée
 porte `extHostPid`, `mainPid`, `port`, `token`, `workspaceFolders`, `isTrusted`,
@@ -61,10 +62,27 @@ porte `extHostPid`, `mainPid`, `port`, `token`, `workspaceFolders`, `isTrusted`,
 
 **Ce qu'une version s'engage à ne pas déplacer, et c'est tout :**
 
-| Champ | Sens gelé |
+| Ce qui est gelé | Sens |
 |---|---|
 | `schemaVersion` | version du schéma de l'entrée |
 | `extHostPid` | PID de l'extension host de la fenêtre |
+| **le nom du fichier** | `<extHostPid>.json` (décision 1). Ce n'est pas un champ — et c'est précisément pour cela qu'il manquait ici : le contrat était énoncé en termes de **contenu** alors que le code contrôle aussi le **contenant** |
+
+**Ajout du 2026-07-26 (gate final, finding R6) — la troisième ligne, et pourquoi elle manquait.**
+`claimsItsOwnName` (`store.node.ts`) confronte le nom du fichier à l'`extHostPid` de son contenu
+**avant** l'aiguillage sur le schéma : il s'applique donc **aussi** aux entrées étrangères. Une
+version 2 qui prendrait les deux premières lignes au mot et nommerait ses fichiers autrement
+verrait les siennes classées `identity-mismatch` — le motif que la décision 5 réserve à une entrée
+**forgée**. `cmgr doctor` accuserait alors une version parfaitement légitime d'usurpation.
+
+Le défaut n'est **pas** destructif, et c'est ce qui le laisse mineur : `identity-mismatch` n'est ni
+`dead` ni `pid-reused`, donc la purge conservatrice **garde** ces entrées (décision 3). Le code
+tient d'ailleurs déjà ce raisonnement à l'endroit qui compte — la doc de `purgeStaleEntries`
+explique qu'on ne conclut **jamais** « ce PID est mort » sur la foi d'un nom de fichier, justement
+parce que la convention de nommage n'est pas contractuelle. Ce qui manquait n'était donc pas la
+prudence du code, mais **l'aveu, ici, que la version 1 exige tout de même ce nom pour retenir une
+entrée**. Une version 2 qui veut être *lue* par la version 1 doit s'y plier ; une version 2 qui
+s'en affranchit reste *intacte*, mais mal nommée dans les diagnostics.
 
 **Tous les autres champs peuvent changer de sens sans préavis** — `mainPid` au premier chef : une
 version 2 pourrait y mettre un identifiant de fenêtre, un parent relevé à un autre instant, ou
@@ -121,9 +139,51 @@ motif `identity-mismatch`, l'entrée n'est jamais retenue.
 dépose un `0000.json` déclarant l'`extHostPid` et le `mainPid` **réels** d'une fenêtre. L'entrée
 passe toute la validation, est jugée vivante, et l'emporte à égalité de profondeur **par le seul
 ordre de `readdir`** — le client s'adresse alors au serveur de l'attaquant en croyant parler à sa
-propre fenêtre. Le nom du fichier est la seule chose qu'un intrus ne contrôle pas librement
-(décision 1) : exiger l'égalité fait de cette contrainte du système de fichiers une contrainte
-d'identité.
+propre fenêtre.
+
+**Correction du 2026-07-26 (gate final, finding S2) — ce que ce contrôle fait réellement.**
+Cet ADR affirmait, à cet endroit, que « le nom du fichier est la seule chose qu'un intrus ne
+contrôle pas librement : exiger l'égalité fait de cette contrainte du système de fichiers une
+contrainte d'identité ». **L'énoncé était faux**, et c'est un test exécuté qui l'a montré
+(`tests/unit/vscode/publication.test.ts`, défaut S2).
+
+Ce que le contrôle interdit, et c'est déjà utile :
+
+- **s'ajouter** au registre sous un nom de son choix. Le `0000.json` ci-dessus est bien mort-né.
+
+Ce qu'il n'empêche **pas**, et il faut le dire :
+
+- **se substituer** à une entrée existante. Un intrus déjà sous le compte de l'utilisateur n'a
+  aucun besoin de *choisir* un nom : il **écrase le fichier qui porte déjà le bon**. Le contenu
+  forgé n'a qu'à satisfaire `parseWindowEntry` et la garde de vivacité, ce qui est trivial —
+  `extHostPid` se lit dans le fichier avant de l'écraser, `mainPid` est public dans la table des
+  processus, et `port`/`token` sont ceux de l'attaquant. Le nom est alors **exact**, la lecture ne
+  rapporte **aucune** anomalie, et `resolveOwningWindow` rend le canal de l'attaquant.
+
+La contrainte du système de fichiers empêche donc la **duplication**, pas l'**usurpation**. *Un
+blanc honnête vaut mieux qu'une garantie fausse.*
+
+**La parade livrée au gate (PR 2/3) — elle répare, elle n'empêche pas.** Une fenêtre publiée
+mémorise désormais l'entrée qu'elle a réellement écrite et **confronte le disque à cette
+référence** — `extHostPid`, `mainPid`, `port`, `token`, c'est-à-dire l'identité et le canal
+(`WindowPublisher.inspectEntry`). Un remplacement est détecté et **republié sous un motif nommé**,
+distinct de celui d'une simple disparition, pour que l'humain le voie passer. Les champs qui
+décrivent l'état du workspace sont exclus de la comparaison à dessein : ils changent légitimement
+entre deux republications.
+
+**La limite de cette parade est structurelle et doit être écrite** : elle est *a posteriori*. Entre
+la substitution et sa détection — l'observateur de fichier, ou la republication suivante — l'entrée
+de l'attaquant est en place et sera lue par qui la consulte. La fenêtre **corrige** son registre ;
+elle n'a aucun moyen d'**interdire** l'écriture. Rien ici n'est une élévation de privilège :
+l'attaquant est déjà dans le compte, et cet ADR assume que le registre est lisible par tout
+processus du compte (décision 8). Ce qui est en cause est qu'au lot C l'entrée portera le canal par
+lequel on **ouvre et ferme** des conversations : c'est le pilotage qui serait détourné, pas
+seulement un diagnostic.
+
+**Et la racine est plus haut que le nom du fichier** : `resolveRegistryDir` s'appuie sur
+`os.homedir()`. Un appelant dont l'environnement est contrôlé lit un **registre** contrôlé — le
+contrôle du nom ne protège alors plus rien, puisque tout le répertoire est celui de l'attaquant.
+Ce n'est pas une décision prise ici, seulement un présupposé qu'on nomme.
 
 **Deux fenêtres réclamant le même extension host sont une anomalie nommée, pas un départage.**
 `resolveOwningWindow` lève `DUPLICATE_WINDOW_IDENTITY` plutôt que de trancher — surtout pas par
@@ -209,6 +269,32 @@ l'index `window<N>`) et rien ne relie cet index à un `extHostPid`. Il est publi
 authentifiée**, et non dans l'entrée de registre — dont le contenu est un contrat entre versions
 qu'on n'élargit pas pour un besoin de diagnostic.
 
+### Soupçon consigné le 2026-07-26, **NON MESURÉ** — `Host` et `Origin` (DNS rebinding)
+
+Le serveur ne valide **ni l'en-tête `Host`, ni l'en-tête `Origin`**. Une page web visitée par
+l'utilisateur peut faire résoudre un nom qu'elle contrôle vers `127.0.0.1` et adresser des requêtes
+à la boucle locale depuis le navigateur — c'est le schéma classique du *DNS rebinding*.
+
+**Ce point n'a fait l'objet d'aucune mesure.** Il n'est pas classé « risque », il est classé
+« soupçon », et il est écrit ici pour ne pas être redécouvert par hasard au lot C.
+
+**Sans effet au lot B**, et pour trois raisons cumulatives :
+
+- aucune route n'est accessible sans le **jeton porteur**, et l'authentification passe **avant le
+  routage** (tableau ci-dessus) ;
+- ce jeton n'existe que dans un fichier du disque, en `0600` : un navigateur ne peut pas le lire ;
+- **aucun en-tête CORS n'est émis**, donc une page ne lit pas les réponses qu'elle provoquerait.
+
+**Cela change au lot C**, qui ajoutera des routes à **effet de bord** — ouvrir et fermer des
+conversations. Une requête aveugle qui n'a pas besoin de *lire* la réponse pour nuire ne se heurte
+plus qu'au seul jeton.
+
+**Parade envisagée, à trancher sur mesure au lot C — pas implémentée ici** : refuser tout `Host`
+autre que `127.0.0.1:<port effectivement lié>`, et refuser toute requête portant un `Origin`, quel
+qu'il soit — un client légitime de ClaudeManager n'est jamais une page web et n'en émet pas. La
+mesure devra établir ce qu'un navigateur envoie réellement dans ces deux en-têtes sur ce montage,
+plutôt que de le supposer.
+
 ## API `vscode` dont dépend l'extension compagnon
 
 Elles sont **publiques et documentées** — elles ne relèvent donc pas de
@@ -233,6 +319,140 @@ les deux de se désolidariser à nouveau (`tests/unit/vscode/manifest.test.ts`).
 hors workspace — s'il ne l'est pas, on le **dit**, et la fenêtre perd la reprise tardive, pas la
 publication.
 
+## Ajouts du 2026-07-26 — ce que le gate final du lot B a décidé
+
+Le gate final a pris, dans son lot de correctifs, des décisions **structurantes** que les sections
+ci-dessus ne portaient pas. Elles sont actées ici plutôt que réécrites au-dessus : *ce qui était
+vrai à la rédaction de cet ADR le reste, ce qui était faux se corrige en le disant.* Les deux
+sources sont les commits `1852593` (cœur) et `02198c0` (extension et harnais).
+
+> **Avertissement de lecture — les lettres de findings ne sont pas des identifiants stables.**
+> `C5` et `S6` désignent des défauts **différents** selon le tour de gate : `S6` est ici le masque
+> du répertoire personnel (cœur) *et*, dans `publication.ts`, un serveur survivant à la disparition
+> de son entrée. Ne jamais citer une lettre seule sans son commit.
+
+### A. La purge est **totale**, et non plus « conservatrice puis interrompue »
+
+La décision 3 disait ce qui n'est pas supprimé. Elle ne disait pas ce qui arrive quand une
+suppression **échoue**. Elle échouait bruyamment : une seule défaillance **avortait tout le
+balayage** et faisait remonter une erreur `fs` nue, portant le chemin absolu du registre — donc le
+nom du compte. Le prix d'un `mkdir` sous le nom d'un temporaire suffisait, pour n'importe quel
+processus du compte, à casser **définitivement** le nettoyage du registre de **toutes** les
+fenêtres du poste.
+
+Désormais : une suppression refusée devient une entrée `kept` de motif **`removal-failed`**, et le
+balayage **va jusqu'au bout**. `REGISTRY_UNREADABLE` — le répertoire existe mais ne se liste pas —
+reste la **seule** défaillance qui interrompt la purge.
+
+Le champ `KeptEntry.cause` porte alors **le seul code système** (`systemErrorCode`), jamais le
+message ni le chemin, pour la raison constante de ce projet : `kept` part vers un agent et vers des
+journaux joints en preuve à des PR d'un dépôt **public**.
+
+**Conséquence de typage, et elle n'est pas cosmétique : `kept` ne contient plus seulement des
+entrées.** Les temporaires orphelins y figurent au même titre. Un consommateur qui supposerait
+« un élément de `kept` est un `<pid>.json` » se tromperait — le motif `removal-failed` s'applique
+aux deux, et un temporaire porte `<pid>.<uuid>.tmp`.
+
+### B. La garde de fraîcheur couvre aussi les **temporaires**
+
+La décision 3 réservait la garde de fraîcheur aux entrées. Le raisonnement qui l'imposait
+s'applique pourtant **mot pour mot** au processus qui écrit son temporaire : une fenêtre née après
+la capture est absente de la table par construction, donc son temporaire **en cours d'écriture**
+passe pour orphelin. L'effacer entre son `write` et son `rename` fait lever `REGISTRY_UNWRITABLE` à
+une fenêtre parfaitement vivante — et c'est le cas **nominal** de deux fenêtres qui démarrent à
+quelques centaines de millisecondes d'écart, pas un accident de laboratoire.
+
+La garde s'écrit désormais en **un seul endroit** (`removeIfSettled`), pour entrées et temporaires,
+afin que les deux ne puissent pas en avoir deux versions divergentes. La troncature à la
+**milliseconde** en fait partie : `mtimeMs` porte des fractions de milliseconde sur NTFS quand
+`capturedAt` n'en a jamais.
+
+### C. L'ambiguïté d'identité se détecte **par PID**, jamais par profondeur
+
+La décision 5 annonçait `DUPLICATE_WINDOW_IDENTITY` sans dire **sur quoi** l'ambiguïté se constate.
+C'était l'égalité de **profondeur** dans la chaîne d'ancêtres — et elle ne se lit que face à deux
+fenêtres *distinctes* au même rang. Deux entrées revendiquant **le même `extHostPid`** à des
+profondeurs différentes échappaient donc au contrôle, et l'arbitrage retenait la plus proche : la
+victoire au premier nom de fichier venu, de façon déterministe pour qui la cherche.
+
+L'indexation se fait désormais **par PID** (`depthByPid`, `owningWindow.ts`). La convention de
+nommage rend ce cas normalement impossible — deux fichiers d'un même répertoire ne peuvent pas
+porter le même nom —, mais c'est précisément de la **défense en profondeur** : le contrôle ne
+dépend plus d'une propriété que le registre pourrait cesser de garantir.
+
+### D. `redactWindowEntry` masque le répertoire personnel — et c'est une fonction d'**affichage**
+
+Deux règles contradictoires régnaient sur le même flux de sortie : `SkippedEntry.file` ne porte
+jamais de chemin absolu « parce que ce champ part vers un agent », quand `windows[].workspaceFolders`
+rendait `c:\Users\<compte>\…` en clair, au **même destinataire**.
+
+Le masque vit maintenant dans le **cœur** (`registry/redaction.node.ts`), et non plus dans le seul
+harnais de test où un producteur de sortie sur trois pouvait s'en servir. Il remplace le **préfixe**
+du répertoire personnel par `~`, la coupure devant tomber sur un séparateur, en comparaison
+**insensible à la casse** sur toutes les plateformes — sous Windows le même chemin s'écrit
+`c:\Users\…` ou `C:\Users\…` selon qui le rend.
+
+**La distinction est impérative pour le lot C : c'est de l'affichage, jamais de la persistance.**
+L'entrée écrite dans le registre et ce que `GET /health` rend à qui détient le jeton portent le
+chemin **réel**. Le lot C doit y comparer le `cwd` d'une session au workspace de la fenêtre, faute
+de quoi `claude-vscode.editor.open` **réussit en ouvrant un panneau vide** — et un chemin masqué ne
+se compare pas.
+
+### E. La convention de nommage est **exportée par le cœur**, et reste **hors contrat**
+
+`<extHostPid>.json` était réécrit à la main partout : dans le cœur, dans l'extension, et — sans
+aucune garde — dans le harnais d'intégration, qui réencodait à la fois le répertoire et le nom. Le
+cœur est gardé de toutes parts ; le harnais, lui, ne faisait qu'un `existsSync` sur un chemin qui
+n'aurait alors jamais rien porté, et aurait imprimé « l'entrée a DISPARU : `deactivate` a bien
+retiré cette fenêtre » — une preuve **fausse** dans un journal joint à une PR, donc dans un critère
+de merge.
+
+Le cœur exporte désormais `windowEntryFileName` et `windowEntryPath`. Le jour où la convention
+change, elle change en un seul endroit.
+
+**Cela ne la fait pas entrer dans le contrat inter-versions** — voir la décision 2 et son ajout du
+même jour. Les deux énoncés coexistent sans se contredire : la version 1 **exige** ce nom pour
+retenir une entrée, et **s'interdit** d'en conclure quoi que ce soit sur la vivacité d'une entrée
+étrangère qui ne le respecterait pas.
+
+### F. Cycle de vie du serveur — le serveur et l'entrée vont ensemble, **dans les deux sens**
+
+La décision 8 décrivait un serveur qu'on ouvre. Elle ne disait rien de ce qui arrive quand l'un des
+deux disparaît sans l'autre. Deux défauts symétriques ont été corrigés, et l'invariant s'énonce
+maintenant en une phrase : **un serveur ouvert que plus aucune entrée ne décrit n'est joignable par
+personne ; une entrée qui annonce un port mort envoie le jeton de la fenêtre à qui a récupéré ce
+port.**
+
+**Défaillance d'écriture → le serveur est GARDÉ, la reprise est bornée.** Tout échec de
+`writeWindowEntry` était traité pareil : journaliser, puis se retirer. Or le retrait efface l'état
+que l'unique chemin de reprise autonome teste avant d'agir — la fenêtre restait utilisable pour
+l'humain et **définitivement injoignable** pour `cmgr`, qui rendait `OWNING_WINDOW_NOT_FOUND` en
+invitant à vérifier une extension parfaitement installée. Les deux classes de refus sont désormais
+distinguées **par le code stable de l'erreur nommée**, jamais par un contrôle local rejoué :
+
+- `REGISTRY_ENTRY_INVALID` — impubliable **par nature** (fenêtre sans dossier de travail). Retrait
+  juste, serveur fermé : il n'aurait rien à servir. La reprise viendra de l'événement qui change
+  cet état.
+- `REGISTRY_UNWRITABLE` — l'état du workspace n'a **pas** bougé et aucun événement ne viendra. Le
+  serveur **reste ouvert** et la reprise est programmée sur une échelle **bornée et croissante**
+  (250 ms, 1 s, 5 s, 30 s). Au-delà, la défaillance n'était pas transitoire : la fenêtre se retire
+  pour de bon, plutôt que d'entretenir une écoute que plus aucune entrée ne décrit.
+
+Une défaillance qu'on ne reconnaît pas est traitée comme un refus : **on ne suppose transitoire que
+ce qui l'est nommément.**
+
+**Mort de l'écoute → RETRAIT D'ABORD, réouverture ensuite.** Après le démarrage, toute défaillance
+de la socket n'était que journalisée, et l'entrée continuait d'annoncer `port` **et** `token`. Le
+port éphémère revient au système, un processus local le réobtient — la plage éphémère est réutilisée
+agressivement —, et le client du lot C présenterait alors `Authorization: Bearer <jeton de la
+fenêtre>` à l'occupant. **L'ordre est le fond du correctif** : l'inverse laisserait le couple port
+mort + jeton exploitable pendant toute la durée d'une réouverture. La réouverture est bornée à
+**cinq** pertes, après quoi la fenêtre le **dit** et reste non publiée jusqu'à rechargement.
+
+Toutes les transitions passent par une **file d'attente d'un seul rang** : cinq sources peuvent les
+déclencher, et deux transitions concurrentes ouvriraient deux serveurs dont un seul serait retenu —
+soit exactement l'écoute orpheline que tout ceci corrige.
+
 ## Conséquences
 
 **Ce que les lots suivants doivent supposer :**
@@ -240,9 +460,42 @@ publication.
 - **`resolveOwningWindow` peut lever.** `DUPLICATE_WINDOW_IDENTITY` sur une ambiguïté,
   `OWNING_WINDOW_NOT_FOUND` sur une absence (`requireOwningWindow`). Ce n'est jamais un `undefined`
   silencieux : B4 (CLI de lecture), C et D doivent les rendre à l'appelant tels quels.
-- **La republication rouvre le serveur sur un port différent.** Un port n'est donc **jamais**
-  mémorisable : il se relit dans l'entrée à chaque usage. C'est sans conséquence — l'entrée qui le
-  porte est réécrite dans la foulée, et personne ne connaît un port autrement que par elle.
+- **Un port ne se mémorise jamais : il se relit dans l'entrée à chaque usage.** La règle est
+  inchangée ; **sa justification était fausse et a été corrigée le 2026-07-26** (gate final,
+  finding R1).
+
+  Cet ADR affirmait ici, **sans condition**, que « la republication rouvre le serveur sur un port
+  différent ». **Mesuré en fenêtre réelle, c'est faux d'une republication ordinaire** : un octroi
+  de confiance ou un changement de dossiers de workspace **conserve le port ET le jeton** — une
+  seule écoute sur toute la vie de la fenêtre (`tests/integration/src/scenarios/nominal.ts`, §2,
+  qui assertait déjà littéralement le contraire de ce que ce document énonçait).
+
+  Le serveur n'est rouvert que là où `publishNow` le trouve fermé, c'est-à-dire **après un
+  retrait**. Les cas sont énumérables, et les voici **tous** :
+
+  | Le port change quand… | Trace |
+  |---|---|
+  | une publication est **refusée à la validation** (`REGISTRY_ENTRY_INVALID` — typiquement une fenêtre sans dossier de travail) : retrait, serveur fermé, puis reprise sur un changement d'état du workspace | `tests/integration/src/scenarios/emptyWorkspace.ts`, §2 — mesuré |
+  | une **défaillance d'écriture** (`REGISTRY_UNWRITABLE`) épuise l'échelle de reprise bornée : la fenêtre garde son serveur pendant les quatre échelons, puis se retire pour de bon | `tests/unit/vscode/publication.test.ts` (défaut C2) |
+  | l'**écoute meurt sans qu'on l'ait demandé** : retrait **d'abord**, réouverture ensuite, bornée à cinq pertes — **ajouté au gate, PR 2/3** | `tests/unit/vscode/publication.test.ts` (défaut S5) |
+
+  Hors de ces trois cas, **le port ne bouge pas**. Le jeton, lui, ne change **jamais** en cours de
+  vie : il est propre à la fenêtre *et à la session*, et ne se renouvelle qu'à un rechargement.
+
+  **Pourquoi la correction est majeure plutôt que cosmétique** : cette section s'intitule « ce que
+  les lots suivants doivent supposer ». Un auteur du lot C qui câblerait sa relecture de port sur
+  les **événements de republication** raterait précisément les cas où le port change réellement —
+  et s'adresserait à une socket fermée. Le déclencheur correct n'est pas la republication, c'est
+  **l'écriture de l'entrée** : on relit le port dans le fichier, à chaque usage, sans jamais
+  chercher à prédire quand il a bougé.
+
+  Le commentaire de `packages/vscode/src/publication.ts` était, lui, **correctement conditionnel**
+  depuis l'origine (« le serveur est rouvert *s'il ne l'est plus* ») : c'est bien ce document qui
+  avait durci une condition en fait général.
+
+- **`WindowPublisher.withdraw` n'a aucun appelant aujourd'hui.** L'extension n'appelle que
+  `ensurePublished`, `republishIfEntryLost` et `close`. Un lot ultérieur qui s'en servirait
+  ajouterait un quatrième cas de changement de port à la liste ci-dessus.
 - **Une entrée peut disparaître sous les pieds de sa fenêtre.** C'est un simple fichier, que
   n'importe quoi peut effacer. La fenêtre **republie** plutôt que de se retirer : elle est vivante,
   et enterriner une suppression qui est une erreur de tiers laisserait l'humain sans recours autre
