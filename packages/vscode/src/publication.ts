@@ -365,9 +365,9 @@ export class WindowPublisher {
    *
    * DEFAUT S2 (substitution) : la garde precedente etait un `existsSync`, et les deux
    * mecanismes de reprise ne defendaient donc que la SUPPRESSION. Or un processus tournant
-   * sous le compte de l'utilisateur — exactement l'acteur que la decision 5 de l'ADR-003
-   * pretend contrer — n'a pas besoin de choisir un nom de fichier : il ECRASE celui qui
-   * existe. Le contenu forge n'a qu'a satisfaire `parseWindowEntry` et la garde de vivacite,
+   * sous le compte de l'utilisateur — l'acteur que vise la decision 5 de l'ADR-003, dont elle
+   * nomme desormais la limite — n'a pas besoin de choisir un nom de fichier : il ECRASE celui
+   * qui existe. Le contenu forge n'a qu'a satisfaire `parseWindowEntry` et la garde de vivacite,
    * ce qui est trivial : `extHostPid` se lit dans le fichier avant de l'ecraser, `mainPid` est
    * public dans la table des processus, et `port`/`token` sont ceux de l'attaquant. La lecture
    * du registre ne rapporte alors AUCUNE anomalie, et `resolveOwningWindow` rend le canal de
