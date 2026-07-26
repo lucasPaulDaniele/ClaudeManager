@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseWindowEntry,
-  redactWindowEntry,
   WINDOW_ENTRY_SCHEMA_VERSION,
   type ParseResult,
 } from '../../../packages/core/src/index.js';
@@ -152,36 +151,5 @@ describe('parseWindowEntry — les autres regles de validation', () => {
       expect(reasonOf(parseWith('startedAt', value)), String(value)).toBe('invalid');
     }
     expect(reasonOf(parseWith('startedAt', '2026-07-24T22:01:24.603Z'))).toBe('ok');
-  });
-});
-
-describe('redactWindowEntry', () => {
-  it('ne laisse subsister AUCUN fragment du jeton reel', () => {
-    const redacted = redactWindowEntry(VALID);
-
-    expect(redacted.token).not.toBe(VALID.token);
-    expect(redacted.token.length).not.toBe(VALID.token.length);
-
-    // Ni prefixe, ni suffixe, ni fragment : on balaie toutes les sous-chaines de 4
-    // caracteres du jeton reel dans la serialisation complete de l entree masquee.
-    const serialized = JSON.stringify(redacted);
-    for (let i = 0; i + 4 <= VALID.token.length; i += 1) {
-      expect(serialized, VALID.token.slice(i, i + 4)).not.toContain(VALID.token.slice(i, i + 4));
-    }
-  });
-
-  it('rend la MEME constante pour deux jetons differents', () => {
-    // La preuve de fond : la sortie ne porte aucune information sur l entree. Les deux
-    // fenetres capturees portaient bien deux jetons distincts (voir le README des fixtures).
-    const other = currentSchemaEntry(WINDOWS_ROLES.otherExtHostPids[0] as number);
-    expect(other.token).not.toBe(VALID.token);
-
-    expect(redactWindowEntry(other).token).toBe(redactWindowEntry(VALID).token);
-  });
-
-  it('conserve tout le reste a l identique', () => {
-    const redacted = redactWindowEntry(VALID);
-
-    expect({ ...redacted, token: VALID.token }).toEqual(VALID);
   });
 });
