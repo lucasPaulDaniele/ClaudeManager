@@ -85,11 +85,13 @@ C'est l'invariant du produit. Une commande émise depuis une fenêtre ne doit **
 L'ancrage n'est ni le titre de la fenêtre, ni le dossier, ni `VSCODE_PID` (un seul processus principal héberge toutes les fenêtres, cette variable ne discrimine rien). C'est la **chaîne d'ancêtres du processus** :
 
 ```
-claude.exe  →  extension host  →  processus principal VSCode
-   17816          11172                  16196
-                    ↑
-        unique par fenêtre : voilà la clé
+claude.exe  →  pwsh.exe  →  claude.exe  →  extension host  →  Code.exe principal
+   18408         16016         22352            11172               16196
+                                                  ↑
+                                  unique par fenêtre : voilà la clé
 ```
+
+Relevé sur une machine réelle et versionné dans le dépôt (`tests/fixtures/identity/`). **La profondeur n'est pas contractuelle** : ici trois sauts séparent le processus appelant de son extension host, et rien ne garantit ce nombre — il dépend de la façon dont la session a été lancée. On remonte donc **toute la chaîne**, jamais le seul parent, et l'on retient la fenêtre la plus proche de l'appelant.
 
 Chaque instance de l'extension compagnon connaît son propre extension host et peut donc répondre avec certitude : « ce processus est-il un des miens ? »
 
@@ -112,17 +114,29 @@ cmgr doctor
 
 ### En ligne de commande
 
+**Livré et exécutable aujourd'hui** — `cmgr` est en **lecture seule** : il ne purge pas, n'écrit
+rien, n'ouvre ni ne ferme aucune conversation, et ne fait **aucun réseau**.
+
 ```bash
-cmgr whoami                              # quelle fenêtre, quelle conversation
-cmgr conversations                       # les conversations ouvertes ici
-cmgr open --prompt-file ./amorce.md      # ouvrir, avec un prompt d'amorçage
-cmgr open --prompt-file ./a.md --wait    # ... et attendre la réponse
-cmgr close <id>                          # fermer une conversation
-cmgr read <sessionId>                    # relire la dernière réponse
-cmgr doctor                              # diagnostiquer l'environnement
+cmgr windows      # ✅ énumère les fenêtres pilotables, jeton masqué, et restitue tout ce
+                  #    qui a été écarté du registre avec son motif
+cmgr whoami       # ✅ résout la fenêtre hôte du processus appelant, par sa chaîne d'ancêtres
+cmgr --help       # ✅ (-h) la description complète, en JSON
+cmgr --version    # ✅ (-v) le nom et la version du binaire, en JSON
 ```
 
-Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain.
+**Cible, pas encore livré** — chaque ligne renvoie au lot qui la porte :
+
+```bash
+cmgr open --prompt-file ./amorce.md      # 🚧 lot C — ouvrir, avec un prompt d'amorçage
+cmgr close <id>                          # 🚧 lot C — fermer une conversation
+cmgr conversations                       # 🚧 lot C — les conversations ouvertes ici
+cmgr read <sessionId>                    # 🚧 lot D — relire la dernière réponse
+cmgr open --prompt-file ./a.md --wait    # 🚧 lot D — ouvrir, puis attendre la réponse
+cmgr doctor                              # 🚧 lot D — diagnostiquer l'environnement
+```
+
+Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain. Cela vaut **sans exception**, y compris pour `--help` et pour les erreurs — un agent doit pouvoir faire `JSON.parse(stdout)` sans condition.
 
 Le prompt passe **toujours par fichier**, jamais en argument — l'échappement des prompts longs en shell (a fortiori PowerShell) est une source de bugs inépuisable. Cette règle porte sur **l'interface de `cmgr` vis-à-vis de son appelant**, et seulement sur elle : le **transport interne** vers le pty est aujourd'hui un prompt positionnel — c'est la forme mesurée — et il **reste à trancher au lot C**, la ligne de commande Windows plafonnant autour de 32 Ko quand un prompt d'orchestration en pèse couramment 15 à 25.
 
@@ -151,7 +165,8 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.
 - **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : `cmgr doctor` les vérifie et les nomme plutôt que de les franchir à l'aveugle.
-- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture ; le build et le packaging VSIX ne sont pas encore outillés et relèvent du lot E. Les preuves d'exécution locale sont jointes aux PR.
+- **L'extension compagnon écrit dans votre répertoire personnel et ouvre une écoute locale.** Chaque fenêtre publie un fichier `~/.claudemanager/windows/<pid>.json` décrivant ce qu'elle est, et ouvre un serveur HTTP sur `127.0.0.1`, port éphémère, protégé par un **jeton porteur** que ce fichier porte en clair. Le répertoire est en `0700`, l'entrée en `0600`, le jeton n'est jamais journalisé ni rendu par `/health`, et il ne survit pas à un rechargement de fenêtre. Rien n'est joignable depuis le réseau. Le détail, et les raisons de chaque choix, sont dans [l'ADR-003](docs/adr/003-registre-et-serveur-local.md).
+- **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture. Les tests d'intégration — une **vraie fenêtre VSCode**, via `@vscode/test-electron` — existent et tournent, mais **localement** : la CI publique devrait télécharger un éditeur complet et disposer d'un affichage. Leurs logs sont joints en preuve aux PR. Seul le **packaging VSIX** n'est pas encore outillé et relève du lot E.
 
 ## Architecture
 
@@ -159,8 +174,8 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 packages/core      logique pure — identité, registre, sessions, transcripts
                    (n'importe jamais `vscode` : c'est ce qui la rend testable)
 packages/vscode    extension compagnon — attache et ferme, rien de plus
-packages/cli       binaire `cmgr`
-packages/mcp       serveur MCP
+packages/cli       binaire `cmgr` — `windows` et `whoami`, en lecture seule
+packages/mcp       serveur MCP                             (lot E, pas encore livré)
 ```
 
 Deux règles gouvernent ce découpage : **le cœur ne connaît pas VSCode**, et **aucune opération ne dépend du focus**. Elles sont détaillées, avec leurs justifications, dans [`CLAUDE.md`](CLAUDE.md).

@@ -1,0 +1,57 @@
+{
+  "provenance": {
+    "command": "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId),$(if ($_.CreationDate) { [long]([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() })\" }",
+    "capturedOn": "2026-07-25",
+    "platform": "win32",
+    "os": "Windows 11 Pro 10.0.22000",
+    "shell": "PowerShell 7 (pwsh)",
+    "vscodeVersion": "1.122.1",
+    "entryCount": 283,
+    "notes": [
+      "Capture brute : ni triee, ni tronquee, ni retouchee. Le fichier ne contient que des nombres, il est anonyme par construction.",
+      "RECAPTURE du 2026-07-25 : la capture precedente ne portait que deux colonnes. La troisieme est la date de creation du processus, en millisecondes depuis l'epoque — c'est la seconde garde anti-reemploi de PID (gate lot B, finding S5). Elle est projetee en nombre pour rester independante du fuseau, du format local et de la culture du poste.",
+      "La topologie est IDENTIQUE a celle de la capture precedente : memes extension hosts (11172 et 17544), meme processus principal (16196), meme orphelin reel en bout de chaine (5760). Seuls les deux pid les plus proches de l'appelant changent — c'est une autre session de developpement qui a pris la capture.",
+      "Les roles ci-dessous ont ete releves LOCALEMENT en inspectant les lignes de commande des processus. Ces lignes de commande ne sont pas versionnees : elles contiennent des chemins personnels et le depot est public.",
+      "Un extension host se reconnait a la signature '--type=utility --utility-sub-type=node.mojom.NodeService' ASSORTIE de '--inspect-port=0' et '--dns-result-order=ipv4first' : depuis VSCode 1.79 l'extension host est un processus utilitaire, ce ne sont pas les seuls (shared process, ptyHost, file watcher partagent les deux premiers flags mais pas les suivants). Confirmation croisee : chaque extension host porte ses propres tsserver en enfants — revalide a la recapture, 11172 et 17544 en portent deux chacun.",
+      "Le depot applique '* text=auto eol=lf' : git normalise les fins de ligne CRLF de la capture en LF. Le contenu, lui, est intact — les deux formes sont acceptees par l'analyseur."
+    ]
+  },
+
+  "callerClaudePid": 18408,
+  "owningExtHostPid": 11172,
+  "mainCodePid": 16196,
+  "otherExtHostPids": [17544],
+
+  "expectedAncestry": [16016, 22352, 11172, 16196, 9284, 5760],
+
+  "chain": [
+    { "pid": 18408, "ppid": 16016, "name": "claude.exe", "role": "caller (session de dev qui a pris la capture)" },
+    { "pid": 16016, "ppid": 22352, "name": "pwsh.exe", "role": "shell intermediaire" },
+    { "pid": 22352, "ppid": 11172, "name": "claude.exe", "role": "session Claude attachee au panneau de la fenetre" },
+    { "pid": 11172, "ppid": 16196, "name": "Code.exe", "role": "extension host — IDENTITE DE LA FENETRE HOTE" },
+    { "pid": 16196, "ppid": 9284, "name": "Code.exe", "role": "processus principal, partage par TOUTES les fenetres" },
+    { "pid": 9284, "ppid": 5760, "name": "explorer.exe", "role": "shell Windows" },
+    { "pid": 5760, "ppid": null, "name": null, "role": "parent d'explorer.exe, deja mort au moment de la capture : il n'est PAS une cle de la table. La chaine s'y arrete naturellement — cas orphelin reel, non fabrique." }
+  ],
+
+  "extensionHosts": [
+    { "pid": 11172, "ppid": 16196, "createdAt": 1784926407215, "inCallerChain": true },
+    { "pid": 17544, "ppid": 16196, "createdAt": 1784876396237, "inCallerChain": false }
+  ],
+
+  "pidRecycledUnderTheSameParent": {
+    "pid": 16872,
+    "ppid": 16196,
+    "createdAt": 1784985073227,
+    "role": "Enfant du MEME processus principal 16196 que l'extension host, mais ne LONGTEMPS APRES l'ecriture des entrees de registre capturees dans tests/fixtures/registry/. C'est le contre-exemple exact de la garde par le seul `ppid` : son parent est celui qu'une entree du poste declare, et pourtant il n'a jamais ete cette fenetre. Seule sa date de creation le trahit.",
+    "howItWasIdentified": "Enumeration des enfants de 16196 triee par date de creation, puis choix du seul dont la creation est posterieure au `startedAt` des entrees heritees (1784930484603 pour 11172.json)."
+  },
+
+  "whatThisProves": [
+    "La chaine d'ancetres du claude.exe appelant traverse l'extension host PUIS le processus principal : la topologie de CLAUDE.md est confirmee sur piece.",
+    "Le claude.exe appelant n'est PAS un enfant direct de l'extension host (deux sauts intermediaires ici) : il faut remonter la chaine, pas se contenter du ppid.",
+    "Les deux extension hosts partagent le meme processus principal 16196. Un PID de processus principal ne discrimine donc AUCUNE fenetre (piege n.4) ; seul l'extHostPid le fait.",
+    "17544 est un extHostPid REEL hors chaine : il sert a eprouver l'isolation sur des PID mesures, pas inventes.",
+    "16872 demontre que la garde par le seul `ppid` se franchit : un processus quelconque, enfant du meme Code.exe, peut porter le parent qu'une entree declare. Seule la date de creation l'en distingue."
+  ]
+}

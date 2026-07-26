@@ -1,0 +1,37 @@
+{
+  // Configuration d'EMISSION de l'extension compagnon. Elle n'etend deliberement pas le
+  // tsconfig racine : celui-ci impose `module: NodeNext` et `verbatimModuleSyntax`, qui
+  // decrivent un paquet ESM, alors que le chargeur d'extensions de VSCode exige du
+  // CommonJS. Les deux configurations regardent donc les memes sources sous deux angles :
+  // la racine les VERIFIE en ESM (`npm run typecheck`), celle-ci les EMET en CommonJS.
+  //
+  // `tsc` seul, aucun bundler : le packaging VSIX releve du lot E.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "CommonJS",
+    // Resolution node10 : elle ignore le champ `type` des package.json, ce qui permet
+    // d'emettre le coeur — publie en ESM — sous forme CommonJS aux cotes de l'extension.
+    "moduleResolution": "Node",
+    // Implicite sous `NodeNext` cote verification, donc a redire explicitement ici : sans
+    // lui, les `import os from 'node:os'` du coeur ne compilent pas en CommonJS.
+    "esModuleInterop": true,
+    "types": ["node", "vscode"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    // `rootDir` remonte a `packages/` parce que le coeur est compile AVEC l'extension :
+    // il n'est pas recopie, ce sont ses vraies sources qui sont emises en CommonJS a cote.
+    // D'ou la profondeur de `main` dans le manifeste : ./dist/vscode/src/extension.js.
+    "rootDir": "..",
+    "outDir": "./dist",
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "../core/src/**/*.ts"]
+}

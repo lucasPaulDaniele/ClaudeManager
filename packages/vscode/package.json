@@ -1,0 +1,31 @@
+{
+  "name": "claudemanager-vscode",
+  "displayName": "ClaudeManager",
+  "description": "Rend la fenetre VSCode courante joignable par un agent, sans jamais voler le focus.",
+  "version": "0.2.0",
+  "publisher": "claudemanager",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lucasPaulDaniele/ClaudeManager.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/vscode/src/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "ClaudeManager publie l'etat de cette fenetre meme sans confiance accordee, en signalant isTrusted: false. Il n'execute aucun code du projet."
+    }
+  },
+  "devDependencies": {
+    "@types/vscode": "~1.90.0"
+  }
+}

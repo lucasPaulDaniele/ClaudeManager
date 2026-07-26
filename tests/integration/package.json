@@ -1,0 +1,6 @@
+{
+  "//": "MARQUEUR DE FORMAT, ce n'est pas un paquet npm — ni nom, ni version, ni workspace.",
+  "//2": "Il gouverne les fichiers EMIS dans dist/ : VSCode charge le module de test par `require`, il lui faut donc du CommonJS. Sans ce marqueur, le package.json le plus proche serait celui de la racine, qui declare `type: module`, et Node refuserait le code emis.",
+  "//3": "Les SOURCES, elles, sont gouvernees par src/package.json : voir le commentaire qui s'y trouve.",
+  "type": "commonjs"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@claudemanager/cli",
+  "version": "0.1.0",
+  "description": "Binaire cmgr : lecture du registre des fenetres pilotables et resolution de la fenetre hote. Sortie JSON, aucun reseau.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "cmgr": "./dist/cli/src/cmgr.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

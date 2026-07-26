@@ -1,0 +1,37 @@
+{
+  // Configuration d'EMISSION du binaire `cmgr`. Elle n'etend deliberement pas le tsconfig
+  // racine, qui verifie SANS emettre (`noEmit`) et sur un perimetre bien plus large.
+  //
+  // Meme montage que `packages/vscode/tsconfig.build.json` — `rootDir` remonte a
+  // `packages/` parce que le coeur est compile AVEC la CLI plutot que recopie —, mais SANS
+  // sa contorsion CommonJS : rien n'oblige ici a l'inverse de ce que le coeur declare. Un
+  // binaire Node se charge en ESM comme le reste du depot, `module: NodeNext` respecte donc
+  // le champ `type` de chaque paquet, et les specificateurs `.js` deja presents dans les
+  // sources du coeur sont exactement ceux qu'exige le chargeur de Node.
+  //
+  // D'ou la profondeur de `bin` dans le manifeste : ./dist/cli/src/cmgr.js.
+  //
+  // `tsc` seul, aucun bundler : c'est la regle du depot, et le packaging releve du lot E.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    // PAS de `vscode` : la CLI ne connait pas l'editeur, et cette absence le garantit a la
+    // compilation plutot que par une relecture.
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    "rootDir": "..",
+    "outDir": "./dist",
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "../core/src/**/*.ts"]
+}
