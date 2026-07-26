@@ -63,6 +63,12 @@ interface CapturedResponses {
   readonly health: CapturedExchange;
   readonly refusals: Readonly<Record<string, CapturedExchange>>;
   readonly openSeeded: { readonly status: number; readonly result: Record<string, unknown> };
+  /**
+   * La MEME route, telle qu'une fenetre PLUS ANCIENNE la rend — `firstTurn: 'process-started'`,
+   * `firstTurnVerified: false`. Elle n'est pas la pour l'archive : la fenetre et la CLI vivent
+   * dans deux processus mis a jour separement, et le client doit lire cette reponse sans casser.
+   */
+  readonly openSeededLegacy: { readonly status: number; readonly result: Record<string, unknown> };
   readonly openFallback: { readonly status: number; readonly result: Record<string, unknown> };
 }
 
@@ -110,6 +116,14 @@ export function healthPayloadFor(entry: WindowEntry): HealthPayload {
 export function seededResultFor(entry: WindowEntry): OpenConversationResult {
   return {
     ...CAPTURED.openSeeded.result,
+    extHostPid: entry.extHostPid,
+  } as unknown as OpenConversationResult;
+}
+
+/** Le MEME resultat, tel qu'une fenetre trop ancienne pour verifier le tour le rend. */
+export function legacySeededResultFor(entry: WindowEntry): OpenConversationResult {
+  return {
+    ...CAPTURED.openSeededLegacy.result,
     extHostPid: entry.extHostPid,
   } as unknown as OpenConversationResult;
 }

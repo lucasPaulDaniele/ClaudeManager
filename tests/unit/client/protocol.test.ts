@@ -215,11 +215,11 @@ describe('POST /conversations, tel qu une vraie fenetre le rend', () => {
 
     expect(conversation).toEqual({
       mode: 'seeded',
-      sessionId: 'ae19d1fc-9685-4542-ac59-b6f94d07bb88',
-      extHostPid: 22424,
+      sessionId: 'f0bd7609-81b9-414f-bb6b-af35237ef276',
+      extHostPid: 8188,
       humanActionRequired: false,
-      firstTurn: 'process-started',
-      firstTurnVerified: false,
+      firstTurn: 'transcript-observed',
+      firstTurnVerified: true,
       // Releve TEL QUEL : VSCode le PREFIXE, une comparaison par egalite ne matcherait jamais.
       panelViewType: 'mainThreadWebview-claudeVSCodePanel',
       degradedFrom: undefined,
@@ -242,16 +242,46 @@ describe('POST /conversations, tel qu une vraie fenetre le rend', () => {
     expect(conversation.degradedFrom).toEqual(CAPTURED.openFallback.result['degradedFrom']);
   });
 
-  it('REFUSE firstTurnVerified: true — un type litteral ne rompt rien a travers une socket', () => {
-    // Le champ est declare `false` cote extension, et son commentaire dit pourquoi : elargir la
-    // promesse doit ROMPRE ses consommateurs. A la compilation, un litteral s'en charge ; a
-    // travers une socket, seul un refus le fait.
+  it('relit le resultat CAPTURE d une fenetre PLUS ANCIENNE, sans casser', () => {
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // LE PIEGE QUE CE TEST GARDE, ET IL A ETE MESURE SUR CE LOT. Le validateur portait
+    // `if (raw['firstTurnVerified'] !== false) throw` : c'etait juste tant que la fenetre ne
+    // pouvait PAS verifier le tour. Depuis qu'elle le peut, ce refus rejetterait EXACTEMENT les
+    // ouvertures reussies — et la compilation resterait verte, ce validateur lisant un `unknown`
+    // venu d'une socket.
+    //
+    // La symetrie compte autant : une fenetre encore en 0.3.0 rend `process-started` /
+    // `firstTurnVerified: false`, et le client doit la lire TELLE QUELLE. Refuser transformerait
+    // un ecart de version en reponse illisible sur une ouverture parfaitement reussie.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    const conversation = readOpenedConversation({
+      status: 200,
+      body: JSON.stringify(CAPTURED.openSeededLegacy.result),
+    });
+
+    expect(conversation.mode).toBe('seeded');
+    expect(conversation.firstTurn).toBe('process-started');
+    expect(conversation.firstTurnVerified).toBe(false);
+  });
+
+  it('REFUSE firstTurnVerified: true EN REPLI — personne n a amorce cette session', () => {
+    // Le couple est le meme que celui de `sessionId` : le repli V5 pre-remplit un champ de
+    // saisie, il n'amorce AUCUNE session. Un tour « verifie » y designerait le tour de personne.
     const error = caught(() =>
-      readOpenedConversation(openBodyWith('openSeeded', { firstTurnVerified: true }))
+      readOpenedConversation(openBodyWith('openFallback', { firstTurnVerified: true }))
     );
 
     expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
     expect(error.details).toEqual({ route: 'POST /conversations', missing: 'firstTurnVerified' });
+  });
+
+  it('refuse un firstTurnVerified qui n est pas un booleen', () => {
+    for (const value of ['true', 1, null]) {
+      expect(
+        caught(() => readOpenedConversation(openBodyWith('openSeeded', { firstTurnVerified: value })))
+          .details
+      ).toEqual({ route: 'POST /conversations', missing: 'firstTurnVerified' });
+    }
   });
 
   it('EXIGE degradedFrom en repli : le repli s AJOUTE a l erreur, il ne la remplace pas (D18)', () => {

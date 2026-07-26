@@ -42,6 +42,23 @@ const temporaries: string[] = [];
 const SHELL_PID = 4242;
 const SEED_PID = 4343;
 
+/** L'identifiant que la preuve IMPOSE : c'est lui qui nomme le fichier de transcript. */
+const SESSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+/**
+ * Le repertoire de projet du CLI, tel qu'il le nomme — un slug de `cwd`.
+ *
+ * IL EST ARBITRAIRE ICI, ET C'EST TOUT LE POINT : le mecanisme ne le CALCULE jamais, il balaie
+ * les sous-repertoires et reconnait le fichier par son NOM. Un slug fantaisiste doit donc etre
+ * trouve tout aussi bien qu'un vrai — si un test venait a echouer parce que ce nom change, c'est
+ * que quelqu'un a reintroduit la derivation de slug que D7 ne garantit pas.
+ */
+const PROJECT_SLUG = 'un-slug-que-personne-ne-calcule';
+
+/** Ce que le fichier de transcript pese a son apparition, puis ce que la sortie du tour ajoute. */
+const TRANSCRIPT_AT_APPEARANCE = 'x'.repeat(64);
+const TURN_OUTPUT = 'y'.repeat(32);
+
 /** Table des processus ou le shell a bien engendre le tour 1 — le cas nominal. */
 function tableWithSeed(): ProcessSnapshot {
   return {
@@ -64,6 +81,14 @@ interface Trace {
   readonly lines: string[];
   readonly terminals: RecordedTerminal[];
   readonly sent: string[];
+  /**
+   * CE QUE LE TRANSCRIPT ETAIT A L'INSTANT EXACT DU `dispose()` — le garde-fou de ce correctif.
+   *
+   * Releve DANS le `dispose` du terminal, et pas apres coup : `dispose()` TUE le `claude` du
+   * tour 1, donc la seule question qui vaille est « le tour avait-il eu lieu quand on l'a tue ? ».
+   * Un ordre de traces ne repond pas a cette question — un fichier constate, oui.
+   */
+  transcriptAtDispose?: { readonly found: boolean; readonly bytes: number };
 }
 
 interface RecordedTerminal {
@@ -86,6 +111,27 @@ interface HarnessOptions {
   readonly deadPty?: boolean;
   /** Tables rendues successivement ; la derniere est repetee quand la liste s epuise. */
   readonly processTables?: readonly ProcessSnapshot[];
+  /**
+   * A QUELLE ATTENTE LE TRANSCRIPT APPARAIT, et a laquelle il GROSSIT.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LE FICHIER EST VRAIMENT ECRIT, DANS UN VRAI REPERTOIRE, et son apparition est branchee sur
+   * l'attente INJECTEE du mecanisme. C'est ce qui rend la preuve possible sans horloge : le
+   * fichier n'apparait QUE PARCE QUE le mecanisme a REELLEMENT patiente. Un code qui ne
+   * patienterait pas — celui d'avant ce correctif — ne le verrait jamais.
+   *
+   * Le compte est GLOBAL : `awaitSeedProcess` et l'attachement consomment aussi des attentes.
+   * Au cas nominal ils n'en consomment aucune (le processus est trouve a la premiere lecture,
+   * l'onglet au premier sondage), d'ou les valeurs par defaut ; les tests qui font patienter
+   * ces etapes passent leurs propres chiffres.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  readonly transcriptAppearsAfterWaits?: number;
+  readonly transcriptGrowsAfterWaits?: number;
+  /** Le transcript n'apparait JAMAIS : le tour n'a pas eu lieu. */
+  readonly withoutTranscript?: boolean;
+  /** Le fichier est deja la AVANT l'envoi — pour les tests qui n'injectent aucune attente. */
+  readonly transcriptAlreadyThere?: boolean;
 }
 
 interface Harness {
@@ -93,7 +139,20 @@ interface Harness {
   readonly editor: EditorPort;
   readonly promptDirectory: string;
   readonly binDirectory: string;
+  /** La racine de projets balayee par le mecanisme — un vrai repertoire temporaire. */
+  readonly transcriptRoot: string;
+  /** Le fichier que le CLI ecrirait : `<racine>/<slug>/<sessionId>.jsonl`. */
+  readonly transcriptFile: string;
   open(prompt: string): Promise<OpenConversationResult>;
+}
+
+/** Ce que le harnais voit du transcript a un instant donne — jamais son contenu. */
+function lookAtTranscript(file: string): { readonly found: boolean; readonly bytes: number } {
+  try {
+    return { found: true, bytes: fs.statSync(file).size };
+  } catch {
+    return { found: false, bytes: 0 };
+  }
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -108,10 +167,34 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   if (options.withoutClaude !== true) fs.writeFileSync(path.join(binDirectory, 'claude.exe'), '');
   if (options.withoutShell !== true) fs.writeFileSync(path.join(binDirectory, 'pwsh.exe'), '');
 
+  // La racine de projets, et le repertoire de slug SOUS lequel le fichier vivra : le
+  // repertoire existe, le fichier n'existe pas encore — l'etat exact d'avant l'envoi.
+  const transcriptRoot = path.join(root, 'projects');
+  const transcriptFile = path.join(transcriptRoot, PROJECT_SLUG, `${SESSION_ID}.jsonl`);
+  fs.mkdirSync(path.dirname(transcriptFile), { recursive: true });
+  if (options.transcriptAlreadyThere === true) {
+    fs.writeFileSync(transcriptFile, TRANSCRIPT_AT_APPEARANCE, 'utf8');
+  }
+
   const trace: Trace = { calls: [], lines: [], terminals: [], sent: [] };
   const tabs = options.tabs ?? [[], [{ viewType: PANEL_VIEW_TYPE, label: 'ouverte' }]];
   let releve = 0;
   let tableReads = 0;
+  let waits = 0;
+
+  /** L'attente INJECTEE : elle ne patiente pas, elle fait avancer le monde exterieur. */
+  const wait = (): Promise<void> => {
+    waits += 1;
+    if (options.withoutTranscript !== true) {
+      if (waits === (options.transcriptAppearsAfterWaits ?? 1)) {
+        fs.writeFileSync(transcriptFile, TRANSCRIPT_AT_APPEARANCE, 'utf8');
+      }
+      if (waits === (options.transcriptGrowsAfterWaits ?? 2)) {
+        fs.appendFileSync(transcriptFile, TURN_OUTPUT, 'utf8');
+      }
+    }
+    return Promise.resolve();
+  };
 
   const extensionState = options.extension ?? 'active';
   const handle: ClaudeExtensionHandle = {
@@ -149,6 +232,8 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         },
         dispose: () => {
           trace.calls.push('dispose');
+          // RELEVE ICI, ET NULLE PART AILLEURS : c'est cet instant qui tue le tour 1.
+          trace.transcriptAtDispose = lookAtTranscript(transcriptFile);
           recorded.disposed = true;
         },
         processId: () => Promise.resolve(options.deadPty === true ? undefined : SHELL_PID),
@@ -166,6 +251,8 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     editor,
     promptDirectory,
     binDirectory,
+    transcriptRoot,
+    transcriptFile,
     open: (prompt) =>
       openConversation(
         { prompt },
@@ -176,10 +263,12 @@ function makeHarness(options: HarnessOptions = {}): Harness {
           log: (message) => trace.lines.push(message),
           platform: 'win32',
           environment: { PATH: binDirectory, CLAUDECODE: '1', CLAUDE_PID: '42', HOME: 'c:\\users\\x' },
-          // On n'attend pas reellement : ce qu'il faut prouver est que l'echelle est BORNEE
-          // et que la commande est re-emise, pas la patience du minuteur.
-          wait: () => Promise.resolve(),
-          newSessionId: () => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+          // On n'attend pas reellement : ce qu'il faut prouver est que les echelles sont
+          // BORNEES, que la commande est re-emise et que le transcript est ATTENDU — pas la
+          // patience du minuteur.
+          wait,
+          transcriptProjectRoots: [transcriptRoot],
+          newSessionId: () => SESSION_ID,
           readProcessTable: () => {
             const tables = options.processTables ?? [tableWithSeed()];
             const snapshot = tables[Math.min(tableReads, tables.length - 1)] ?? tableWithSeed();
@@ -396,11 +485,12 @@ describe('etapes 3 a 6 — la voie nominale', () => {
 });
 
 describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-07-26)', () => {
-  it('ATTEND le processus amorce AVANT d attacher — sinon on tue le tour a sa naissance', async () => {
-    // LE GARDE-FOU DE NON-REGRESSION. Falsification jouee en vraie fenetre : `editor.open`
-    // ouvre un panneau MEME pour une session jamais amorcee. Le diff d'onglets aboutissait
-    // donc en moins de 200 ms, `dispose()` suivait, et la suppression du terminal TUE le
-    // `claude` du tour 1 : le tour etait interrompu et la route rendait un succes.
+  /**
+   * CETTE ETAPE NE PORTE PLUS LA PREUVE DU TOUR — c'est l'etape 6 qui la porte — et elle est
+   * CONSERVEE pour ce qu'elle discrimine, elle seule : « rien n'a demarre du tout » se distingue
+   * de « demarre, mais aucun tour ». Deux causes, deux remediations, deux erreurs nommees.
+   */
+  it('ATTEND le processus amorce AVANT d attacher', async () => {
     const harness = makeHarness();
 
     const result = await harness.open('x');
@@ -410,18 +500,23 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
     expect(order.indexOf('readProcessTable')).toBeLessThan(
       order.indexOf(`executeCommand(${CLAUDE_OPEN_COMMAND}, sessionId)`)
     );
-    expect(result.firstTurn).toBe('process-started');
+    expect(result.firstTurn).toBe('transcript-observed');
   });
 
   it('patiente tant que le shell n a rien engendre, puis repart des qu il l a fait', async () => {
     const harness = makeHarness({
       processTables: [tableWithoutSeed(), tableWithoutSeed(), tableWithSeed()],
+      // DEUX ATTENTES SONT CONSOMMEES ICI, avant meme que le transcript ne soit attendu : le
+      // compte des attentes est global, et le decaler est plus honnete que de le cacher.
+      transcriptAppearsAfterWaits: 3,
+      transcriptGrowsAfterWaits: 4,
     });
 
     const result = await harness.open('x');
 
     expect(result.mode).toBe('seeded');
     expect(harness.trace.calls.filter((call) => call === 'readProcessTable')).toHaveLength(3);
+    expect(harness.trace.transcriptAtDispose?.found).toBe(true);
   });
 
   it('NOMME l echec quand rien ne demarre — c est le signal des DEUX PORTES du CLI', async () => {
@@ -458,34 +553,167 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
   });
 });
 
-describe("ce que la reponse PROMET — garde-fou du defaut mesure a la reprise 1", () => {
+describe('etape 6 — LE TOUR 1 A EU LIEU (defaut de recette du 2026-07-26)', () => {
   /**
-   * LE DEFAUT, ET IL ETAIT SILENCIEUX. La route rendait `mode: 'nominal'`,
-   * `humanActionRequired: false`, sans autre qualificatif — c'est-a-dire « la conversation est
-   * ouverte et le tour 1 est joue ». Or la mesure du 2026-07-26 (banc de reprise, trois
-   * variantes) montre qu'un `claude` lance avec la ligne EXACTE attendue — binaire du bundle,
-   * `--session-id`, prompt intact, verifie sur `Win32_Process.CommandLine` — reste bloque
-   * **87 secondes** dans `showSetupScreens()` sans ecrire une seule ligne de transcript, et
-   * cela **quel que soit le workspace** (temporaire neuf comme racine du depot deja connue du
-   * CLI). Le `mode` recouvrait donc une conversation potentiellement VIDE.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LE GARDE-FOU DU DEFAUT, ET IL PORTE SUR UN ORDONNANCEMENT.
    *
-   * `awaitSeedProcess` ne peut pas trancher, et ce n'est pas faute de finesse : les deux cas
-   * sont le MEME processus, `claude.exe`, avec la MEME ligne de commande. Renforcer
-   * l'observation par l'identite du processus n'y changerait rien — c'est mesure.
+   * CE QUI ETAIT CASSE : `dispose()` tombait 2,1 s apres l'envoi de la ligne — mesure en
+   * recette, journal de l'extension a l'appui — alors que le `claude` du tour 1 en etait encore
+   * a son demarrage. Or `dispose()` TUE ce processus (ADR-002). Le panneau s'attachait sur une
+   * session VIDE, aucun transcript n'etait ecrit, et la route rendait `HTTP 200` en 2 s.
    *
-   * La reponse dit donc desormais ce qu'elle a etabli, et rien de plus.
+   * CE QUE CE TEST OBSERVE, ET POURQUOI CETTE FORME : il ne compare pas des positions dans un
+   * journal de traces — il releve, A L'INSTANT MEME DU `dispose()`, si le transcript de la
+   * session existait. C'est la seule question qui decide du sort du tour. Le fichier, lui,
+   * n'apparait que parce que le mecanisme a REELLEMENT patiente : il est ecrit depuis l'attente
+   * injectee. Un mecanisme qui n'attend pas ne peut donc pas le voir.
+   *
+   * PREUVE DU FAILS-BEFORE : joue contre le `conversations.ts` d'avant le correctif, ce test
+   * echoue sur `transcriptAtDispose.found` — `false`, aucun fichier n'existait quand le terminal
+   * a ete supprime.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
    */
-  it('ne pretend JAMAIS que le tour 1 a ete joue', async () => {
+  it('ne supprime JAMAIS le terminal avant que le transcript de la session n existe', async () => {
     const harness = makeHarness();
 
     const result = await harness.open('x');
 
-    // `'nominal'` se lisait « tout va bien ». `'seeded'` dit ce qui a eu lieu : une session
-    // amorcee, un panneau attache.
+    expect(harness.trace.transcriptAtDispose?.found).toBe(true);
+    expect(result.firstTurn).toBe('transcript-observed');
+    expect(result.firstTurnVerified).toBe(true);
+  });
+
+  it('ne supprime pas le terminal avant que la SORTIE du tour n ait ete ecrite', async () => {
+    // MESURE DU 2026-07-26 : le transcript apparait a +2 533 ms avec le prompt et SANS la
+    // reponse, qui n'arrive qu'a +6 417 ms. Supprimer a l'apparition tuerait la reponse en vol —
+    // le defaut d'origine, reproduit un etage plus haut.
+    const harness = makeHarness();
+
+    await harness.open('x');
+
+    expect(harness.trace.transcriptAtDispose?.bytes).toBe(
+      TRANSCRIPT_AT_APPEARANCE.length + TURN_OUTPUT.length
+    );
+  });
+
+  it('ATTEND le transcript avant d attacher — et l attente est branchee sur l attente injectee', async () => {
+    const harness = makeHarness();
+
+    await harness.open('x');
+
+    const order = harness.trace.calls;
+    // Le journal dit l'ordre ; le releve ci-dessus dit le FAIT. Les deux, pas l'un ou l'autre.
+    const observed = harness.trace.lines.findIndex((line) => line.includes('transcript appeared'));
+    expect(observed).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('sendText')).toBeLessThan(order.indexOf('dispose'));
+    expect(order.indexOf(`executeCommand(${CLAUDE_OPEN_COMMAND}, sessionId)`)).toBeGreaterThan(
+      order.indexOf('readProcessTable')
+    );
+  });
+
+  it('trouve le fichier PAR SON NOM, sous un slug que personne ne calcule', async () => {
+    // D7 — la derivation du slug depuis le `cwd` n'est pas contractuelle, et D17 laisse la
+    // racine en `— non verifie`. Le NOM du fichier, lui, est l'identifiant que NOUS imposons.
+    const harness = makeHarness();
+
+    const result = await harness.open('x');
+
+    expect(result.firstTurnVerified).toBe(true);
+    expect(harness.transcriptFile).toContain(PROJECT_SLUG);
+    expect(fs.existsSync(harness.transcriptFile)).toBe(true);
+  });
+
+  it('NOMME l echec quand aucun transcript n apparait — et supprime le terminal quand meme', async () => {
+    const harness = makeHarness({ withoutTranscript: true });
+
+    const error = await refusal(harness);
+
+    expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND);
+    // 45 s d'echelle a 500 ms de sondage : l'attente est BORNEE, et le detail le dit.
+    expect(isClaudeManagerError(error) && error.details).toMatchObject({
+      waitedMs: 45_000,
+      rootsScanned: 1,
+    });
+    expect(harness.trace.terminals[0]?.disposed).toBe(true);
+    // AUCUN panneau n'est attache sur une session sans tour : ce serait le panneau vide de la
+    // recette, avec une erreur en plus.
+    expect(harness.trace.calls.some((call) => call.includes('sessionId'))).toBe(false);
+  });
+
+  it('ne rend AUCUN chemin dans l erreur — le depot est public, ces racines portent le compte', async () => {
+    const harness = makeHarness({ withoutTranscript: true });
+
+    const error = await refusal(harness);
+
+    // CONSTATE D'ABORD QU'IL Y A UNE ERREUR : sans cette ligne, le test passerait tout aussi
+    // bien sur un mecanisme qui n'echoue pas du tout — c'est-a-dire sans rien eprouver.
+    expect(isClaudeManagerError(error)).toBe(true);
+    const serialized = JSON.stringify(isClaudeManagerError(error) ? error.toJSON() : {});
+    expect(serialized).not.toContain('cmgr-open-');
+    expect(serialized).not.toContain(PROJECT_SLUG);
+    expect(serialized).not.toContain(SESSION_ID);
+  });
+
+  it('ne bascule JAMAIS en repli V5 quand le tour n a pas eu lieu — une session tourne peut-etre', async () => {
+    const harness = makeHarness({ withoutTranscript: true });
+
+    await refusal(harness);
+
+    expect(harness.trace.calls).not.toContain(`executeCommand(${CLAUDE_OPEN_COMMAND}, null)`);
+    expect(
+      harness.trace.lines.some((line) => line.includes('a claude session may already be running'))
+    ).toBe(true);
+  });
+
+  it('DIT que la sortie du tour n a pas fini de s ecrire, et ouvre quand meme', async () => {
+    // NI ERREUR NI SILENCE : le tour est ENREGISTRE, seule sa sortie n'est pas retombee dans le
+    // temps accorde. Refuser ici reviendrait a rejeter une conversation ouverte parce que le
+    // service a ete lent.
+    const harness = makeHarness({ transcriptAppearsAfterWaits: 1, transcriptGrowsAfterWaits: 0 });
+
+    const result = await harness.open('x');
+
+    expect(result.firstTurnVerified).toBe(true);
+    expect(harness.trace.lines.some((line) => line.includes('had not settled'))).toBe(true);
+    expect(harness.trace.transcriptAtDispose?.bytes).toBe(TRANSCRIPT_AT_APPEARANCE.length);
+  });
+
+  it('n interprete rien du fichier : un transcript VIDE compte comme un tour enregistre', async () => {
+    // Lire le contenu est la frontiere du lot D. Ce que le mecanisme affirme est l'EXISTENCE.
+    const harness = makeHarness({ withoutTranscript: true });
+    fs.writeFileSync(harness.transcriptFile, '', 'utf8');
+
+    const result = await harness.open('x');
+
+    expect(result.firstTurnVerified).toBe(true);
+  });
+});
+
+describe("ce que la reponse PROMET — trois etats mesures, et pas un de plus", () => {
+  /**
+   * L'HISTOIRE DE CE CHAMP, PARCE QU'ELLE EXPLIQUE SA FORME.
+   *
+   * La route rendait d'abord `mode: 'nominal'`, `humanActionRequired: false`, sans autre
+   * qualificatif — c'est-a-dire, a la lecture, « la conversation est ouverte et le tour 1 est
+   * joue ». C'etait FAUX : un `claude` lance avec la ligne EXACTE attendue peut rester bloque a
+   * une porte du CLI sans ecrire une ligne de transcript (mesure, `showSetupScreens`). La reponse
+   * s'est donc mise a porter `firstTurnVerified: false` — un aveu, faute de pouvoir verifier.
+   *
+   * ELLE LE VERIFIE DESORMAIS, et c'est le correctif du 2026-07-26 : le mecanisme constate
+   * l'existence du transcript avant de rendre la main. `false` en voie amorcee n'est plus un etat
+   * atteignable — il ne subsiste qu'en repli, et cote CLIENT pour lire une fenetre plus ancienne.
+   */
+  it('AFFIRME le tour 1 quand elle l a constate, et jamais autrement', async () => {
+    const harness = makeHarness();
+
+    const result = await harness.open('x');
+
+    // `'nominal'` se lisait « tout va bien ». `'seeded'` dit la VOIE ; le tour, lui, est dit par
+    // les deux champs suivants — jamais deduit du mode.
     expect(result.mode).toBe('seeded');
-    expect(result.firstTurn).toBe('process-started');
-    // LE CHAMP QUI PORTE LA LIMITE, pour que l'appelant n'ait pas a la deduire d'une absence.
-    expect(result.firstTurnVerified).toBe(false);
+    expect(result.firstTurn).toBe('transcript-observed');
+    expect(result.firstTurnVerified).toBe(true);
   });
 
   it('ne qualifie AUCUN tour en repli : il n y a pas de session amorcee', async () => {
@@ -620,36 +848,52 @@ describe('ce que le mecanisme prend du PROCESSUS quand on ne lui dit rien', () =
     ).rejects.toMatchObject({ code: ERROR_CODES.WORKSPACE_NOT_TRUSTED });
   });
 
-  it('attend REELLEMENT entre deux sondages quand aucune attente n est injectee', async () => {
-    // Un releve vide de plus qu'au cas nominal : le premier sondage manque le panneau, et
-    // c'est le minuteur reel qui porte l'echelon suivant.
-    const harness = makeHarness({
-      tabs: [[], [], [{ viewType: PANEL_VIEW_TYPE, label: 'ouverte' }]],
-    });
-    const started = Date.now();
+  it(
+    'attend REELLEMENT entre deux sondages quand aucune attente n est injectee',
+    async () => {
+      // Un releve vide de plus qu'au cas nominal : le premier sondage manque le panneau, et
+      // c'est le minuteur reel qui porte l'echelon suivant. Le transcript, lui, est deja la et
+      // GROSSIT pour de vrai a 300 ms — l'attente de la sortie du tour est donc portee par le
+      // minuteur reel elle aussi, ce qui explique les ~3,5 s de ce test (3 s de silence exige).
+      const harness = makeHarness({
+        tabs: [[], [], [{ viewType: PANEL_VIEW_TYPE, label: 'ouverte' }]],
+        transcriptAlreadyThere: true,
+      });
+      const grow = setTimeout(() => fs.appendFileSync(harness.transcriptFile, TURN_OUTPUT), 300);
+      const started = Date.now();
 
-    const result = await openConversation(
-      { prompt: 'x' },
-      {
-        editor: harness.editor,
-        extHostPid: 11172,
-        promptDirectory: harness.promptDirectory,
-        log: (message) => harness.trace.lines.push(message),
-        platform: 'win32',
-        environment: { PATH: harness.binDirectory },
-        // L'inventaire des processus est injecte — sinon ce test lancerait huit
-        // `Get-CimInstance` reels. C'est l'ATTENTE qu'il eprouve, pas l'inventaire.
-        readProcessTable: () => Promise.resolve(tableWithSeed()),
-      }
-    );
+      const result = await openConversation(
+        { prompt: 'x' },
+        {
+          editor: harness.editor,
+          extHostPid: 11172,
+          promptDirectory: harness.promptDirectory,
+          log: (message) => harness.trace.lines.push(message),
+          platform: 'win32',
+          environment: { PATH: harness.binDirectory },
+          transcriptProjectRoots: [harness.transcriptRoot],
+          // LE MEME identifiant que celui du fichier prepare : c'est son NOM que le mecanisme
+          // cherche. Sans lui, `randomUUID` designerait un transcript que personne n'a ecrit.
+          newSessionId: () => SESSION_ID,
+          // L'inventaire des processus est injecte — sinon ce test lancerait huit
+          // `Get-CimInstance` reels. C'est l'ATTENTE qu'il eprouve, pas l'inventaire.
+          readProcessTable: () => Promise.resolve(tableWithSeed()),
+        }
+      );
+      clearTimeout(grow);
 
-    expect(result.mode).toBe('seeded');
-    // La granularite du sondage est de 250 ms : au moins une attente a eu lieu.
-    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
-  });
+      expect(result.mode).toBe('seeded');
+      // Le silence exige de la sortie du tour est de 3 s : le minuteur REEL les a portees.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(3_000);
+      expect(harness.trace.lines.some((line) => line.includes('turn output settled'))).toBe(true);
+    },
+    // L'echelle reelle de ce test se compte en secondes, par construction : c'est le minuteur
+    // du systeme qu'il eprouve. Le delai par defaut de vitest (5 s) ne suffirait pas.
+    20_000
+  );
 
   it('lit `Path` quand Windows ne rend pas `PATH` — la casse n est pas garantie', async () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ transcriptAlreadyThere: true });
 
     const result = await openConversation(
       { prompt: 'x' },
@@ -660,12 +904,39 @@ describe('ce que le mecanisme prend du PROCESSUS quand on ne lui dit rien', () =
         log: () => undefined,
         platform: 'win32',
         environment: { Path: harness.binDirectory },
+        transcriptProjectRoots: [harness.transcriptRoot],
+        newSessionId: () => SESSION_ID,
         wait: () => Promise.resolve(),
         readProcessTable: () => Promise.resolve(tableWithSeed()),
       }
     );
 
     expect(result.mode).toBe('seeded');
+  });
+
+  it('cherche sous les racines de projets du CLI quand personne ne les lui donne', async () => {
+    // Le defaut est `<HOME>/.claude/projects`, plus la racine de `CLAUDE_CONFIG_DIR` si elle est
+    // posee (D17). AUCUN transcript n'y sera jamais ecrit pour cette session inventee : ce que ce
+    // test etablit est que l'absence de racine injectee ne fait pas planter le mecanisme, et
+    // qu'elle aboutit a l'erreur NOMMEE — pas a un succes.
+    const harness = makeHarness();
+
+    await expect(
+      openConversation(
+        { prompt: 'x' },
+        {
+          editor: harness.editor,
+          extHostPid: 11172,
+          promptDirectory: harness.promptDirectory,
+          log: () => undefined,
+          platform: 'win32',
+          environment: { PATH: harness.binDirectory },
+          wait: () => Promise.resolve(),
+          newSessionId: () => 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          readProcessTable: () => Promise.resolve(tableWithSeed()),
+        }
+      )
+    ).rejects.toMatchObject({ code: ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND });
   });
 });
 
@@ -730,7 +1001,7 @@ describe('hygiene et concurrence', () => {
       await new Promise((done) => setTimeout(done, 5));
       order.push(`fin ${label}`);
       return { ok: true, mode: 'seeded', sessionId: label, extHostPid: 1, humanActionRequired: false,
-        firstTurn: 'process-started', firstTurnVerified: false };
+        firstTurn: 'transcript-observed', firstTurnVerified: true };
     });
 
     await Promise.all([serialized('a'), serialized('b')]);
@@ -745,7 +1016,7 @@ describe('hygiene et concurrence', () => {
       return label === 'ko'
         ? Promise.reject(new Error('ko'))
         : Promise.resolve({ ok: true, mode: 'seeded', sessionId: label, extHostPid: 1, humanActionRequired: false,
-        firstTurn: 'process-started', firstTurnVerified: false } as OpenConversationResult);
+        firstTurn: 'transcript-observed', firstTurnVerified: true } as OpenConversationResult);
     });
 
     await expect(serialized('ko')).rejects.toThrow('ko');

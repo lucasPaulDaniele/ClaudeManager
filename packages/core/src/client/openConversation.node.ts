@@ -72,26 +72,32 @@ export const HEALTH_TIMEOUT_MS = 5_000;
 /**
  * DELAI DE L'OUVERTURE — long, borne, et calcule sur ce que la FENETRE se donne a elle-meme.
  *
- * La route d'ouverture borne son propre travail (`packages/vscode/src/conversations.ts`) :
- *   - echelle d'attachement : 2 + 4 + 8 + 16 + 32 = **62 s** ;
+ * La route d'ouverture borne son propre travail (`packages/vscode/src/conversations.ts`), et le
+ * calcul est REFAIT ici a chaque fois qu'une de ses echelles change — sans quoi la CLI
+ * abandonnerait pendant que la fenetre travaille encore, ce qui est le pire des mensonges :
  *   - attente du processus amorce : 8 lectures de table a 0,7–1,3 s, plus 8 respirations de
- *     250 ms, soit **~12 s** au pire.
- * Pire cas nominal de la fenetre : **~75 s**. Mesure du 2026-07-26 : une ouverture reelle a
- * pris **1 743 ms**.
+ *     250 ms, soit **~12 s** au pire ;
+ *   - apparition du transcript : **45 s** — mesure du 2026-07-26, elle survient a 2,5 s ;
+ *   - grace accordee a la sortie du tour : **30 s** apres l'apparition — mesure, elle retombe
+ *     ~9 s apres l'envoi ;
+ *   - echelle d'attachement : 2 + 4 + 8 + 16 + 32 = **62 s**.
+ * Pire cas de la fenetre : **~149 s**. Les deux premieres bornes ne s'additionnent pas avec la
+ * suite quand elles echouent — une absence de transcript sort par une erreur nommee, sans
+ * attacher quoi que ce soit.
  *
- * TROIS FOIS CE PIRE CAS, ET LE FACTEUR EST MOTIVE : les ouvertures d'une meme fenetre sont
- * SERIALISEES (`serializeOpenings`). Une demande peut donc attendre derriere une autre sans
- * que rien ne soit en panne. 180 s couvrent une file d'un rang ; elles ne couvrent pas une
- * file sans fin, et c'est voulu.
+ * DEUX FOIS CE PIRE CAS, ET LE FACTEUR EST MOTIVE : les ouvertures d'une meme fenetre sont
+ * SERIALISEES (`serializeOpenings`). Une demande peut donc attendre derriere une AUTRE, chacune
+ * a sa borne. 300 s couvrent une file d'un rang ; elles ne couvrent pas une file sans fin, et
+ * c'est voulu. Le facteur etait de trois quand le pire cas de la fenetre etait de 75 s ; le
+ * produit, lui, ne doit pas depasser le `requestTimeout` par defaut de Node (300 s), au-dela
+ * duquel le serveur detruirait la socket sans qu'aucun des deux delais ne soit en cause.
  *
  * POURQUOI PAS D'ATTENTE INFINIE, alors que la fenetre se borne deja : parce que ce n'est pas
  * la fenetre qu'on attend, c'est une SOCKET. Un occupant silencieux du port ne se borne pas,
  * lui. Et pourquoi pas moins : abandonner une ouverture NE L'ANNULE PAS — aucun canal ne
- * permet d'interrompre un tour en cours (decision de perimetre). Un delai trop court ferait
- * donc rendre un echec pendant qu'une vraie conversation s'ouvre, ce qui est le pire des deux
- * mensonges.
+ * permet d'interrompre un tour en cours (decision de perimetre).
  */
-export const OPEN_TIMEOUT_MS = 180_000;
+export const OPEN_TIMEOUT_MS = 300_000;
 
 /**
  * Ce que le client REMPLIT des qu'il le sait, pour que l'appelant en dispose MEME en echec.

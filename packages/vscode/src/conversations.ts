@@ -11,9 +11,17 @@
  *   4. terminal MASQUE (`hideFromUser: true`, `show()` JAMAIS appele), `cwd` = un dossier de
  *      travail de CETTE fenetre, environnement herite NEUTRALISE ;
  *   5. une seule ligne, envoyee par `sendText` — forme L2 (ADR-004) ;
- *   6. attachement par `claude-vscode.editor.open(<uuid>)`, prouve par DIFF DES ONGLETS ;
- *   7. `terminal.dispose()` — le `claude` du panneau survit, l'onglet reste intact ;
- *   8. repli V5, uniquement depuis les etapes qui precedent la creation du terminal.
+ *   6. LE TOUR 1 A REELLEMENT EU LIEU — le transcript de la session existe sur le disque ;
+ *   7. attachement par `claude-vscode.editor.open(<uuid>)` ;
+ *   8. `terminal.dispose()` — le `claude` du panneau survit, l'onglet reste intact ;
+ *   9. repli V5, uniquement depuis les etapes qui precedent la creation du terminal.
+ *
+ * L'ETAPE 6 EST UNE CORRECTION, PAS UN AJOUT DE CONFORT (defaut de recette du 2026-07-26) :
+ * `dispose()` TUE le `claude` du tour 1, et il intervenait 2,1 s apres l'envoi — avant que le
+ * CLI n'ait rien produit. Le panneau s'attachait sur une session vide et la route rendait un
+ * succes complet. Aucun des deux faits qu'elle observait auparavant ne pouvait s'y substituer,
+ * c'est mesure : « un enfant du shell existe » est vrai des 2 s, et « un onglet est apparu »
+ * est vrai MEME pour une session jamais amorcee (D19).
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────
  * AUCUN IMPORT DE `vscode`, et c'est ce qui rend l'ORDRE ci-dessus verifiable sans editeur.
@@ -34,6 +42,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import {
   assertCommandLineFits,
@@ -61,6 +70,7 @@ import {
   splitPathVariable,
   type PanelTabLike,
 } from './seed.js';
+import { probeSessionTranscript, transcriptProjectRoots } from './transcript.js';
 
 /** L'extension Claude Code, vue par le mecanisme. */
 export interface ClaudeExtensionHandle {
@@ -156,6 +166,67 @@ const TAB_POLL_INTERVAL_MS = 250;
  */
 const SEED_PROCESS_ATTEMPTS = 8;
 
+/** Granularite du sondage du transcript — deux passages par seconde. */
+const TRANSCRIPT_POLL_INTERVAL_MS = 500;
+
+/**
+ * ATTENTE DE L'APPARITION DU TRANSCRIPT — bornee, et le chiffre est MESURE.
+ *
+ * MESURE DU 2026-07-26, sur le poste de reference, dossier dont la confiance du CLI etait deja
+ * accordee : la ligne est envoyee a t0, `<sessionId>.jsonl` apparait a **+2 533 ms**. Le repere
+ * annonce au cahier des charges — « moins de 10 s » — est donc large.
+ *
+ * 45 s, soit dix-huit fois la mesure, et la dissymetrie des couts commande cette marge : trop
+ * court, on emet une erreur nommee ET on supprime le terminal, donc on TUE un tour parfaitement
+ * sain — un demarrage a froid du CLI (265 Mo de binaire, antivirus en embuscade) coute
+ * facilement quelques secondes de plus. Trop long, on retarde une erreur de diagnostic.
+ */
+const TRANSCRIPT_APPEARANCE_BUDGET_MS = 45_000;
+
+/**
+ * GRACE ACCORDEE A LA SORTIE DU TOUR — et voici pourquoi elle N'EST PAS FACULTATIVE.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * L'APPARITION DU FICHIER NE PROUVE PAS QUE LE TOUR SOIT ALLE A SON TERME, et c'est mesure le
+ * 2026-07-26 sur ce poste, a la milliseconde :
+ *
+ *   +2 533 ms  le transcript apparait — 8 enregistrements : `mode`, `permission-mode`,
+ *              `file-history-snapshot`, `user`, `attachment`. LE PROMPT EST ENREGISTRE,
+ *              LA REPONSE N'EXISTE PAS ENCORE.
+ *   +6 417 ms  la reponse est ecrite — 11 enregistrements, `assistant` parmi eux.
+ *              Journal du CLI a l'appui : `[engine] turn 1 end (… api=5566ms stop=end_turn)`.
+ *
+ * Supprimer le terminal a l'apparition tuerait donc la reponse en vol : le panneau porterait le
+ * prompt et rien d'autre. Ce serait le defaut de recette du 2026-07-26 reproduit un etage plus
+ * haut — un fait qui prouve un DEBUT pris pour un fait qui prouve le TOUR.
+ *
+ * ET LA TAILLE SEULE NE SUFFIT PAS DAVANTAGE : entre +2 533 ms et +6 417 ms, le fichier N'A PAS
+ * CROIT. Une simple attente de stabilite aurait conclu « c'est fini » au bout de 4 s d'immobilite
+ * qui etaient, en realite, l'attente de la premiere reponse du service. On exige donc une
+ * CROISSANCE depuis l'apparition, PUIS un silence — dans cet ordre, et l'ordre est le fond du
+ * raisonnement.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * CETTE PHASE N'EST JAMAIS UNE ERREUR, et c'est deliberе : le tour est deja ENREGISTRE quand
+ * elle commence. Son epuisement se journalise — « la sortie n'etait pas retombee » — et
+ * l'ouverture reste un succes. Nommer un echec ici reviendrait a refuser une conversation
+ * ouverte parce que le service a ete lent.
+ *
+ * PLAFOND : 30 s apres l'apparition. Au-dela, on assume la troncature plutot que de tenir la
+ * route indefiniment ; la voie qui rend la REPONSE du tour 1 a l'appelant est
+ * `cmgr open --wait`, et elle appartient au lot D, qui LIT le transcript.
+ */
+const TURN_OUTPUT_BUDGET_MS = 30_000;
+
+/**
+ * Silence exige apres la derniere croissance pour tenir la sortie du tour pour retombee.
+ *
+ * La reponse mesuree est arrivee entre deux sondages — 8 enregistrements, puis 11 d'un coup —,
+ * mais rien ne garantit qu'un titre, un enregistrement `system` ou une sortie plus longue
+ * n'arrivent en plusieurs ecritures. 3 s de silence, soit six sondages sans le moindre octet.
+ */
+const TURN_OUTPUT_QUIET_MS = 3_000;
+
 /**
  * Age au-dela duquel un fichier de prompt abandonne est efface au passage.
  *
@@ -179,28 +250,31 @@ export interface OpenConversationRequest {
  * QUEL CHEMIN A ETE PRIS — et rien de plus.
  *
  * `'seeded'` A REMPLACE `'nominal'`, ET CE N'EST PAS COSMETIQUE. « Nominal » se lit
- * naturellement « tout s'est bien passe », c'est-a-dire « la conversation est ouverte et le
- * tour 1 est joue ». Or c'est FAUX : ce que ce mode etablit est qu'une session a ete AMORCEE
- * et qu'un panneau s'est attache — jamais que le tour ait ete joue (voir `firstTurnVerified`).
- * Un nom qui laisse croire davantage que ce qui est mesure est une degradation silencieuse a
- * lui tout seul.
+ * naturellement « tout s'est bien passe » ; le mode, lui, ne dit QUE la voie empruntee. Ce que
+ * l'ouverture a etabli du tour 1 est porte par `firstTurn` et `firstTurnVerified`, jamais
+ * deduit du mode.
  */
 export type OpenMode = 'seeded' | 'fallback';
 
 /**
  * CE QUE L'OUVERTURE A REELLEMENT ETABLI DU TOUR 1.
  *
- * `'process-started'` — un vrai processus a ete engendre par le shell d'amorcage, constate
- * dans la table des processus. **Cela ne dit RIEN de ce qu'il fait**, et ce n'est pas une
- * precaution de style : MESURE le 2026-07-26, un `claude` lance avec la ligne EXACTE attendue
- * — binaire du bundle, `--session-id`, prompt intact — reste bloque 87 secondes dans
- * `showSetupScreens()`, l'ecran d'accueil du CLI, sans jamais ecrire une ligne de transcript.
- * L'identite du processus ne discrimine donc PAS un CLI qui joue le tour d'un CLI arrete a
- * une porte : les deux sont `claude.exe`, avec la meme ligne de commande.
+ * `'transcript-observed'` — le transcript de la session EXISTE sur le disque, trouve par son
+ * NOM DE FICHIER. C'est le seul fait disponible qui etablisse qu'un tour a eu lieu : le CLI ne
+ * l'ecrit ni quand une de ses portes attend, ni quand il se croit agent enfant non interactif
+ * (auquel cas il coupe la sauvegarde du transcript, silencieusement).
  *
  * `'not-attempted'` — repli V5 : aucune session n'a ete amorcee, il n'y a pas de tour.
+ *
+ * `'process-started'` A DISPARU DE CETTE ENUMERATION, et c'est le fond du correctif du
+ * 2026-07-26 : « un enfant du shell existe » etait vrai 2 s apres l'envoi, alors que le CLI
+ * pouvait tout aussi bien etre arrete a une porte — les deux cas sont le MEME processus,
+ * `claude.exe`, avec la MEME ligne de commande. Un etat qui ne discrimine rien n'a pas a etre
+ * rendu comme un resultat. Le CLIENT du coeur, lui, l'accepte encore en lecture : une fenetre
+ * portant une version anterieure de l'extension le rend toujours, et refuser sa reponse
+ * transformerait un ecart de version en reponse illisible.
  */
-export type FirstTurnOutcome = 'process-started' | 'not-attempted';
+export type FirstTurnOutcome = 'transcript-observed' | 'not-attempted';
 
 export interface OpenConversationResult {
   readonly ok: true;
@@ -217,23 +291,34 @@ export interface OpenConversationResult {
   /** Ce que l'ouverture a etabli du tour 1 — jamais plus que ce qui a ete observe. */
   readonly firstTurn: FirstTurnOutcome;
   /**
-   * LE TOUR 1 A-T-IL ETE JOUE ? **TOUJOURS `false`, ET C'EST STRUCTUREL.**
+   * LE TOUR 1 A-T-IL EU LIEU ? **CE CHAMP PEUT DESORMAIS VALOIR `true`, ET C'EST LE CORRECTIF.**
    *
-   * Le savoir suppose de lire le transcript (`<CONFIG>/projects/**`) ou le hook `Stop`, dont
-   * `packages/**` n'a pas le droit de dependre : c'est la frontiere du lot D, et elle ne
-   * bouge pas. Le champ existe pour que l'appelant n'ait pas a DEDUIRE cette limite d'une
-   * absence — un agent qui lit `ok: true` sans ce champ conclurait, a tort, que le tour a eu
-   * lieu.
+   * Il valait le litteral `false`, et c'etait le bon choix tant que rien ne pouvait le
+   * verifier : le type litteral obligeait a rompre la compilation des consommateurs le jour ou
+   * la promesse changerait. Ce jour est arrive — le mecanisme CONSTATE l'existence du
+   * transcript de la session avant de rendre la main.
    *
-   * Le type est litteral : une version ulterieure qui saurait le verifier devra elargir ce
-   * type, donc rompre la compilation de ses consommateurs. C'est voulu — la promesse change.
+   * CE QU'IL AFFIRME, EXACTEMENT : `<sessionId>.jsonl` existe sous une racine de projets du
+   * CLI, trouve par son NOM. Donc le CLI a demarre, aucune de ses portes ne l'attend, la
+   * sauvegarde du transcript n'a pas ete coupee, et l'identifiant de session que NOUS avons
+   * impose est bien celui qu'il ecrit.
+   *
+   * CE QU'IL N'AFFIRME PAS : que la REPONSE du tour soit complete — le mecanisme laisse a la
+   * sortie du tour une grace bornee (`TURN_OUTPUT_BUDGET_MS`) avant de supprimer le terminal,
+   * mais il ne lit pas le contenu du transcript et ne peut donc pas le certifier. Restituer la
+   * reponse est `cmgr open --wait`, lot D.
+   *
+   * `false` en repli V5 : aucune session n'est amorcee, il n'y a rien a verifier.
    */
-  readonly firstTurnVerified: false;
+  readonly firstTurnVerified: boolean;
   /**
    * Le `viewType` de l'onglet apparu, RELEVE TEL QUEL — il est prefixe par VSCode.
    *
-   * Rendu a l'appelant plutot que garde : c'est la seule trace, cote client, de ce sur quoi
-   * la preuve d'attachement a porte. Absent en repli, ou aucun diff n'est fait.
+   * CE QU'IL PROUVE A CHANGE DE PORTEE, ET IL FAUT LE DIRE ICI : un onglet apparu prouve que
+   * `claude-vscode.editor.open` A REPONDU, jamais que la session soit attachee — la commande
+   * ouvre un panneau MEME pour un identifiant jamais amorce (D19, mesure C1). Ce champ est
+   * donc un RELEVE, pas une preuve ; la preuve du tour est `firstTurnVerified`. Absent en
+   * repli, ou aucun diff n'est fait.
    */
   readonly panelViewType?: string | undefined;
   /**
@@ -266,6 +351,16 @@ export interface OpenConversationDependencies {
    * sur un FAIT OBSERVE et qu'elle est bornee, pas que `Get-CimInstance` reponde en 1,1 s.
    */
   readonly readProcessTable?: () => Promise<ProcessSnapshot>;
+  /**
+   * Ou chercher `<sessionId>.jsonl`. Defaut : les racines de projets du CLI.
+   *
+   * Injectable POUR QUE LA PREUVE PUISSE EXISTER, et pas pour reconfigurer quoi que ce soit :
+   * un test unitaire qui viserait le vrai `<HOME>/.claude/projects` du poste y chercherait un
+   * transcript que personne n'ecrira jamais, et — bien pire — ne pourrait pas etablir que
+   * `dispose()` n'intervient qu'apres. Le systeme de fichiers, lui, reste REEL : le fichier est
+   * vraiment cherche, vraiment trouve, vraiment mesure.
+   */
+  readonly transcriptProjectRoots?: readonly string[];
 }
 
 function sleep(ms: number): Promise<void> {
@@ -445,12 +540,104 @@ async function awaitSeedProcess(
 }
 
 /**
- * Attache le panneau, et PROUVE l'attachement par diff des onglets.
+ * ATTEND QUE LE TOUR 1 AIT REELLEMENT EU LIEU, puis que sa sortie soit retombee.
  *
- * L'ABSENCE D'ERREUR NE PROUVE RIEN : `editor.open` REUSSIT en ouvrant un panneau VIDE quand
- * le `cwd` de la session ne correspond pas au workspace de la fenetre (D10). Ce mecanisme
- * rend ce cas impossible par construction — le `cwd` du terminal EST un dossier de travail de
- * cette fenetre — mais on ne s'en remet pas a cette construction : on constate l'onglet.
+ * DEUX PHASES, DE NATURES DIFFERENTES, ET C'EST LE CŒUR DU CORRECTIF :
+ *
+ *   A. LE TRANSCRIPT APPARAIT — fait EXIGE. Son absence est une erreur NOMMEE : le tour n'a
+ *      pas eu lieu, et rendre un succes serait la degradation silencieuse du 2026-07-26.
+ *   B. LA SORTIE DU TOUR EST ECRITE PUIS SE TAIT — grace BORNEE, jamais une erreur. Mesure du
+ *      2026-07-26 : le fichier apparait a +2 533 ms avec le prompt et SANS la reponse, qui
+ *      n'arrive qu'a +6 417 ms. Supprimer le terminal a l'apparition tuerait la reponse en vol.
+ *      On exige donc une CROISSANCE depuis l'apparition, PUIS un silence — le fichier ne
+ *      grossit pas pendant que le service reflechit, une simple stabilite conclurait a tort.
+ *
+ * AUCUNE LIGNE N'EST LUE : existence et taille, rien d'autre. Interpreter le contenu d'un
+ * transcript est la frontiere du lot D, et elle ne bouge pas.
+ *
+ * @throws {ClaudeManagerError} `SEED_TRANSCRIPT_NOT_FOUND`
+ */
+async function awaitFirstTurn(
+  roots: readonly string[],
+  sessionId: string,
+  wait: (ms: number) => Promise<void>,
+  log: (message: string) => void
+): Promise<void> {
+  // ---- Phase A : le transcript existe ---------------------------------------------------
+  let sighting = probeSessionTranscript(roots, sessionId);
+  let appearedAfterMs = 0;
+  while (!sighting.found) {
+    if (appearedAfterMs >= TRANSCRIPT_APPEARANCE_BUDGET_MS) {
+      throw new ClaudeManagerError(
+        ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND,
+        'No transcript was written for the seeded session: the first turn never took place',
+        // Des CHIFFRES, jamais un chemin : ces racines portent le nom du compte.
+        {
+          waitedMs: appearedAfterMs,
+          rootsScanned: roots.length,
+          directoriesScanned: sighting.directoriesScanned,
+        }
+      );
+    }
+    await wait(TRANSCRIPT_POLL_INTERVAL_MS);
+    appearedAfterMs += TRANSCRIPT_POLL_INTERVAL_MS;
+    sighting = probeSessionTranscript(roots, sessionId);
+  }
+  log(`the session transcript appeared after ~${appearedAfterMs} ms: the first turn is RECORDED`);
+
+  // ---- Phase B : la sortie du tour est ecrite, puis se tait -----------------------------
+  const bytesAtAppearance = sighting.bytes;
+  let bytes = bytesAtAppearance;
+  let quietMs = 0;
+  for (let waitedMs = 0; waitedMs < TURN_OUTPUT_BUDGET_MS; waitedMs += TRANSCRIPT_POLL_INTERVAL_MS) {
+    await wait(TRANSCRIPT_POLL_INTERVAL_MS);
+    const seen = probeSessionTranscript(roots, sessionId).bytes;
+
+    if (seen !== bytes) {
+      // Le tour ecrit : le silence exige repart de zero.
+      bytes = seen;
+      quietMs = 0;
+      continue;
+    }
+    // Rien n'a encore ete ecrit DEPUIS l'apparition : c'est l'attente de la reponse, pas un
+    // silence de fin. La distinction est exactement ce que la mesure impose.
+    if (bytes === bytesAtAppearance) continue;
+
+    quietMs += TRANSCRIPT_POLL_INTERVAL_MS;
+    if (quietMs >= TURN_OUTPUT_QUIET_MS) {
+      log(
+        `the turn output settled after ~${waitedMs + TRANSCRIPT_POLL_INTERVAL_MS} ms ` +
+          `(+${bytes - bytesAtAppearance} bytes since the transcript appeared)`
+      );
+      return;
+    }
+  }
+
+  // NI ERREUR NI SILENCE : le tour est enregistre, sa sortie n'a pas fini de s'ecrire dans le
+  // temps accorde. On le DIT, et on supprime le terminal — la troncature est assumee, bornee,
+  // et l'appelant en trouve la trace dans le journal de la fenetre.
+  log(
+    `the turn output had not settled ${TURN_OUTPUT_BUDGET_MS} ms after the transcript appeared ` +
+      `(+${bytes - bytesAtAppearance} bytes): disposing the seed terminal may truncate it`
+  );
+}
+
+/**
+ * Attache le panneau, et RELEVE l'onglet apparu.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * CE QUE LE DIFF D'ONGLETS PROUVE, ET IL FAUT LIRE CE PARAGRAPHE AVANT D'Y TOUCHER : il prouve
+ * que `claude-vscode.editor.open` A REPONDU EN OUVRANT UN PANNEAU. Il ne prouve PAS que la
+ * session soit attachee — mesure par falsification a C1 (D19, `ghostSessionOpensAPanel: true`),
+ * un appel avec un identifiant JAMAIS AMORCE ouvre un panneau tout de meme, en 86 ms. Il ne
+ * peut donc servir ni d'horloge, ni de preuve de tour : croire le contraire est precisement ce
+ * qui a produit le defaut de recette du 2026-07-26.
+ *
+ * CE QU'IL RESTE ET POURQUOI ON LE GARDE : sans lui, la seule chose qu'on saurait de
+ * l'attachement serait « la commande n'a pas leve », et l'absence d'erreur ne vaut rien (D10 :
+ * `editor.open` REUSSIT en ouvrant un panneau vide quand le `cwd` ne correspond pas au
+ * workspace). Il releve aussi le `viewType`, qui est prefixe par VSCode et qu'on ne devine pas.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
  *
  * @throws {ClaudeManagerError} `CLAUDE_PANEL_VIEWTYPE_UNKNOWN`
  */
@@ -471,7 +658,11 @@ async function attachPanel(
       if (panel !== undefined) {
         // `viewType` est defini par construction — `selectNewPanel` ne rend qu'un onglet
         // deja reconnu Claude. Aucun repli n'est ecrit pour un cas qui ne se produit pas.
-        log(`panel attached after ${attempts} attempt(s), viewType=${panel.viewType}`);
+        //
+        // « a REPONDU », jamais « est attache » : un onglet apparait meme pour une session
+        // jamais amorcee (D19). Le libelle de cette ligne de journal est ce qui empeche de
+        // relire ce diff, dans six mois, comme une preuve d'attachement.
+        log(`the attach command answered with a panel after ${attempts} attempt(s), viewType=${panel.viewType}`);
         return panel;
       }
       await wait(TAB_POLL_INTERVAL_MS);
@@ -539,6 +730,8 @@ export async function openConversation(
   const environment = dependencies.environment ?? process.env;
   const wait = dependencies.wait ?? sleep;
   const readTable = dependencies.readProcessTable ?? readProcessTable;
+  const transcriptRoots =
+    dependencies.transcriptProjectRoots ?? transcriptProjectRoots(environment, homedir());
   const sessionId = (dependencies.newSessionId ?? randomUUID)();
 
   // ---- Etape 1 : refus precoce ----------------------------------------------------------
@@ -656,15 +849,21 @@ export async function openConversation(
     log(`seed line sent to a hidden terminal (session ${sessionId})`);
 
     // ---- Etape 5 bis : un processus a REELLEMENT ete engendre ----------------------------
-    // Correction d'un defaut mesure : sans elle, l'attachement aboutissait avant que `claude`
-    // n'existe, et la suppression du terminal tuait le tour a sa naissance.
     //
-    // CE QU'ELLE ETABLIT S'ARRETE LA, ET LE RESULTAT LE DIT : le processus existe. Qu'il joue
-    // le tour ou qu'il attende derriere l'ecran d'accueil du CLI ne se distingue pas d'ici —
-    // mesure du 2026-07-26, les deux sont `claude.exe` avec la meme ligne de commande.
+    // ELLE NE PORTE PLUS LA PREUVE DU TOUR — c'est l'etape 6 qui la porte — et elle est
+    // CONSERVEE pour ce qu'elle discrimine, elle seule : « rien n'a demarre du tout » (le shell
+    // n'a pas execute la ligne, le binaire a refuse) se distingue ici de « demarre, mais aucun
+    // tour » (une porte du CLI attend, ou la sauvegarde du transcript a ete coupee). Deux causes,
+    // deux remediations, deux erreurs nommees — et celle-ci tombe en ~12 s la ou l'attente du
+    // transcript en accorde 45.
     await awaitSeedProcess(terminal, readTable, wait, log);
 
-    // ---- Etape 6 : attachement, prouve par diff des onglets ------------------------------
+    // ---- Etape 6 : LE TOUR 1 A EU LIEU — le seul fait qui l'etablisse --------------------
+    // AVANT l'attachement, et surtout avant le `dispose()` du `finally`, qui TUE le `claude`
+    // du tour 1 (ADR-002). C'est tout le correctif du 2026-07-26.
+    await awaitFirstTurn(transcriptRoots, sessionId, wait, log);
+
+    // ---- Etape 7 : attachement, RELEVE par diff des onglets ------------------------------
     const panel = await attachPanel(editor, sessionId, before, wait, log);
 
     return {
@@ -673,8 +872,10 @@ export async function openConversation(
       sessionId,
       extHostPid,
       humanActionRequired: false,
-      firstTurn: 'process-started',
-      firstTurnVerified: false,
+      firstTurn: 'transcript-observed',
+      // VRAI, ET SUR UN FAIT CONSTATE : `<sessionId>.jsonl` existe. Voir le champ pour ce que
+      // cette affirmation couvre exactement — et ce qu'elle ne couvre pas.
+      firstTurnVerified: true,
       panelViewType: panel.viewType,
     };
   } catch (error) {
