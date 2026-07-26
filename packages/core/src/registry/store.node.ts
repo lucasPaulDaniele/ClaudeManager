@@ -385,7 +385,8 @@ export function readRegistry(options: ReadRegistryOptions): RegistryReadResult {
  * en est absente par construction, sans etre morte pour autant — et c'est le cas nominal au
  * demarrage de deux fenetres a quelques centaines de ms d'ecart. Un fichier plus recent que
  * `capturedAt` n'est donc jamais supprime : il est rapporte, jamais escamote. Lire a tort
- * est reparable, supprimer a tort ne l'est pas.
+ * est reparable, supprimer a tort ne l'est pas. Elle vaut pour les entrees COMME pour les
+ * temporaires : le processus qui ecrit le sien est exactement celui qu'elle protege.
  *
  * Operation explicite, appelee a l'activation de l'extension compagnon. JAMAIS depuis
  * `readRegistry`.
@@ -410,11 +411,13 @@ export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResul
       kept.push({ file, reason });
       continue;
     }
-    if (modifiedAt > options.snapshot.capturedAt) {
-      kept.push({ file, reason: 'younger-than-snapshot' });
-      continue;
-    }
-    removeOrRecord(dir, file, removed, kept);
+    // La datation est DEJA connue : la lecture l'a relevee dans le meme `try` que le
+    // contenu. Seuls les temporaires, que rien ne lit, la font relever a la suppression.
+    removeIfSettled(
+      { dir, file, capturedAt: options.snapshot.capturedAt, modifiedAt },
+      removed,
+      kept
+    );
   }
 
   const temporaries = purgeOrphanTemporaries(dir, options.snapshot);
@@ -426,6 +429,21 @@ export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResul
   };
 }
 
+/** Fichier que le classement condamne, et ce que la purge sait deja de sa date. */
+interface Condemned {
+  readonly dir: string;
+  readonly file: string;
+  /** Date de l'instantane qui le condamne. */
+  readonly capturedAt: number;
+  /**
+   * Datation DEJA relevee, ou `undefined` s'il revient a la suppression de la relever.
+   *
+   * Une entree la tient de sa lecture — meme `try`, meme instant. Un temporaire, lui, n'est
+   * jamais lu : rien ne l'a datee avant ce point.
+   */
+  readonly modifiedAt: number | undefined;
+}
+
 /**
  * Supprime un fichier condamne — ou DIT pourquoi il ne l'a pas ete.
  *
@@ -435,6 +453,12 @@ export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResul
  * processus du compte — cassait DEFINITIVEMENT le nettoyage du registre de toutes les
  * fenetres du poste, en faisant remonter une erreur `fs` nue portant le chemin absolu.
  *
+ * C'est aussi le seul endroit ou la GARDE DE FRAICHEUR s'ecrit, pour que les entrees et les
+ * temporaires ne puissent pas en avoir deux versions divergentes. La troncature a la
+ * MILLISECONDE est la meme qu'a la lecture : `mtimeMs` porte des fractions de milliseconde
+ * sur NTFS quand `capturedAt` n'en a jamais, et sans elle un fichier ecrit dans la
+ * milliseconde de la capture s'en trouverait « plus recent » une fois sur deux.
+ *
  * `force` : deux fenetres peuvent purger en meme temps. Un fichier deja disparu n'est pas
  * une defaillance mais le RESULTAT RECHERCHE — `force` absorbe `ENOENT`, et rien d'autre.
  * Toute autre defaillance devient une entree `kept`, motif `removal-failed`, portant le seul
@@ -443,9 +467,18 @@ export function purgeStaleEntries(options: PurgeStaleEntriesOptions): PurgeResul
  * Rapporter plutot que lever preserve les DEUX proprietes a la fois : rien ne disparait en
  * silence (principe fondateur n.3), et le balayage va jusqu'au bout.
  */
-function removeOrRecord(dir: string, file: string, removed: string[], kept: KeptEntry[]): void {
+function removeIfSettled(condemned: Condemned, removed: string[], kept: KeptEntry[]): void {
+  const { file } = condemned;
+  const absolute = path.join(condemned.dir, file);
+
   try {
-    rmSync(path.join(dir, file), { force: true });
+    const modifiedAt = condemned.modifiedAt ?? Math.floor(statSync(absolute).mtimeMs);
+    if (modifiedAt > condemned.capturedAt) {
+      kept.push({ file, reason: 'younger-than-snapshot' });
+      return;
+    }
+
+    rmSync(absolute, { force: true });
     removed.push(file);
   } catch (cause) {
     kept.push({ file, reason: 'removal-failed', cause: systemErrorCode(cause) });
@@ -461,12 +494,17 @@ function removeOrRecord(dir: string, file: string, removed: string[], kept: Kept
  * dedans. `writeWindowEntry` efface les siens ; celui-ci ramasse ceux que personne n'a pu
  * effacer.
  *
- * Seul le pid en prefixe decide : un temporaire dont le processus VIT peut etre une
- * ecriture en cours, on n'y touche pas. Fenetre residuelle assumee et bornee : un
- * processus ne APRES la capture de l'instantane est absent de la table, et si la purge
- * passe pendant les quelques microsecondes qui separent son `write` de son `rename`, son
- * temporaire disparait. Il en resulte une erreur NOMMEE cote ecrivain — jamais une
- * publication silencieusement fausse.
+ * DEUX gardes decident, exactement les memes que pour les entrees :
+ *
+ *   - LE PID EN PREFIXE — un temporaire dont le processus VIT peut etre une ecriture en
+ *     cours, on n'y touche pas ;
+ *   - LA FRAICHEUR DE L'INSTANTANE — et elle manquait ici, alors que le raisonnement qui l'a
+ *     imposee aux entrees s'applique mot pour mot a celui qui ecrit son temporaire. Une
+ *     fenetre nee APRES la capture est absente de la table par construction : son temporaire
+ *     passe pour orphelin quand il est en cours d'ecriture. L'effacer entre son `write` et
+ *     son `rename` fait lever `REGISTRY_UNWRITABLE` a une fenetre parfaitement vivante — et
+ *     c'est le cas NOMINAL de deux fenetres qui demarrent a quelques centaines de
+ *     millisecondes d'ecart, pas un accident de laboratoire.
  */
 function purgeOrphanTemporaries(
   dir: string,
@@ -480,7 +518,12 @@ function purgeOrphanTemporaries(
     if (match === null) continue;
     if (snapshot.table.has(Number.parseInt(match[1] as string, 10))) continue;
 
-    removeOrRecord(dir, file, removed, kept);
+    // `modifiedAt: undefined` : personne n'a lu ce fichier, donc personne ne l'a date.
+    removeIfSettled(
+      { dir, file, capturedAt: snapshot.capturedAt, modifiedAt: undefined },
+      removed,
+      kept
+    );
   }
 
   return { removed, kept };

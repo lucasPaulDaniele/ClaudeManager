@@ -325,6 +325,45 @@ describe('purgeStaleEntries — fraicheur de l instantane', () => {
     expect(purgeStaleEntries({ snapshot: fresh, dir }).removed).toEqual([`${HOST}.json`]);
     expect(readdirSync(dir)).toEqual([]);
   });
+
+  /**
+   * C7 — LA MEME GARDE POUR LES TEMPORAIRES, et pour le meme motif exactement.
+   *
+   * La fenetre B nait APRES la capture de A : elle est absente de la table, donc son
+   * temporaire passe pour orphelin alors qu il est en cours d ecriture. L effacer entre le
+   * `write` et le `rename` de B fait lever `REGISTRY_UNWRITABLE` a une fenetre parfaitement
+   * vivante, qui se retire du registre — le cas NOMINAL de deux fenetres qui demarrent a
+   * quelques centaines de millisecondes d ecart.
+   */
+  const IN_FLIGHT_PID = 999_999;
+
+  function writeTemporaryOf(extHostPid: number): string {
+    const file = `${extHostPid}.00000000-0000-0000-0000-000000000000.tmp`;
+    writeRaw(dir, file, JSON.stringify(currentSchemaEntry(HOST)));
+    return file;
+  }
+
+  it('ne supprime JAMAIS un temporaire ecrit APRES la capture de l instantane', () => {
+    const table = tableWithoutExtensionHosts();
+    expect(table.has(IN_FLIGHT_PID), `${IN_FLIGHT_PID} doit etre absent de la capture`).toBe(false);
+    const inFlight = writeTemporaryOf(IN_FLIGHT_PID);
+    const stale = { table, capturedAt: Date.now() - 1_000 };
+
+    const result = purgeStaleEntries({ snapshot: stale, dir });
+
+    expect(result.removedTemporaries).toEqual([]);
+    expect(result.kept).toEqual([{ file: inFlight, reason: 'younger-than-snapshot' }]);
+    expect(readdirSync(dir)).toEqual([inFlight]);
+  });
+
+  it('efface le meme temporaire des que l instantane est plus recent que lui', () => {
+    // Contre-epreuve, symetrique de celle des entrees : c est bien la fraicheur qui retient.
+    const orphan = writeTemporaryOf(IN_FLIGHT_PID);
+    const fresh = { table: tableWithoutExtensionHosts(), capturedAt: Date.now() + 1_000 };
+
+    expect(purgeStaleEntries({ snapshot: fresh, dir }).removedTemporaries).toEqual([orphan]);
+    expect(readdirSync(dir)).toEqual([]);
+  });
 });
 
 describe('writeWindowEntry', () => {
