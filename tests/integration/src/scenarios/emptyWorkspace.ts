@@ -181,11 +181,11 @@ export async function runEmptyWorkspace(context: ScenarioContext): Promise<void>
   /**
    * LE PIEGE DU PORT — ET C'EST ICI QU'IL EST REEL.
    *
-   * L'ADR-003 l'annonce de toute republication ; MESURE, il ne vaut que d'une republication
-   * qui suit un RETRAIT — le seul cas ou `publishNow` rouvre un serveur. C'est exactement le
-   * chemin de ce scenario : refus, retrait, serveur ferme, puis reprise sur un dossier
-   * ajoute. Le port change, et le jeton NON : il est propre a la fenetre et a la session, pas
-   * a l'ecoute.
+   * L'ADR-003 l'annoncait de toute republication — corrige le 2026-07-26 ; MESURE, il ne
+   * vaut que d'une republication qui suit un RETRAIT, le seul cas ou `publishNow` rouvre un
+   * serveur. C'est exactement le chemin de ce scenario : refus, retrait, serveur ferme, puis
+   * reprise sur un dossier ajoute. Le port change, et le jeton NON : il est propre a la
+   * fenetre et a la session, pas a l'ecoute.
    *
    * Un consommateur du lot C qui cacherait un port lu une fois s'adresserait donc a une
    * socket fermee — sans erreur d'authentification pour le mettre sur la voie, juste un refus
@@ -243,7 +243,9 @@ export async function runEmptyWorkspace(context: ScenarioContext): Promise<void>
       workspaceFolders: recovered.workspaceFolders.length,
       portBefore: refusedPort,
       portAfter: recovered.port,
-      // §2 — LE port qui change, et le seul cas ou il change.
+      // §2 — le port qui change : le refus de validation, PREMIER des trois cas que l'ADR-003
+      // enumere (les deux autres — echelle d'ecriture epuisee, ecoute morte — sont eprouves
+      // en unitaire, `tests/unit/vscode/publication.test.ts`).
       portChanged: recovered.port !== refusedPort,
       listenersOpenedOverWindowLifetime: portsAfterRecovery.length,
       healthStatus: recoveredProbe.status,
