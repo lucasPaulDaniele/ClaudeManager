@@ -140,6 +140,50 @@ describe('resolveOwningWindow — regles de resolution', () => {
     expect(resolveOwningWindow(100, table, [{ extHostPid: 999 }])).toBeUndefined();
     expect(resolveOwningWindow(Number.NaN, table, [{ extHostPid: 50 }])).toBeUndefined();
   });
+
+  /**
+   * C1 — LE VERDICT NE DOIT PAS DEPENDRE DE L'ORDRE D'ENUMERATION.
+   *
+   * L'ambiguite se lisait a l'egalite de PROFONDEUR avec la fenetre deja retenue, laquelle
+   * n'etait mise a jour que par la branche « plus proche ». Deux fenetres de meme
+   * extHostPid situees PLUS LOIN qu'une fenetre deja retenue n'etaient donc jamais
+   * comparees entre elles : meme ensemble, trois ordres, deux verdicts. C'est exactement ce
+   * que la decision 5 d'ADR-003 interdit — « surtout pas par l'ordre d'enumeration ».
+   */
+  it('nomme l ambiguite meme quand le doublon est PLUS LOIN que la fenetre retenue', () => {
+    const self: WindowLike = { extHostPid: 100 };
+    const dupA: WindowLike = { extHostPid: 50 };
+    const dupB: WindowLike = { extHostPid: 50 };
+
+    for (const order of [
+      [dupA, dupB, self],
+      [dupA, self, dupB],
+      [self, dupA, dupB],
+    ]) {
+      const failure = catchFailure(() => resolveOwningWindow(100, table, order));
+
+      expect(failure.code, order.map((w) => w.extHostPid).join(',')).toBe(
+        ERROR_CODES.DUPLICATE_WINDOW_IDENTITY
+      );
+      // La profondeur rendue est celle du pid revendique deux fois, jamais celle de la
+      // fenetre retenue : c'est le doublon que l'appelant doit aller inspecter.
+      expect(failure.details).toEqual({ extHostPid: 50, chainDepth: 1 });
+    }
+  });
+
+  it('ne voit AUCUN doublon la ou il n y a que des fenetres distinctes', () => {
+    // Contre-epreuve : la garde ne doit pas transformer la regle du plus proche en erreur.
+    const near: WindowLike = { extHostPid: 50 };
+    const far: WindowLike = { extHostPid: 30 };
+    const self: WindowLike = { extHostPid: 100 };
+
+    expect(resolveOwningWindow(100, table, [far, near, self])).toBe(self);
+    expect(resolveOwningWindow(100, table, [self, near, far])).toBe(self);
+    // Une fenetre hors de la chaine ne revendique rien, fut-elle en double.
+    expect(resolveOwningWindow(100, table, [near, { extHostPid: 999 }, { extHostPid: 999 }])).toBe(
+      near
+    );
+  });
 });
 
 describe('resolveOwningWindow — pid absurde des DEUX cotes', () => {

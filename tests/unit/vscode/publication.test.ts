@@ -75,6 +75,27 @@ function readEntry(harness: Harness): WindowEntry {
   return JSON.parse(readFileSync(harness.publisher.entryFile, 'utf8')) as WindowEntry;
 }
 
+function getBody(port: number, token: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/health',
+        headers: { authorization: `Bearer ${token}` },
+        agent: false,
+      },
+      (res) => {
+        let text = '';
+        res.on('data', (chunk) => (text += chunk));
+        res.on('end', () => resolve(text));
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 function get(port: number, token: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = request(
@@ -382,28 +403,29 @@ describe('/health', () => {
 
     harness.workspace = { workspaceFolders: ['/ailleurs'], isTrusted: false };
 
-    const body = await new Promise<string>((resolve, reject) => {
-      const req = request(
-        {
-          host: '127.0.0.1',
-          port: entry.port,
-          path: '/health',
-          headers: { authorization: `Bearer ${entry.token}` },
-          agent: false,
-        },
-        (res) => {
-          let text = '';
-          res.on('data', (chunk) => (text += chunk));
-          res.on('end', () => resolve(text));
-        }
-      );
-      req.on('error', reject);
-      req.end();
-    });
+    const body = await getBody(entry.port, entry.token);
 
     // L'entree sur disque, elle, decrit toujours l'etat publie : c'est `/health` qui vit.
     expect(JSON.parse(body)).toMatchObject({ isTrusted: false, workspaceFolders: ['/ailleurs'] });
     expect(readEntry(harness).isTrusted).toBe(true);
+  });
+
+  it('rend le chemin REEL du workspace — le masque d affichage ne l atteint jamais', async () => {
+    // CONTRE-EPREUVE DE S6. `redactWindowEntry` masque desormais le prefixe du repertoire
+    // personnel, mais c'est une fonction d'AFFICHAGE : ni l'entree ecrite, ni `/health` —
+    // qui ne repond qu'a qui detient le jeton — ne doivent en dependre. Le lot C y compare
+    // le `cwd` d'une session au workspace de la fenetre (piege n.3), et un chemin masque ne
+    // se compare pas.
+    const folder = path.join(os.homedir(), 'Documents', 'Github', 'ClaudeManager');
+    const harness = makePublisher({ workspaceFolders: [folder] });
+
+    expect(await harness.publisher.ensurePublished('activation')).toBe(true);
+    const entry = readEntry(harness);
+
+    expect(entry.workspaceFolders).toEqual([folder]);
+    expect(JSON.parse(await getBody(entry.port, entry.token))).toMatchObject({
+      workspaceFolders: [folder],
+    });
   });
 
   it('publie le repertoire de journal, sans quoi cmgr doctor ne peut pas le trouver', async () => {

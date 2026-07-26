@@ -27,16 +27,19 @@ export {
 
 export {
   parseWindowEntry,
-  redactWindowEntry,
   WINDOW_ENTRY_SCHEMA_VERSION,
   type EntryIdentity,
   type EntryRejectionReason,
   type ParseResult,
-  type RedactedWindowEntry,
   type WindowEntry,
   type WindowEntryAccepted,
   type WindowEntryRejected,
 } from './registry/entry.js';
+export {
+  maskHomeDirectory,
+  redactWindowEntry,
+  type RedactedWindowEntry,
+} from './registry/redaction.node.js';
 export {
   purgeStaleEntries,
   readRegistry,

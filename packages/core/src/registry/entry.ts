@@ -211,24 +211,3 @@ export function parseWindowEntry(value: unknown): ParseResult {
     },
   };
 }
-
-/** Entree dont le jeton a ete remplace par une constante opaque. */
-export interface RedactedWindowEntry extends Omit<WindowEntry, 'token'> {
-  readonly token: string;
-}
-
-/**
- * Constante opaque : ni prefixe, ni suffixe, ni longueur du jeton reel. Un masque qui
- * laisserait filtrer la longueur ou quelques caracteres reduirait l'espace de recherche.
- */
-const REDACTED_TOKEN = '***';
-
-/**
- * Masque le jeton d'une entree avant tout affichage.
- *
- * Cette fonction vit dans le coeur DELIBEREMENT : la CLI, le serveur MCP et l'extension
- * ne doivent ni avoir a y penser, ni pouvoir l'oublier.
- */
-export function redactWindowEntry(entry: WindowEntry): RedactedWindowEntry {
-  return { ...entry, token: REDACTED_TOKEN };
-}
