@@ -2,6 +2,7 @@ export {
   ClaudeManagerError,
   ERROR_CODES,
   isClaudeManagerError,
+  isErrorCode,
   systemErrorCode,
   type ErrorCode,
   type SerializedError,
@@ -50,6 +51,34 @@ export {
   redactWindowEntry,
   type RedactedWindowEntry,
 } from './registry/redaction.node.js';
+export {
+  CONVERSATIONS_PATH,
+  HEALTH_PATH,
+  HEALTH_ROUTE,
+  OPEN_ROUTE,
+  readHealth,
+  readOpenedConversation,
+  type FirstTurnOutcome,
+  type OpenedConversation,
+  type OpenMode,
+  type WindowHealth,
+  type WindowRequest,
+  type WindowResponse,
+  type WindowTransport,
+} from './client/protocol.js';
+export { createLoopbackTransport } from './client/loopback.node.js';
+export {
+  assertSubmittablePrompt,
+  HEALTH_TIMEOUT_MS,
+  OPEN_TIMEOUT_MS,
+  openConversationInWindow,
+  type ChannelConfirmation,
+  type ConversationOpening,
+  type OpenConversationInWindowOptions,
+  type OpenConversationRequest,
+  type RegistryReport,
+} from './client/openConversation.node.js';
+
 export {
   purgeStaleEntries,
   readRegistry,

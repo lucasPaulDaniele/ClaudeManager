@@ -1,23 +1,32 @@
 /**
- * Les deux commandes de lecture de `cmgr`, et rien d'autre.
+ * Les trois commandes de `cmgr` : deux lectures, et une ouverture.
  *
- * PERIMETRE, ET C'EST UNE DECISION : ce module lit le registre et la table des processus.
- * Il n'ecrit rien, ne purge rien — la purge appartient a l'extension compagnon, qui seule
- * sait quand sa fenetre s'active —, n'ouvre ni ne ferme aucune conversation (lot C), et NE
- * FAIT AUCUN RESEAU. Le client HTTP du coeur (`core/client`) est inscrit au lot C : une
- * commande de lecture qui interrogerait un serveur local ferait dependre l'inventaire des
- * fenetres de leur joignabilite, deux questions distinctes.
+ * PERIMETRE, ET C'EST UNE DECISION : ce module lit le registre et la table des processus, et
+ * demande a SA fenetre — jamais a une autre — d'ouvrir une conversation. Il n'ecrit rien dans
+ * le registre, ne purge rien — la purge appartient a l'extension compagnon, qui seule sait
+ * quand sa fenetre s'active —, et ne ferme aucune conversation (increment C4).
+ *
+ * LE RESEAU EST ENTRE DANS `cmgr` A L'INCREMENT C2, ET SEULEMENT PAR `open`. Les deux
+ * commandes de lecture n'interrogent toujours aucun serveur, et ce n'est pas un residu du lot
+ * B : faire dependre l'inventaire des fenetres de leur joignabilite melangerait deux questions
+ * distinctes — « quelles fenetres existent ? » et « laquelle repond ? ». La seconde appartient
+ * a `cmgr doctor` (lot D). Quand `open` fait du reseau, il le fait par le CLIENT DU COEUR
+ * (`core/client`) : aucune source de la CLI n'importe `node:http`, et un test d'architecture
+ * le verifie.
  *
  * AUCUNE FENETRE N'EST FABRIQUEE ICI. Toute la garantie d'identite vit dans
  * `parseWindowEntry` : validation de schema, confrontation du contenu au NOM du fichier,
  * garde anti-reemploi de pid. Une fenetre decrite depuis un argument de ligne de commande
  * n'aurait traverse aucun de ces controles, et `resolveOwningWindow` la retiendrait aussi
  * volontiers qu'une vraie. C'est pourquoi la liste passee au coeur provient TOUJOURS de
- * `readRegistry`, et pourquoi aucune option n'existe pour la completer.
+ * `readRegistry`, et pourquoi aucune option n'existe pour la completer — pas davantage sur
+ * `open`, qui agit pourtant, et pour qui l'enjeu est donc entier.
  */
 
 import {
   ancestorsOf,
+  assertSubmittablePrompt,
+  openConversationInWindow,
   readRegistry,
   redactWindowEntry,
   requireOwningWindow,
@@ -26,7 +35,10 @@ import {
   type ProcessSnapshot,
   type RegistryReadResult,
   type SkippedEntry,
+  type WindowTransport,
 } from './core.js';
+import { readPromptFile, readPromptStdin, type PromptInput, type PromptStdin } from './prompt.js';
+import { usageFailure, type Failure } from './exit.js';
 
 /**
  * Tout ce dont une commande a besoin du monde exterieur.
@@ -44,6 +56,17 @@ export interface CliContext {
   readonly pid: number;
   readonly registryDir: string | undefined;
   readonly readSnapshot: () => Promise<ProcessSnapshot>;
+  /** D'ou `open` lit son prompt quand aucun fichier n'est nomme. */
+  readonly stdin: PromptStdin;
+  /**
+   * Le transport HTTP, fourni plutot qu'appele — meme couture que `readSnapshot`, et pour la
+   * meme raison : elle permet d'eprouver `open` contre une VRAIE socket servant de VRAIES
+   * reponses capturees, sans jamais fabriquer un faux `http` (principe fondateur n.5).
+   *
+   * La CLI reelle y branche `createLoopbackTransport()`, et rien d'autre n'est offert a
+   * l'utilisateur pour en changer : il n'existe aucune option pour designer un hote.
+   */
+  readonly transport: WindowTransport;
 }
 
 /**
@@ -59,6 +82,22 @@ export interface CliContext {
  */
 export interface Diagnostics {
   skipped?: readonly SkippedEntry[];
+  /**
+   * Le repli V5 a joue : la commande a produit son resultat, mais pas le nominal.
+   *
+   * C'est le CODE DE SORTIE qui en depend (`DEGRADED_SUCCESS`), et c'est pourquoi il passe par
+   * ici plutot que d'etre relu dans le corps de la reponse : lire un champ du JSON pour
+   * decider du code de sortie ferait dependre l'enveloppe de son contenu.
+   */
+  degraded?: boolean;
+  /**
+   * Ce qu'un HUMAIN doit lire, et qu'un champ JSON seul laisserait passer.
+   *
+   * `firstTurnVerified: false` est le cas d'espece : un agent qui lit `ok: true` sans le voir
+   * conclurait, a tort, que le tour 1 a eu lieu. Le champ est dans la sortie machine ; la
+   * phrase, elle, va sur `stderr`, ou un humain la lit sans avoir a interroger le JSON.
+   */
+  notes?: readonly string[];
 }
 
 export type CommandBody = Readonly<Record<string, unknown>>;
@@ -156,6 +195,162 @@ export async function whoamiCommand(
       chain,
       /** Profondeur a laquelle la fenetre hote a ete trouvee — 0 signifie « c'est moi ». */
       ownerDepth: chain.indexOf(owner.extHostPid),
+    },
+  };
+}
+
+/** Ce que l'analyse d'arguments a retenu pour `open`, et rien de plus. */
+export interface OpenOptions {
+  readonly promptFile: string | undefined;
+}
+
+/**
+ * D'OU VIENT LE PROMPT — et pourquoi `--prompt-file` PRIME sans jamais entrer en conflit.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * ECART ASSUME AU CAHIER DES CHARGES DE C2, ET IL EST MESURE. Il etait demande que « les deux
+ * fournis » soit une erreur d'usage. Ce cas N'EST PAS DECIDABLE sans se tromper, et se tromper
+ * ici couterait plus cher que le cas qu'on renonce a detecter.
+ *
+ * MESURE DU 2026-07-26, sur ce poste : dans le harnais qui execute les outils d'un agent
+ * Claude, `process.stdin.isTTY` vaut `undefined` et `fstat(0)` rend un PERIPHERIQUE CARACTERE
+ * — c'est `NUL`, il n'y a rien a lire. Un `child_process.spawn` de Node, lui, rend un TUBE
+ * (`isFIFO`) meme quand personne n'y ecrira jamais. Ni `isTTY` ni `fstat` ne distinguent donc
+ * « un prompt attend sur stdin » de « stdin est branche sur rien » : la seule facon de trancher
+ * serait de LIRE stdin, ce qui pendrait indefiniment sur un tube inactif.
+ *
+ * Une detection fondee sur l'un ou l'autre transformerait `cmgr open --prompt-file p.md` —
+ * l'invocation NOMINALE d'un agent — en erreur d'usage. C'est un defaut, pas une garde.
+ *
+ * LA REGLE RETENUE REND LE CONFLIT IMPOSSIBLE PLUTOT QUE DETECTABLE : quand `--prompt-file`
+ * est present, stdin n'est ni lu ni meme inspecte. Une erreur qu'on ne peut pas commettre vaut
+ * mieux qu'une erreur qu'on detecte. Le prix — `cmgr open --prompt-file a.md < b.md` prend
+ * `a.md` en silence — est borne et documente, et la sortie porte `prompt.source` pour que
+ * l'appelant n'ait jamais a le deviner.
+ *
+ * L'AUTRE MOITIE DE L'EXIGENCE, ELLE, EST TENUE : « aucun des deux » est bien une erreur.
+ * Sur un terminal, c'est une erreur d'USAGE — attendre qu'un humain tape reviendrait a pendre.
+ * Sur un flux vide, c'est l'erreur NOMMEE `PROMPT_EMPTY`.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * @throws {ClaudeManagerError} `PROMPT_FILE_UNREADABLE`, `PROMPT_EMPTY`
+ */
+async function resolvePrompt(
+  context: CliContext,
+  options: OpenOptions
+): Promise<PromptInput | undefined> {
+  const input =
+    options.promptFile === undefined
+      ? await readPromptStdin(context.stdin)
+      : readPromptFile(options.promptFile);
+
+  // `undefined` ne dit qu'UNE chose : il n'y a AUCUNE source de prompt — stdin est un terminal
+  // et aucun fichier n'a ete nomme. Un flux vide, lui, est bien une source, et son refus est
+  // une erreur NOMMEE, pas une erreur d'usage.
+  if (input === undefined) return undefined;
+
+  // AVANT l'inventaire des processus, qui coute de 700 ms a 1,3 s : un prompt vide n'a pas
+  // besoin qu'on lise la table du poste pour etre refuse.
+  assertSubmittablePrompt(input.text);
+  return input;
+}
+
+/**
+ * Ce que `open` rend a l'aiguilleur — un corps, ou un refus d'USAGE.
+ *
+ * UNION DISCRIMINEE plutot qu'un `CommandBody | Failure` : la premiere forme est un
+ * `Record<string, unknown>`, dont rien n'interdit qu'il porte une cle `error`. Distinguer les
+ * deux par la presence d'un champ aurait donc exige une conversion de type, c'est-a-dire une
+ * affirmation que le compilateur ne verifie pas.
+ */
+export type OpenOutcome =
+  | { readonly kind: 'opened'; readonly body: CommandBody }
+  | { readonly kind: 'usage'; readonly failure: Failure };
+
+/**
+ * « Ouvre une conversation dans MA fenetre, avec ce prompt. »
+ *
+ * TOUT CE QUI DECIDE EST DANS LE COEUR (`openConversationInWindow`) : resolution de la fenetre,
+ * confirmation du canal, relecture du port et du jeton, mise en forme des refus. Cette fonction
+ * lit le prompt, passe l'instantane des processus — LU UNE SEULE FOIS —, et met en forme.
+ *
+ * CE QUE LA SORTIE DIT, ET QU'ELLE NE DOIT PAS TAIRE :
+ *   - `firstTurnVerified` est TOUJOURS `false`, et il est rendu au premier niveau. Le savoir
+ *     suppose de lire le transcript — lot D. Un agent qui lirait `ok: true` sans ce champ
+ *     conclurait, a tort, que le tour a eu lieu ; une ligne de `stderr` le redit en clair.
+ *   - `channelConfirmed` NOMME la confirmation de canal : une verification silencieuse est une
+ *     verification dont personne ne peut dire si elle a eu lieu.
+ *   - `degradedFrom`, en repli, est rendu TEL QUEL — le repli s'ajoute a l'erreur, il ne la
+ *     remplace jamais.
+ */
+export async function openCommand(
+  context: CliContext,
+  diagnostics: Diagnostics,
+  options: OpenOptions
+): Promise<OpenOutcome> {
+  const prompt = await resolvePrompt(context, options);
+  if (prompt === undefined) {
+    return {
+      kind: 'usage',
+      failure: usageFailure(
+        'No prompt: cmgr open reads it from --prompt-file, or from stdin when stdin is not a terminal'
+      ),
+    };
+  }
+
+  const opening = await openConversationInWindow(
+    { prompt: prompt.text },
+    {
+      pid: context.pid,
+      // UN SEUL instantane, comme les commandes de lecture (alerte n.15). Le coeur, lui,
+      // relit le REGISTRE a chaque appel : c'est le port et le jeton qui ne se mettent jamais
+      // en cache, pas la table des processus.
+      snapshot: await context.readSnapshot(),
+      registryDir: context.registryDir,
+      transport: context.transport,
+      // `diagnostics` EST le rapport que le coeur remplit : `skipped` sera la meme en succes
+      // comme en echec, sans que la CLI ait a le recopier.
+      report: diagnostics,
+    }
+  );
+
+  const { conversation } = opening;
+  diagnostics.degraded = conversation.mode === 'fallback';
+  diagnostics.notes =
+    conversation.mode === 'fallback'
+      ? [
+          'repli V5 : la conversation est ouverte, le prompt est PRE-REMPLI dans le champ de saisie et N A PAS ete soumis. Un geste humain est requis.',
+        ]
+      : [
+          'le tour 1 n est PAS verifie (firstTurnVerified: false) : la route observe qu un processus a demarre, jamais que le tour ait ete joue. Seul le transcript le dira — lot D.',
+        ];
+
+  return {
+    kind: 'opened',
+    body: {
+      // AU PREMIER NIVEAU, et c'est delibere : ce sont les champs sur lesquels un agent decide.
+      // Les enfouir sous un objet `conversation` ferait de `firstTurnVerified` un detail, quand
+      // il est precisement ce qu'il ne faut pas manquer.
+      mode: conversation.mode,
+      sessionId: conversation.sessionId,
+      /** La fenetre qui a REELLEMENT agi, telle qu'elle s'est nommee, canal confirme. */
+      extHostPid: conversation.extHostPid,
+      humanActionRequired: conversation.humanActionRequired,
+      firstTurn: conversation.firstTurn,
+      firstTurnVerified: conversation.firstTurnVerified,
+      ...(conversation.panelViewType === undefined
+        ? {}
+        : { panelViewType: conversation.panelViewType }),
+      ...(conversation.degradedFrom === undefined
+        ? {}
+        : { degradedFrom: conversation.degradedFrom }),
+      channelConfirmed: opening.channel,
+      // Jeton masque, repertoire personnel masque : c'est le seul chemin par lequel une entree
+      // devient affichable, et le coeur l'a deja applique.
+      window: opening.window,
+      // Ce qui a ete envoye, sans jamais le recopier : la SOURCE et la TAILLE suffisent a
+      // reconnaitre un prompt pris au mauvais endroit.
+      prompt: { source: prompt.source, bytes: prompt.bytes },
     },
   };
 }

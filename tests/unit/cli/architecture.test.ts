@@ -28,11 +28,12 @@ function sourcesUnder(directory: string): readonly string[] {
 }
 
 describe('garde-fou d architecture de la CLI', () => {
-  it('la CLI ne fait AUCUN reseau', () => {
-    // Le lot B ne parle a aucun serveur : `cmgr` lit le registre et la table des processus,
-    // rien d'autre. Le client HTTP est `core/client`, inscrit au lot C — une commande de
-    // lecture qui interrogerait `/health` ferait dependre l'inventaire des fenetres de leur
-    // joignabilite, deux questions distinctes.
+  it('la CLI n ouvre AUCUNE socket elle-meme : le reseau passe par le coeur', () => {
+    // L'increment C2 fait entrer le reseau dans `cmgr`, mais par UN SEUL chemin : le client du
+    // coeur (`core/client`), branche dans `run.ts` par `createLoopbackTransport()`. Ce que cette
+    // regle preserve n'est pas « aucun reseau » — `open` en fait — mais le fait qu'il n'y ait
+    // qu'un endroit ou l'hote, le port et les en-tetes se decident. Une socket ouverte
+    // directement ici echapperait a la garde de boucle locale et a l'absence d'`Origin`.
     const files = sourcesUnder(CLI_SRC);
     expect(files.length).toBeGreaterThan(0);
 
@@ -43,6 +44,20 @@ describe('garde-fou d architecture de la CLI', () => {
       );
       expect(source, path.basename(file)).not.toMatch(/\bfetch\s*\(|\bnew\s+WebSocket\b/);
     }
+  });
+
+  it('les commandes de LECTURE ne touchent pas au transport', () => {
+    // `cmgr windows` et `cmgr whoami` restent en lecture seule et hors reseau : faire dependre
+    // l'inventaire des fenetres de leur joignabilite melangerait deux questions distinctes.
+    // « Laquelle repond ? » appartient a `cmgr doctor` (lot D).
+    const commands = readFileSync(path.join(CLI_SRC, 'commands.ts'), 'utf8');
+    const [beforeOpen] = commands.split('export async function openCommand');
+    expect(beforeOpen, 'la partie du module anterieure a `open`').not.toMatch(
+      /context\s*\.\s*transport|openConversationInWindow\s*\(/
+    );
+    // L'assertion serait vide si le decoupage avait rate : `open` existe bien apres.
+    expect(commands).toContain('export async function openCommand');
+    expect(commands).toContain('context.transport');
   });
 
   it("la CLI n'importe jamais le module vscode", () => {

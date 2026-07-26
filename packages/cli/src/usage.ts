@@ -40,7 +40,7 @@ export interface Usage {
 export const USAGE: Usage = {
   name: CLI_NAME,
   version: CLI_VERSION,
-  synopsis: 'cmgr <windows|whoami>',
+  synopsis: 'cmgr <windows|whoami|open> [--prompt-file <chemin>]',
   commands: [
     {
       name: 'windows',
@@ -52,8 +52,18 @@ export const USAGE: Usage = {
       summary:
         "Resout la fenetre VSCode dans laquelle s'execute le processus appelant, en remontant sa chaine d'ancetres jusqu'a un extension host enregistre. N'avoir aucune fenetre hote est une erreur nommee (OWNING_WINDOW_NOT_FOUND).",
     },
+    {
+      name: 'open',
+      summary:
+        "Ouvre une conversation Claude dans la fenetre hote du processus appelant, avec un prompt d amorcage lu par --prompt-file ou sur stdin. Le canal est CONFIRME par GET /health avant toute demande — identite discordante, aucune ouverture. La sortie porte firstTurnVerified, TOUJOURS false : la route observe qu un processus a demarre, jamais que le tour ait ete joue (lot D). Un repli V5 sort en code 4, pas en 0.",
+    },
   ],
   options: [
+    {
+      name: '--prompt-file <chemin>',
+      summary:
+        "Fichier UTF-8 portant le prompt d amorcage de `open` ; un BOM eventuel est retire. En son absence, le prompt est lu sur stdin, sauf si stdin est un terminal — auquel cas c est une erreur d usage. Quand --prompt-file est donne, stdin n est NI lu NI inspecte : le fichier prime, et le champ prompt.source de la sortie dit toujours d ou le prompt est venu.",
+    },
     { name: '--help, -h', summary: 'Rend cette description, en JSON.' },
     { name: '--version, -v', summary: 'Rend le nom et la version du binaire, en JSON.' },
   ],
@@ -64,10 +74,13 @@ export const USAGE: Usage = {
     [String(EXIT_CODES.USAGE_ERROR)]: 'erreur d usage : commande inconnue, option inconnue, argument surnumeraire',
     [String(EXIT_CODES.UNEXPECTED_ERROR)]:
       'defaillance imprevue de ClaudeManager — reduite a son type et a son code systeme, jamais une trace de pile',
+    [String(EXIT_CODES.DEGRADED_SUCCESS)]:
+      'succes DEGRADE — le repli V5 a joue : la conversation est ouverte, mais le prompt y est seulement PRE-REMPLI et attend une validation humaine. Ni 0 (le tour ne tourne pas) ni 1 (l operation a bien eu lieu, la retenter ouvrirait une seconde conversation)',
   },
   notes: [
     "stdout ne porte QU'UNE SEULE valeur JSON, en succes comme en echec. Les diagnostics lisibles par un humain vont sur stderr.",
-    "Aucune commande n'accepte d'option, et aucune ne permet de decrire une fenetre a la main : les fenetres proviennent exclusivement du registre, ou leur identite est verifiee. Une fenetre decrite en ligne de commande contournerait cette verification.",
-    'cmgr est en lecture seule : il ne purge pas, n ecrit pas, n ouvre ni ne ferme aucune conversation, et ne fait AUCUN reseau.',
+    "Aucune commande ne permet de decrire une fenetre a la main : les fenetres proviennent exclusivement du registre, ou leur identite est verifiee. Une fenetre decrite en ligne de commande contournerait cette verification. Il n existe pas davantage d option pour designer un hote ou un port — cmgr ne parle qu a la boucle locale.",
+    "LE PROMPT NE PASSE JAMAIS PAR UN ARGUMENT : `cmgr open \"mon prompt\"` est une erreur d usage. L echappement des prompts longs en shell est une source de bugs inepuisable, et un prompt tronque partirait sans que rien ne le signale.",
+    "windows et whoami sont en LECTURE SEULE et ne font aucun reseau. open agit : il demande a la fenetre hote, sur 127.0.0.1, d ouvrir une conversation. Aucune commande n ecrit dans le registre, ne le purge, ni ne ferme de conversation.",
   ],
 };

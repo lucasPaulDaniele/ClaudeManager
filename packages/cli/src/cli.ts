@@ -12,6 +12,7 @@
  */
 
 import {
+  openCommand,
   whoamiCommand,
   windowsCommand,
   type CliContext,
@@ -23,21 +24,26 @@ import { EXIT_CODES, renderFailure, usageFailure, type ExitCode, type Failure } 
 import { CLI_NAME, CLI_VERSION, USAGE } from './usage.js';
 
 /**
- * Les commandes reconnues.
+ * Les commandes de LECTURE reconnues.
  *
- * Il n'y en a pas d'autre, et il n'existe AUCUNE option : c'est ce qui garantit qu'on ne
- * peut pas decrire une fenetre depuis la ligne de commande. La surface est la garantie.
+ * Elles n'acceptent AUCUNE option, et c'est ce qui garantit qu'on ne peut pas decrire une
+ * fenetre depuis la ligne de commande. `open` en accepte UNE — `--prompt-file` —, qui designe
+ * un fichier de prompt et rien d'autre : elle ne dit rien d'une fenetre, ni d'un hote, ni d'un
+ * port. La surface reste la garantie (alerte n.19).
  */
-const COMMANDS = {
+const READ_COMMANDS = {
   windows: windowsCommand,
   whoami: whoamiCommand,
 } as const;
 
-type CommandName = keyof typeof COMMANDS;
+type ReadCommandName = keyof typeof READ_COMMANDS;
 
-function isCommandName(value: string): value is CommandName {
-  return Object.prototype.hasOwnProperty.call(COMMANDS, value);
+function isReadCommandName(value: string): value is ReadCommandName {
+  return Object.prototype.hasOwnProperty.call(READ_COMMANDS, value);
 }
+
+const OPEN_COMMAND = 'open';
+const PROMPT_FILE_OPTION = '--prompt-file';
 
 export interface CliResult {
   /**
@@ -52,10 +58,55 @@ export interface CliResult {
 }
 
 type ParsedInvocation =
-  | { readonly kind: 'command'; readonly name: CommandName }
+  | { readonly kind: 'read'; readonly name: ReadCommandName }
+  | { readonly kind: 'open'; readonly promptFile: string | undefined }
   | { readonly kind: 'help' }
   | { readonly kind: 'version' }
   | { readonly kind: 'usage-error'; readonly failure: Failure };
+
+/**
+ * Analyse ce qui suit `open`, et refuse tout le reste.
+ *
+ * UN ARGUMENT POSITIONNEL EST UNE ERREUR, ET C'EST LE POINT : `cmgr open "mon prompt"` est
+ * precisement la forme que le produit s'interdit. La refuser ici est ce qui rend la regle
+ * OPERANTE plutot que declarative — l'echappement d'un prompt de 20 Ko en shell est une source
+ * de bugs inepuisable, et un prompt tronque par le shell partirait sans que rien ne le signale.
+ *
+ * La valeur fautive n'est jamais recopiee : seule sa POSITION est rendue (voir `usageFailure`).
+ */
+function parseOpenArguments(argv: readonly string[]): ParsedInvocation {
+  let promptFile: string | undefined;
+
+  for (let index = 1; index < argv.length; ) {
+    if (argv[index] !== PROMPT_FILE_OPTION) {
+      return {
+        kind: 'usage-error',
+        failure: usageFailure('Unknown option, or a prompt passed as an argument', {
+          argumentIndex: index + 1,
+        }),
+      };
+    }
+    if (promptFile !== undefined) {
+      return {
+        kind: 'usage-error',
+        failure: usageFailure('--prompt-file was given more than once', {
+          argumentIndex: index + 1,
+        }),
+      };
+    }
+    const value = argv[index + 1];
+    if (value === undefined) {
+      return {
+        kind: 'usage-error',
+        failure: usageFailure('--prompt-file expects a path', { argumentIndex: index + 1 }),
+      };
+    }
+    promptFile = value;
+    index += 2;
+  }
+
+  return { kind: 'open', promptFile };
+}
 
 /**
  * Reconnait l'invocation, ou la refuse.
@@ -73,13 +124,17 @@ function parseArguments(argv: readonly string[]): ParsedInvocation {
     return { kind: 'usage-error', failure: usageFailure('No command given') };
   }
 
+  // `open` est la SEULE commande qui prenne des arguments : elle analyse la suite elle-meme,
+  // les autres n'en tolerent aucun.
+  if (first === OPEN_COMMAND) return parseOpenArguments(argv);
+
   const recognized: ParsedInvocation | undefined =
     first === '--help' || first === '-h'
       ? { kind: 'help' }
       : first === '--version' || first === '-v'
         ? { kind: 'version' }
-        : isCommandName(first)
-          ? { kind: 'command', name: first }
+        : isReadCommandName(first)
+          ? { kind: 'read', name: first }
           : undefined;
 
   if (recognized === undefined) {
@@ -132,8 +187,13 @@ function skippedLines(skipped: readonly SkippedEntry[] | undefined): readonly st
 function succeeded(command: string, body: CommandBody, diagnostics: Diagnostics): CliResult {
   return {
     stdout: `${JSON.stringify(envelope(command, true, body, diagnostics), null, 2)}\n`,
-    stderr: say(skippedLines(diagnostics.skipped)),
-    exitCode: EXIT_CODES.SUCCESS,
+    stderr: say([...(diagnostics.notes ?? []), ...skippedLines(diagnostics.skipped)]),
+    /**
+     * UN SUCCES DEGRADE N'EST PAS UN SUCCES NOMINAL, et le code de sortie le dit sans qu'il
+     * faille analyser la sortie : la conversation est ouverte, mais le prompt n'y est que
+     * PRE-REMPLI et attend un geste humain. Voir `EXIT_CODES.DEGRADED_SUCCESS`.
+     */
+    exitCode: diagnostics.degraded === true ? EXIT_CODES.DEGRADED_SUCCESS : EXIT_CODES.SUCCESS,
   };
 }
 
@@ -175,8 +235,23 @@ export async function runCli(argv: readonly string[], context: CliContext): Prom
       return succeeded('version', { name: CLI_NAME, version: CLI_VERSION }, diagnostics);
     }
 
+    if (parsed.kind === 'open') {
+      command = OPEN_COMMAND;
+      // `open` peut encore refuser sur l'USAGE apres l'analyse d'arguments — « aucun prompt,
+      // et stdin est un terminal » ne se voit pas dans `argv`. La commande NOMME alors la
+      // commande fautive, la ou une erreur d'analyse ne le peut pas.
+      const outcome = await openCommand(context, diagnostics, { promptFile: parsed.promptFile });
+      return outcome.kind === 'usage'
+        ? failed(OPEN_COMMAND, outcome.failure, diagnostics)
+        : succeeded(OPEN_COMMAND, outcome.body, diagnostics);
+    }
+
     command = parsed.name;
-    return succeeded(parsed.name, await COMMANDS[parsed.name](context, diagnostics), diagnostics);
+    return succeeded(
+      parsed.name,
+      await READ_COMMANDS[parsed.name](context, diagnostics),
+      diagnostics
+    );
   } catch (cause) {
     return failed(command, renderFailure(cause), diagnostics);
   }

@@ -14,7 +14,12 @@
 import { expect } from 'vitest';
 import type { CliResult } from '../../../packages/cli/src/cli.js';
 import type { CliContext } from '../../../packages/cli/src/commands.js';
-import type { ProcessTable } from '../../../packages/core/src/index.js';
+import type { PromptStdin } from '../../../packages/cli/src/prompt.js';
+import {
+  createLoopbackTransport,
+  type ProcessTable,
+  type WindowTransport,
+} from '../../../packages/core/src/index.js';
 import { REAL_TABLE, snapshotOf } from '../registry/fixtures.js';
 
 export { WINDOWS_ROLES } from '../identity/fixtures.js';
@@ -35,15 +40,40 @@ export {
  */
 export interface TestContext extends CliContext {
   readonly snapshotReads: () => number;
+  /** Combien de fois stdin a ete LU — zero est une assertion a part entiere. */
+  readonly stdinReads: () => number;
+}
+
+export interface ContextOverrides {
+  /** Ce que stdin porte. Absent : stdin est un TERMINAL, donc rien n'en viendra. */
+  readonly stdinText?: string;
+  /**
+   * Le transport. Defaut : le VRAI transport de production, jamais un double.
+   *
+   * Les commandes de lecture ne l'emploient pas, et c'est une propriete a part entiere :
+   * `cmgr windows` et `cmgr whoami` ne font aucun reseau. Le lui donner quand meme est ce qui
+   * rend cette propriete observable — s'il etait appele, une socket s'ouvrirait vraiment.
+   */
+  readonly transport?: WindowTransport;
 }
 
 export function contextFor(
   registryDir: string | undefined,
   pid: number,
-  table: ProcessTable = REAL_TABLE
+  table: ProcessTable = REAL_TABLE,
+  overrides: ContextOverrides = {}
 ): TestContext {
   const snapshot = snapshotOf(table);
   let reads = 0;
+  let stdinReads = 0;
+
+  const stdin: PromptStdin = {
+    isTerminal: overrides.stdinText === undefined,
+    read: () => {
+      stdinReads += 1;
+      return Promise.resolve(overrides.stdinText ?? '');
+    },
+  };
 
   return {
     pid,
@@ -52,8 +82,27 @@ export function contextFor(
       reads += 1;
       return Promise.resolve(snapshot);
     },
+    stdin,
+    transport: overrides.transport ?? createLoopbackTransport(),
     snapshotReads: () => reads,
+    stdinReads: () => stdinReads,
   };
+}
+
+/**
+ * Contexte dont SEULE la couture d'inventaire est remplacee.
+ *
+ * Tout le reste — registre, stdin, transport — reste celui que `contextFor` cable, c'est-a-dire
+ * le montage de production. C'est ce qui permet d'eprouver une defaillance de l'inventaire sans
+ * reecrire un contexte entier a la main, donc sans risquer d'en oublier une piece au prochain
+ * champ ajoute.
+ */
+export function contextWithSnapshot(
+  registryDir: string,
+  pid: number,
+  readSnapshot: CliContext['readSnapshot']
+): CliContext {
+  return { ...contextFor(registryDir, pid), readSnapshot };
 }
 
 /**

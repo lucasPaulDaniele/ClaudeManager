@@ -7,10 +7,25 @@
  */
 
 import { runCli } from './cli.js';
-import { readProcessTable } from './core.js';
+import { createLoopbackTransport, readProcessTable } from './core.js';
+import type { PromptStdin } from './prompt.js';
 
 export interface WritableLike {
   write(chunk: string): unknown;
+}
+
+/**
+ * L'entree standard, telle que Node la presente.
+ *
+ * ASYNC-ITERABLE plutot qu'un jeu d'evenements : c'est ce que `Readable` expose, et cela permet
+ * de brancher ici un VRAI flux — `Readable.from([...])` dans les tests, `process.stdin` en
+ * production — sans jamais fabriquer un faux emetteur d'evenements.
+ *
+ * `isTTY` n'est pas declare par tous les flux que Node peut poser sur le descripteur 0 : il est
+ * donc optionnel, et c'est `=== true` qui decide, jamais l'absence.
+ */
+export interface StdinLike extends AsyncIterable<string | Uint8Array> {
+  readonly isTTY?: boolean | undefined;
 }
 
 /**
@@ -22,9 +37,43 @@ export interface WritableLike {
 export interface CliHost {
   readonly argv: readonly string[];
   readonly pid: number;
+  readonly stdin: StdinLike;
   readonly stdout: WritableLike;
   readonly stderr: WritableLike;
   exitCode?: number | string | null | undefined;
+}
+
+/**
+ * Lit l'entree standard jusqu'a EOF, en UTF-8.
+ *
+ * LES OCTETS SONT CONCATENES AVANT D'ETRE DECODES, et ce n'est pas un detail de style : un
+ * caractere multi-octets peut etre coupe en deux par une frontiere de paquet, et decoder
+ * morceau par morceau le remplacerait par deux caracteres de remplacement. Un prompt accentue
+ * de 20 Ko arrive necessairement en plusieurs morceaux.
+ */
+async function readAll(stdin: StdinLike): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stdin) {
+    // Un `Readable` rend des `Buffer` par defaut, mais rend des chaines des qu'un encodage lui
+    // a ete pose : les deux formes sont ramenees a des octets avant d'etre concatenees.
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * Reduit un flux d'entree a ce que la CLI en attend.
+ *
+ * EXPORTEE POUR ETRE EPROUVEE, et c'est la seule raison : un test qui reecrirait ce calcul de
+ * son cote ne verifierait que sa propre copie. C'est la fonction que `runProcess` emploie.
+ */
+export function promptStdinFrom(stdin: StdinLike): PromptStdin {
+  return {
+    // `=== true`, jamais la seule absence : `isTTY` vaut `undefined` sur un tube COMME sur
+    // `NUL` — mesure du 2026-07-26 —, et seule la valeur `true` affirme un terminal.
+    isTerminal: stdin.isTTY === true,
+    read: () => readAll(stdin),
+  };
 }
 
 /**
@@ -48,6 +97,11 @@ export async function runProcess(host: CliHost): Promise<void> {
     // La fonction du coeur, passee telle quelle : un enrobage `() => readProcessTable()`
     // n'ajouterait rien qu'une ligne que rien n'eprouve.
     readSnapshot: readProcessTable,
+    stdin: promptStdinFrom(host.stdin),
+    // Le transport du COEUR, cable ici et nulle part ailleurs : aucune source de la CLI
+    // n'importe `node:http`, et il n'existe aucune option pour designer un hote — une entree
+    // de registre ne decrit jamais qu'une fenetre de CE poste.
+    transport: createLoopbackTransport(),
   });
 
   host.stdout.write(result.stdout);
