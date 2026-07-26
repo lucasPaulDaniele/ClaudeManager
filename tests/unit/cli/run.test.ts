@@ -1,5 +1,11 @@
+import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { runProcess, type CliHost } from '../../../packages/cli/src/run.js';
+import {
+  promptStdinFrom,
+  runProcess,
+  type CliHost,
+  type StdinLike,
+} from '../../../packages/cli/src/run.js';
 
 /**
  * Branchement sur le processus.
@@ -21,7 +27,18 @@ interface Recorder extends CliHost {
   readonly err: string[];
 }
 
-function hostWith(argv: readonly string[], pid: number): Recorder {
+/**
+ * Un VRAI flux lisible, jamais un faux emetteur d'evenements.
+ *
+ * `Readable.from` produit exactement ce que Node pose sur le descripteur 0 pour un tube :
+ * un `Readable` qui rend des `Buffer` en plusieurs morceaux. C'est ce qui rend la propriete
+ * « on concatene avant de decoder » observable, plutot que declaree.
+ */
+function stdinFrom(chunks: readonly Uint8Array[], isTTY = false): StdinLike {
+  return Object.assign(Readable.from(chunks), { isTTY });
+}
+
+function hostWith(argv: readonly string[], pid: number, stdin?: StdinLike): Recorder {
   const out: string[] = [];
   const err: string[] = [];
 
@@ -29,6 +46,9 @@ function hostWith(argv: readonly string[], pid: number): Recorder {
     // `argv` REEL de Node : interpreteur, script, puis l'invocation.
     argv: ['C:\\Program Files\\nodejs\\node.exe', 'cmgr', ...argv],
     pid,
+    // Par defaut, un terminal : aucune commande de ce fichier ne lit stdin, et un flux qui
+    // pendrait ferait pendre le test plutot que d'echouer.
+    stdin: stdin ?? stdinFrom([], true),
     stdout: { write: (chunk: string) => out.push(chunk) },
     stderr: { write: (chunk: string) => err.push(chunk) },
     out,
@@ -73,5 +93,51 @@ describe('runProcess', () => {
 
     expect(host.err.join('')).toContain('cmgr: CLI_USAGE');
     expect(host.out.join('')).not.toContain('cmgr:');
+  });
+});
+
+/**
+ * LA LECTURE DE STDIN, sur un VRAI flux.
+ *
+ * `open` n'est pas invoquee ici — `runProcess` cable le contexte de PRODUCTION, registre reel du
+ * poste compris, ce qu'aucun test unitaire de ce depot ne touche. Ce qui est eprouve est la
+ * PLOMBERIE : ce que `run.ts` fait des octets qu'il recoit, et comment il juge le terminal.
+ * L'usage qu'`open` en fait est eprouve dans `open.test.ts`.
+ */
+describe('lecture de stdin', () => {
+  it('un caractere multi-octets coupe entre deux morceaux reste intact', async () => {
+    // Un prompt accentue de 20 Ko arrive necessairement en plusieurs morceaux, et la coupure
+    // peut tomber AU MILIEU d'un caractere. Decoder morceau par morceau le remplacerait par
+    // deux caracteres de remplacement — silencieusement, dans le prompt d'une vraie conversation.
+    const bytes = Buffer.from('Reponds : eleve, ete, ou — et voila.', 'utf8');
+    const dash = bytes.indexOf(Buffer.from('—', 'utf8'));
+    expect(dash).toBeGreaterThan(0);
+
+    const stdin = promptStdinFrom(
+      stdinFrom([bytes.subarray(0, dash + 1), bytes.subarray(dash + 1)])
+    );
+
+    expect(await stdin.read()).toBe('Reponds : eleve, ete, ou — et voila.');
+    expect(await promptStdinFrom(stdinFrom([bytes])).read()).not.toContain('�');
+  });
+
+  it('accepte aussi bien des Buffer que des chaines', async () => {
+    // Un `Readable` rend des `Buffer` par defaut, et des chaines des qu'un encodage lui a ete
+    // pose. `process.stdin` peut etre dans l'un ou l'autre etat selon ce qui l'a touche.
+    const stdin = promptStdinFrom(Readable.from(['une chaine, ', Buffer.from('puis des octets')]));
+
+    expect(await stdin.read()).toBe('une chaine, puis des octets');
+  });
+
+  it('un terminal est reconnu par `isTTY === true`, jamais par son absence', async () => {
+    // MESURE DU 2026-07-26 : dans le harnais qui execute les outils d'un agent, `isTTY` vaut
+    // `undefined` alors que rien n'attend sur stdin. Traiter l'absence comme « pas un terminal »
+    // est donc juste ; la traiter comme « un terminal » ferait echouer l'invocation nominale.
+    expect(promptStdinFrom(stdinFrom([], true)).isTerminal).toBe(true);
+    expect(promptStdinFrom(stdinFrom([])).isTerminal).toBe(false);
+
+    const withoutIsTTY: StdinLike = Readable.from([]);
+    expect(withoutIsTTY.isTTY).toBeUndefined();
+    expect(promptStdinFrom(withoutIsTTY).isTerminal).toBe(false);
   });
 });

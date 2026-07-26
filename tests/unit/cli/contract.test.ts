@@ -9,6 +9,7 @@ import { CLI_VERSION } from '../../../packages/cli/src/usage.js';
 import { readProcessTable, writeWindowEntry } from '../../../packages/core/src/index.js';
 import {
   contextFor,
+  contextWithSnapshot,
   copyLegacyEntriesInto,
   currentSchemaEntry,
   expectFailure,
@@ -43,6 +44,9 @@ describe('contrat de sortie de cmgr', () => {
       ['nope'], // commande inconnue
       ['--registry-dir'], // option inconnue
       ['windows', '--json'], // argument surnumeraire
+      ['open'], // erreur d'usage : aucun prompt, et stdin est un terminal
+      ['open', '--prompt-file'], // option sans valeur
+      ['open', 'un prompt positionnel'], // la forme que le produit s'interdit
     ];
 
     for (const argv of invocations) {
@@ -122,8 +126,19 @@ describe('usage', () => {
     expect((usage['commands'] as readonly Record<string, unknown>[]).map((c) => c['name'])).toEqual([
       'windows',
       'whoami',
+      'open',
     ]);
-    expect(Object.keys(usage['exitCodes'] as Record<string, string>)).toEqual(['0', '1', '2', '3']);
+    // Le cinquieme code est celui du repli V5 : ni un succes nominal, ni un echec.
+    expect(Object.keys(usage['exitCodes'] as Record<string, string>)).toEqual([
+      '0',
+      '1',
+      '2',
+      '3',
+      '4',
+    ]);
+    expect((usage['options'] as readonly Record<string, unknown>[]).map((o) => o['name'])).toContain(
+      '--prompt-file <chemin>'
+    );
 
     const version = expectSuccess(await runCli(['--version'], contextFor(undefined, CALLER)));
     expect(version).toEqual({ command: 'version', ok: true, name: 'cmgr', version: CLI_VERSION });
@@ -156,11 +171,12 @@ describe('defaillances', () => {
   it('PROCESS_TABLE_UNAVAILABLE est rendue telle quelle, code 1', async () => {
     // Le VRAI `readProcessTable`, par sa couture de test documentee : une sortie vide est
     // une anomalie — un processus se lit toujours au moins lui-meme.
-    const result = await runCli(['windows'], {
-      pid: CALLER,
-      registryDir: makeRegistryDir(),
-      readSnapshot: () => readProcessTable({ platform: 'win32', run: () => Promise.resolve('') }),
-    });
+    const result = await runCli(
+      ['windows'],
+      contextWithSnapshot(makeRegistryDir(), CALLER, () =>
+        readProcessTable({ platform: 'win32', run: () => Promise.resolve('') })
+      )
+    );
     const error = expectFailure(result, EXIT_CODES.DOMAIN_ERROR);
 
     expect(error['code']).toBe('PROCESS_TABLE_UNAVAILABLE');
@@ -184,13 +200,12 @@ describe('defaillances', () => {
   it('une defaillance imprevue sort en code 3, sans trace de pile ni message brut', async () => {
     const leaky = new TypeError(`boom at ${path.join(os.homedir(), 'secret')}`);
 
-    const result = await runCli(['whoami'], {
-      pid: CALLER,
-      registryDir: makeRegistryDir(),
-      readSnapshot: () => {
+    const result = await runCli(
+      ['whoami'],
+      contextWithSnapshot(makeRegistryDir(), CALLER, () => {
         throw leaky;
-      },
-    });
+      })
+    );
     const error = expectFailure(result, EXIT_CODES.UNEXPECTED_ERROR);
 
     expect(error['code']).toBe('CLI_UNEXPECTED');
@@ -206,11 +221,12 @@ describe('defaillances', () => {
   it('survit a ce qui n est meme pas une Error', async () => {
     // Une chaine levee n'a ni nom ni code : elle ne doit pas pour autant faire sortir la
     // CLI de son contrat.
-    const result = await runCli(['windows'], {
-      pid: CALLER,
-      registryDir: makeRegistryDir(),
-      readSnapshot: () => Promise.reject('c:\\Users\\quelqu-un\\quelque-chose'),
-    });
+    const result = await runCli(
+      ['windows'],
+      contextWithSnapshot(makeRegistryDir(), CALLER, () =>
+        Promise.reject('c:\\Users\\quelqu-un\\quelque-chose')
+      )
+    );
     const error = expectFailure(result, EXIT_CODES.UNEXPECTED_ERROR);
 
     expect(error['message']).toBe('Unknown(UNKNOWN)');
@@ -222,11 +238,10 @@ describe('defaillances', () => {
       code: 'EPERM',
     });
 
-    const result = await runCli(['windows'], {
-      pid: CALLER,
-      registryDir: makeRegistryDir(),
-      readSnapshot: () => Promise.reject(systemLike),
-    });
+    const result = await runCli(
+      ['windows'],
+      contextWithSnapshot(makeRegistryDir(), CALLER, () => Promise.reject(systemLike))
+    );
     const error = expectFailure(result, EXIT_CODES.UNEXPECTED_ERROR);
 
     expect(error['message']).toBe('Error(EPERM)');
