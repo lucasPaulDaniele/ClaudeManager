@@ -7,18 +7,41 @@
  *
  * Chaque code portant sur une API interne de l'ecosysteme Claude correspond a une ligne de
  * `docs/compatibilite.md`. Les codes portant sur une dependance au systeme d'exploitation
- * — `PROCESS_TABLE_UNAVAILABLE` pour l'inventaire des processus, `REGISTRY_UNREADABLE` et
- * `REGISTRY_ENTRY_INVALID` pour le systeme de fichiers — n'y figurent pas : ils ne
- * dependent d'aucune API interne. Pas davantage ceux qui portent sur le format du registre
- * lui-meme (`DUPLICATE_WINDOW_IDENTITY`, `OWNING_WINDOW_NOT_FOUND`) : ce format est le
- * notre, il n'est emprunte a personne.
+ * — `PROCESS_TABLE_UNAVAILABLE` pour l'inventaire des processus, `REGISTRY_UNREADABLE`,
+ * `REGISTRY_ENTRY_INVALID` et `PROMPT_FILE_UNWRITABLE` pour le systeme de fichiers,
+ * `SEED_SHELL_NOT_FOUND` pour le shell — n'y figurent pas : ils ne dependent d'aucune API
+ * interne. Pas davantage ceux qui portent sur le format du registre lui-meme
+ * (`DUPLICATE_WINDOW_IDENTITY`, `OWNING_WINDOW_NOT_FOUND`) : ce format est le notre, il
+ * n'est emprunte a personne. `WORKSPACE_FOLDER_MISSING` et `WORKSPACE_NOT_TRUSTED` portent
+ * sur l'etat de la FENETRE, que l'API `vscode` publique decrit — ils n'y figurent pas non plus.
+ *
+ * `PROMPT_TOO_LARGE`, lui, Y FIGURE (D19) bien qu'il enonce une limite du systeme
+ * d'exploitation : ce qui le rend atteignable est le CONTRAT DU CLI — le prompt n'est
+ * soumissible qu'en argument positionnel (D3). Le jour ou le CLI accepterait un prompt par
+ * fichier, cette limite cesserait de s'appliquer sans que Windows ait change.
  */
 
 export const ERROR_CODES = {
+  /** L'extension Claude Code n'est pas installee dans cette fenetre. */
+  CLAUDE_EXTENSION_MISSING: 'CLAUDE_EXTENSION_MISSING',
+  /** L'extension Claude Code est installee mais son activation n'a pas abouti. */
+  CLAUDE_EXTENSION_INACTIVE: 'CLAUDE_EXTENSION_INACTIVE',
   /** La commande `claude-vscode.editor.open` est absente de l'inventaire VSCode. */
   CLAUDE_COMMAND_MISSING: 'CLAUDE_COMMAND_MISSING',
   /** Aucun onglet ne porte le viewType attendu alors qu'une conversation etait attendue. */
   CLAUDE_PANEL_VIEWTYPE_UNKNOWN: 'CLAUDE_PANEL_VIEWTYPE_UNKNOWN',
+  /** Le binaire `claude` n'a ete trouve ni dans le bundle de l'extension, ni sur le PATH. */
+  CLAUDE_BINARY_NOT_FOUND: 'CLAUDE_BINARY_NOT_FOUND',
+  /** Le shell qui doit porter le tour 1 (`pwsh`) est introuvable. */
+  SEED_SHELL_NOT_FOUND: 'SEED_SHELL_NOT_FOUND',
+  /** La ligne de commande portant le prompt depasserait le plafond du systeme. */
+  PROMPT_TOO_LARGE: 'PROMPT_TOO_LARGE',
+  /** Le fichier transitoire portant le prompt n'a pas pu etre ecrit. */
+  PROMPT_FILE_UNWRITABLE: 'PROMPT_FILE_UNWRITABLE',
+  /** Le shell du terminal masque n'a jamais engendre le processus `claude` du tour 1. */
+  SEED_PROCESS_NOT_STARTED: 'SEED_PROCESS_NOT_STARTED',
+  /** La fenetre cible n'a aucun dossier de travail : rien ne peut y servir de `cwd`. */
+  WORKSPACE_FOLDER_MISSING: 'WORKSPACE_FOLDER_MISSING',
   /** Le CLI n'a pas rendu la session demandee lors de l'amorcage headless. */
   SEED_SESSION_ID_MISMATCH: 'SEED_SESSION_ID_MISMATCH',
   /** Le transcript d'une session est introuvable ou illisible. */
@@ -43,10 +66,26 @@ export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
 /** Remediation affichee a l'utilisateur pour chaque code. */
 const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
+  [ERROR_CODES.CLAUDE_EXTENSION_MISSING]:
+    "L'extension Claude Code (anthropic.claude-code) n'est pas installee dans cette fenetre. L'installer, puis rouvrir la fenetre. Sans elle, aucune conversation ne peut etre ouverte, pas meme en mode degrade.",
+  [ERROR_CODES.CLAUDE_EXTENSION_INACTIVE]:
+    "L'extension Claude Code est installee mais n'a pas pu etre activee dans cette fenetre. Verifier que le dossier est approuve (Workspace Trust) et consulter le journal de l'extension ; ses commandes sont enregistrees a l'activation, elles n'existent pas avant.",
   [ERROR_CODES.CLAUDE_COMMAND_MISSING]:
-    "L'extension Claude Code n'est pas active dans cette fenetre. Verifier qu'elle est installee, puis que le dossier est approuve (Workspace Trust) : en Restricted Mode ses commandes n'existent pas.",
+    "L'extension Claude Code est active mais n'expose plus la commande claude-vscode.editor.open. Cette commande n'est pas contractuelle : consulter docs/compatibilite.md (D1). Aucun repli n'est possible, le repli lui-meme passe par cette commande.",
   [ERROR_CODES.CLAUDE_PANEL_VIEWTYPE_UNKNOWN]:
-    "Aucun onglet de conversation Claude n'a ete reconnu. La version installee de l'extension a peut-etre change son viewType : consulter docs/compatibilite.md.",
+    "Aucun onglet de conversation Claude n'a ete reconnu. Trois causes possibles, dans cet ordre de vraisemblance : le CLI attend derriere une de ses deux portes (onboarding, ou 'Quick safety check' du dossier — les verifier avec cmgr doctor), la session n'a pas demarre, ou la version installee de l'extension a change son viewType (docs/compatibilite.md, D2).",
+  [ERROR_CODES.CLAUDE_BINARY_NOT_FOUND]:
+    "Le binaire claude est introuvable : ni sous resources/native-binary du repertoire de l'extension Claude Code, ni sur le PATH de cette fenetre. Verifier l'installation de l'extension ; ne jamais coder son chemin en dur, il porte le numero de version (docs/compatibilite.md, D16).",
+  [ERROR_CODES.SEED_SHELL_NOT_FOUND]:
+    "PowerShell 7 (pwsh) est introuvable sur le PATH de cette fenetre. Le tour 1 est joue dans un shell, jamais en lancant claude.exe directement : c'est le shell qui garde un canal ouvert vers le processus. Installer PowerShell 7, ou signaler le besoin d'un autre shell — sa forme de citation devra etre mesuree avant d'etre employee.",
+  [ERROR_CODES.PROMPT_TOO_LARGE]:
+    "Le prompt depasse ce que la ligne de commande du systeme peut porter (~32 767 unites UTF-16 sous Windows, prompt cite et executable compris). Raccourcir le prompt, ou le decouper en plusieurs tours. Le detail porte la taille mesuree et le plafond.",
+  [ERROR_CODES.PROMPT_FILE_UNWRITABLE]:
+    "Le fichier transitoire portant le prompt n'a pas pu etre ecrit dans le repertoire de stockage de l'extension. Verifier les droits d'ecriture de ce repertoire et qu'aucun antivirus ne le verrouille.",
+  [ERROR_CODES.SEED_PROCESS_NOT_STARTED]:
+    "Le shell du terminal masque n'a engendre aucun processus : le tour 1 n'a pas demarre. Causes connues, dans cet ordre : une des deux portes du CLI attend une reponse (onboarding, ou 'Quick safety check' du dossier — les verifier avec cmgr doctor), le binaire claude a refuse de demarrer, ou le shell n'a pas execute la ligne.",
+  [ERROR_CODES.WORKSPACE_FOLDER_MISSING]:
+    "La fenetre cible n'a aucun dossier de travail. Le tour 1 est joue dans le workspace de la fenetre — c'est ce qui garantit que le panneau attache bien la session ouverte. Ouvrir un dossier dans cette fenetre.",
   [ERROR_CODES.SEED_SESSION_ID_MISMATCH]:
     "Le CLI claude n'a pas honore l'identifiant de session demande. Verifier la version du binaire avec `cmgr doctor`.",
   [ERROR_CODES.TRANSCRIPT_UNREADABLE]:

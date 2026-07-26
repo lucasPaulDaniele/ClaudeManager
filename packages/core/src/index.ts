@@ -7,6 +7,16 @@ export {
   type SerializedError,
 } from './errors.js';
 
+export {
+  assertCommandLineFits,
+  COMMAND_LINE_SAFETY_MARGIN,
+  measureCommandLineBudget,
+  quotedArgumentCost,
+  WINDOWS_COMMAND_LINE_LIMIT,
+  type CommandLineBudget,
+  type CommandLineDraft,
+} from './commandLine.js';
+
 export { ancestorsOf } from './identity/ancestry.js';
 export {
   parsePosixProcessTable,
