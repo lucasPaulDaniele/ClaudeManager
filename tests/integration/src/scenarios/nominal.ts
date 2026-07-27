@@ -10,8 +10,9 @@
  *   §2 — republication sur `onDidChangeWorkspaceFolders`, port MESURE de part et d'autre ;
  *        et ce qu'on peut dire de `onDidGrantWorkspaceTrust` dans ce harnais — mesure a
  *        l'appui, pas par declaration.
- *   §6 — enumeration de `tabGroups`, EN LECTURE. Ouvrir ou fermer une conversation releve du
- *        lot C : `tabGroups.close` n'est appele nulle part ici.
+ *   §6 — enumeration de `tabGroups`, EN LECTURE. Ouvrir et fermer une conversation ont leurs
+ *        propres scenarios (`open-conversation`, `close-conversation`) : `tabGroups.close`
+ *        n'est appele nulle part ICI, et ce fichier n'a pas a le savoir.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────
  * CE SCENARIO TRAVAILLE SUR LE REGISTRE REEL DU POSTE — c'est VOULU (finding C8 du gate).
@@ -391,11 +392,11 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
 
   // ---- §6 : enumeration de `tabGroups`, EN LECTURE SEULE -------------------------------
   //
-  // `tabGroups.close` n'est appele NULLE PART : ouvrir et fermer une conversation relevent du
-  // lot C, et l'extension n'a aujourd'hui aucune commande pour cela. Ce qui est eprouve ici
-  // est la SEULE moitie dont le lot C aura besoin en premier — reconnaitre un onglet a son
-  // `viewType`, ce que `CLAUDE.md` decrit par « l'onglet dont le viewType contient
-  // claudeVSCodePanel ».
+  // `tabGroups.close` n'est appele NULLE PART DANS CE FICHIER : la fermeture a son propre
+  // scenario depuis l'increment C4 (`close-conversation`), qui l'eprouve sur de vrais onglets.
+  // Ce qui est eprouve ici est la SEULE moitie dont la fermeture avait besoin en premier —
+  // reconnaitre un onglet a son `viewType`, ce que `CLAUDE.md` decrit par « l'onglet dont le
+  // viewType contient claudeVSCodePanel ».
   //
   // `preserveFocus: true` partout : le principe fondateur n.1 ne s'arrete pas au harnais.
   const document = await vscode.workspace.openTextDocument({
@@ -422,10 +423,10 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
   );
 
   const observedViewType = (webviewTab.input as vscode.TabInputWebview).viewType;
-  // CE QUE CETTE ASSERTION APPREND AU LOT C : le `viewType` rendu par `TabInputWebview` n'est
-  // PAS celui que l'extension a fourni — VSCode le prefixe (`mainThreadWebview-…`). Un lot C
-  // qui comparerait par EGALITE ne reconnaitrait jamais le panneau ; « contient » est la
-  // bonne relation, et ce n'est plus une intuition.
+  // CE QUE CETTE ASSERTION A APPRIS AU LOT C : le `viewType` rendu par `TabInputWebview` n'est
+  // PAS celui que l'extension a fourni — VSCode le prefixe (`mainThreadWebview-…`). Une
+  // comparaison par EGALITE ne reconnaitrait jamais le panneau ; « contient » est la bonne
+  // relation, et c'est desormais la regle de reconnaissance de l'enumeration ET de la fermeture.
   assert.ok(
     observedViewType.includes(PROBE_VIEW_TYPE),
     `the enumerated viewType must contain the one we registered; got ${observedViewType}`
@@ -433,7 +434,7 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
   assert.notEqual(
     observedViewType,
     PROBE_VIEW_TYPE,
-    'measured: VSCode does not return the raw viewType — if that ever changes, lot C should know'
+    'measured: VSCode does not return the raw viewType — if that ever changes, isClaudePanel breaks'
   );
 
   const tabsWhilePanelOpen = allTabs().length;
@@ -551,7 +552,7 @@ export async function runNominal(context: ScenarioContext): Promise<void> {
       healthWorkspaceFolders: (healthAfterBody['workspaceFolders'] as readonly string[]).length,
     },
     tabGroups: {
-      // §6 — LECTURE SEULE. `tabGroups.close` n'est appele nulle part.
+      // §6 — LECTURE SEULE DANS CE SCENARIO. La fermeture est mesuree par `close-conversation`.
       closeEverCalled: false,
       groupCount: vscode.window.tabGroups.all.length,
       tabsWhilePanelOpen,

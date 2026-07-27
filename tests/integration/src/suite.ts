@@ -16,6 +16,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { runCloseConversation } from './scenarios/closeConversation.js';
 import { runEmptyWorkspace } from './scenarios/emptyWorkspace.js';
 import { runNominal } from './scenarios/nominal.js';
 import { runOpenConversation } from './scenarios/openConversation.js';
@@ -29,6 +30,10 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
   // Increment C1 : le seul scenario a EFFET DE BORD, et le seul lance avec l'extension
   // Claude chargee (`--disable-extensions` retire pour lui SEUL).
   'open-conversation': runOpenConversation,
+  // Increment C4 : la fermeture. Il a un effet de bord sur des ONGLETS, mais il n'ouvre aucune
+  // conversation et ne facture aucun tour — il cree ses propres onglets de webview, dont le
+  // `viewType` CONTIENT le motif de reconnaissance. L'extension Claude n'y est donc pas requise.
+  'close-conversation': runCloseConversation,
 };
 
 export async function run(): Promise<void> {
