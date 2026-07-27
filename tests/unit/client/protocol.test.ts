@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   isClaudeManagerError,
+  readClosedConversation,
   readHealth,
   readOpenedConversation,
+  readWindowConversations,
   type ClaudeManagerError,
   type WindowResponse,
 } from '../../../packages/core/src/index.js';
@@ -635,12 +637,242 @@ describe('POST /conversations, tel qu une vraie fenetre le rend', () => {
  * lire la sortie, et la remediation ne peut varier qu'avec le CODE.
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
+/**
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * LES DEUX ROUTES DE C4, TELLES QU'UNE VRAIE FENETRE LES REND.
+ *
+ * Les corps sont VERBATIM, releves le 2026-07-27 par le scenario `close-conversation` dans une
+ * vraie fenetre. Les formes degradees en sont derivees champ a champ — jamais inventees : chacune
+ * retire ou altere UN element de la capture, ce qui est exactement la question posee.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+function listBodyWith(patch: Readonly<Record<string, unknown>>): WindowResponse {
+  const captured = JSON.parse(CAPTURED.listConversations.body) as Record<string, unknown>;
+  return { status: 200, body: JSON.stringify({ ...captured, ...patch }) };
+}
+
+/** La capture, dont on altere UN champ de la PREMIERE conversation enumeree. */
+function conversationWith(patch: Readonly<Record<string, unknown>>): WindowResponse {
+  const captured = JSON.parse(CAPTURED.listConversations.body) as {
+    conversations: Record<string, unknown>[];
+  };
+  const [first, ...rest] = captured.conversations;
+  return listBodyWith({ conversations: [{ ...first, ...patch }, ...rest] });
+}
+
+function closeBodyWith(patch: Readonly<Record<string, unknown>>): WindowResponse {
+  const captured = JSON.parse(CAPTURED.closeConversation.body) as Record<string, unknown>;
+  return { status: 200, body: JSON.stringify({ ...captured, ...patch }) };
+}
+
+describe('GET /conversations, tel qu une vraie fenetre le rend', () => {
+  it('relit le corps CAPTURE, champ par champ', () => {
+    const listing = readWindowConversations({ status: 200, body: CAPTURED.listConversations.body });
+
+    expect(listing.extHostPid).toBe(22376);
+    expect(listing.conversations).toEqual([
+      {
+        id: 'f1c29ec4-6098-4077-a8f9-083ade4df927',
+        label: 'Conversation A',
+        // RELEVE TEL QUEL : VSCode le PREFIXE, et c'est ce que la reconnaissance par
+        // « contient » exige de savoir (D2).
+        viewType: 'mainThreadWebview-claudeVSCodePanelCloseProbeA',
+        viewColumn: 1,
+        indexInGroup: 1,
+        isActive: false,
+      },
+      {
+        id: 'b5511483-ea7a-4c72-8abf-d60c6e8fb7ac',
+        label: 'Conversation B',
+        viewType: 'mainThreadWebview-claudeVSCodePanelCloseProbeB',
+        viewColumn: 1,
+        indexInGroup: 2,
+        isActive: false,
+      },
+    ]);
+  });
+
+  it('relit une liste VIDE, telle que la fenetre la rend apres deux fermetures', () => {
+    // CE N'EST PAS UNE ERREUR, et un client qui la refuserait casserait sur l'etat le plus
+    // ordinaire d'une fenetre.
+    const listing = readWindowConversations({
+      status: 200,
+      body: CAPTURED.listConversationsEmpty.body,
+    });
+
+    expect(listing.conversations).toEqual([]);
+  });
+
+  it('refuse une reponse dont un champ manque, en le NOMMANT', () => {
+    for (const [field, patch] of [
+      ['ok', { ok: false }],
+      ['extHostPid', { extHostPid: '22376' }],
+      ['conversations', { conversations: 'aucune' }],
+      ['conversations', { conversations: { id: 'x' } }],
+    ] as const) {
+      const error = caught(() => readWindowConversations(listBodyWith(patch)));
+      expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
+      expect(error.details).toEqual({ route: 'GET /conversations', missing: field });
+    }
+  });
+
+  it("refuse une ENTREE de la liste qui n'est pas un objet", () => {
+    for (const item of ['texte', 42, null, ['x']]) {
+      const error = caught(() => readWindowConversations(listBodyWith({ conversations: [item] })));
+      expect(error.details).toEqual({ route: 'GET /conversations', missing: 'conversations[]' });
+    }
+  });
+
+  it('EXIGE LA FORME de la poignee — un texte quelconque ne devient pas un identifiant', () => {
+    // Cette valeur ressort dans la sortie d'un agent et redevient l'argument d'une commande
+    // suivante. Accepter n'importe quel texte reviendrait a laisser ce qui occupe le port ecrire
+    // dans l'entree de l'appelant.
+    for (const id of ['', 'pas-un-uuid', 'f1c29ec4-6098-4077-a8f9-083ade4df927 ', 42, null]) {
+      const error = caught(() => readWindowConversations(conversationWith({ id })));
+      expect(error.details).toEqual({ route: 'GET /conversations', missing: 'id' });
+    }
+  });
+
+  it('exige le TYPE de chaque champ d une conversation, sans exiger un libelle NON VIDE', () => {
+    for (const [field, patch] of [
+      ['label', { label: 42 }],
+      ['viewType', { viewType: '' }],
+      ['viewColumn', { viewColumn: 1.5 }],
+      ['indexInGroup', { indexInGroup: null }],
+      ['isActive', { isActive: 'oui' }],
+    ] as const) {
+      const error = caught(() => readWindowConversations(conversationWith(patch)));
+      expect(error.details).toEqual({ route: 'GET /conversations', missing: field });
+    }
+
+    // UN LIBELLE VIDE EST ACCEPTE, et c'est une decision : rien ne garantit qu'un onglet en porte
+    // toujours un, et refuser rendrait illisible une reponse parfaitement valide.
+    expect(readWindowConversations(conversationWith({ label: '' })).conversations[0]?.label).toBe('');
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LE CAS DU RATTRAPAGE DE L'EXISTANT (principe fondateur n.7), ET IL EST VERIFIE EN VRAI.
+   *
+   * Une fenetre portant une version ANTERIEURE de l'extension compagnon ne connait pas cette
+   * route : elle rend `404 NOT_FOUND`. Le corps rejoue ici est celui d'un vrai `404`, capture le
+   * 2026-07-26 — et le chemin complet a ete verifie sur le poste le 2026-07-27 : la CLI 0.4.0
+   * interrogeant une fenetre restee en 0.4.0 sort en `WINDOW_REQUEST_REFUSED`, exit 1, avec la
+   * remediation qui NOMME la cause.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it("une fenetre TROP ANCIENNE pour cette route est refusee, et la cause est nommee", () => {
+    const error = caught(() => readWindowConversations(CAPTURED.refusals['notFound'] as WindowResponse));
+
+    expect(error.code).toBe('WINDOW_REQUEST_REFUSED');
+    expect(error.details).toEqual({
+      route: 'GET /conversations',
+      status: 404,
+      error: 'NOT_FOUND',
+    });
+    expect(error.remediation).toContain('extension compagnon trop ancienne');
+  });
+
+  it('rend les refus de la fenetre avec leur CODE, et des details SCALAIRES', () => {
+    for (const [code, captured] of [
+      ['CONVERSATION_ALREADY_CLOSED', CAPTURED.closeRefusals.alreadyClosed],
+      ['CONVERSATION_HANDLE_STALE', CAPTURED.closeRefusals.handleStale],
+    ] as const) {
+      const error = caught(() => readClosedConversation(captured));
+      expect(error.code).toBe(code);
+      // Le detail est un NOMBRE : aucun libelle ne traverse la socket dans un refus.
+      expect(error.details).toEqual({ conversations: 1 });
+      // La remediation vient du coeur LOCAL, elle n'a jamais transite.
+      expect(error.remediation.length).toBeGreaterThan(50);
+    }
+  });
+});
+
+describe('POST /conversations/close, tel qu une vraie fenetre le rend', () => {
+  it('relit le corps CAPTURE, champ par champ', () => {
+    const closed = readClosedConversation({ status: 200, body: CAPTURED.closeConversation.body });
+
+    expect(closed).toEqual({
+      extHostPid: 22376,
+      closed: {
+        id: 'b5511483-ea7a-4c72-8abf-d60c6e8fb7ac',
+        label: 'Conversation B',
+        viewType: 'mainThreadWebview-claudeVSCodePanelCloseProbeB',
+        viewColumn: 1,
+        indexInGroup: 2,
+        isActive: false,
+      },
+      remaining: 1,
+      // UN RELEVE, jamais la preuve : la fenetre a re-enumere avant de rendre ce succes.
+      editorReportedClosed: true,
+    });
+  });
+
+  it('refuse une reponse dont un champ manque, en le NOMMANT', () => {
+    for (const [field, patch] of [
+      ['ok', { ok: 1 }],
+      ['extHostPid', { extHostPid: null }],
+      ['closed', { closed: 'Conversation B' }],
+      ['closed', { closed: [] }],
+      ['remaining', { remaining: '1' }],
+      ['editorReportedClosed', { editorReportedClosed: 'true' }],
+    ] as const) {
+      const error = caught(() => readClosedConversation(closeBodyWith(patch)));
+      expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
+      expect(error.details).toEqual({ route: 'POST /conversations/close', missing: field });
+    }
+  });
+
+  it("relit l onglet ferme avec la MEME exigence que l enumeration", () => {
+    // Une seule regle de lecture pour les deux routes : c'est ce qui interdit qu'un `id` refuse
+    // dans une liste soit accepte dans une confirmation de fermeture.
+    const error = caught(() =>
+      readClosedConversation(closeBodyWith({ closed: { id: 'pas-un-uuid' } }))
+    );
+    expect(error.details).toEqual({ route: 'POST /conversations/close', missing: 'id' });
+  });
+
+  it('vaut aussi pour un corps qui n est meme pas du JSON', () => {
+    expect(caught(() => readWindowConversations({ status: 200, body: '<html>' })).code).toBe(
+      'WINDOW_RESPONSE_UNREADABLE'
+    );
+    expect(caught(() => readClosedConversation({ status: 200, body: '[]' })).details).toEqual({
+      route: 'POST /conversations/close',
+      missing: 'a JSON object',
+    });
+  });
+});
+
 describe('illisible AVANT l ouverture, ou APRES : deux codes, deux conduites', () => {
   it('GET /health : relancer est SUR, et la remediation le dit', () => {
     const error = caught(() => readHealth(healthBodyWith({ mainPid: null })));
 
     expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
-    expect(error.remediation).toContain('AUCUN EFFET DE BORD');
+    expect(error.remediation).toContain('RELANCER EST SUR');
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * `POST /conversations/close` PARTAGE LE CODE DES ROUTES SURES, ET C'EST UNE DECISION.
+   *
+   * Elle a bel et bien un effet de bord, et sa validation lui est POSTERIEURE : le reflexe serait
+   * d'en faire un troisieme code. Ce qui tranche n'est pas « y a-t-il eu un effet de bord » mais
+   * « que doit faire l'appelant » — le critere de ce depot. Une seconde fermeture sur la MEME
+   * poignee ne peut pas produire un second effet : au pire l'onglet est deja parti, et la fenetre
+   * repond `CONVERSATION_ALREADY_CLOSED`. C'est PROUVE dans `conversations.test.ts`, contre le
+   * vrai serveur — « fermer DEUX FOIS : succes, puis ALREADY_CLOSED » —, et la remediation le
+   * DIT plutot que de laisser croire qu'aucune route agissante ne porte ce code.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('POST /conversations/close : meme code, et la remediation dit POURQUOI', () => {
+    const error = caught(() => readClosedConversation({ status: 200, body: '{"ok":true}' }));
+
+    expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
+    expect(error.details).toMatchObject({ route: 'POST /conversations/close' });
+    expect(error.remediation).toContain('RELANCER EST SUR');
+    // Le raisonnement est ECRIT dans la remediation : sans lui, un lecteur conclurait que ce code
+    // ne tombe que sur des lectures, ce qui est desormais faux.
+    expect(error.remediation).toContain('CONVERSATION_ALREADY_CLOSED');
   });
 
   it('POST /conversations : la remediation AVERTIT qu une conversation existe peut-etre', () => {

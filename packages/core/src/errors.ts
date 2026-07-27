@@ -31,6 +31,16 @@
  * `SEED_SESSION_ID_INVALID` N'Y FIGURE PAS, pour un motif encore plus etroit : il juge une
  * valeur que NOUS produisons. Le CLI accepte l'uuid qu'on lui impose (D3) ; ce code ne dit rien
  * de ce qu'il accepte, il dit que la valeur qu'on s'apprete a lui donner n'en est pas un.
+ *
+ * LES QUATRE CODES DE LA FERMETURE — `CONVERSATION_HANDLE_INVALID`,
+ * `CONVERSATION_HANDLE_STALE`, `CONVERSATION_ALREADY_CLOSED`, `CONVERSATION_CLOSE_FAILED` — N'Y
+ * FIGURENT PAS DAVANTAGE, et il faut dire pourquoi, parce que la tentation est reelle : ils
+ * parlent d'onglets de conversation Claude. Ce qu'ils JUGENT, en revanche, est notre propre
+ * protocole d'identifiants — les poignees sont emises par la fenetre, verifiees par elle, et
+ * personne d'autre ne les connait — et une API `vscode` PUBLIQUE, `tabGroups.close`, versionnee
+ * par le plancher `engines.vscode` et recensee dans ADR-003. La seule adherence a l'ecosysteme
+ * Claude que la fermeture ajoute est la reconnaissance d'un onglet — `viewType` (D2) et
+ * `label` (D24) —, et c'est LA qu'elle est declaree.
  */
 
 export const ERROR_CODES = {
@@ -121,6 +131,31 @@ export const ERROR_CODES = {
   PROMPT_EMPTY: 'PROMPT_EMPTY',
   /** Le fichier de prompt designe par l'appelant n'a pas pu etre lu. */
   PROMPT_FILE_UNREADABLE: 'PROMPT_FILE_UNREADABLE',
+  /**
+   * L'identifiant de conversation fourni n'a pas la forme d'une poignee du produit.
+   *
+   * Refuse AVANT tout acces au systeme, comme `PROMPT_EMPTY` : une valeur qui n'a pas la forme
+   * d'une poignee n'a jamais pu etre emise par une fenetre.
+   */
+  CONVERSATION_HANDLE_INVALID: 'CONVERSATION_HANDLE_INVALID',
+  /**
+   * LA FENETRE NE PEUT PAS PROUVER QUE L'ONGLET DESIGNE EST CELUI QUI A ETE LISTE.
+   *
+   * Deux etats l'entrainent, et ils appellent la MEME conduite — relister, puis retenter :
+   * la poignee n'a jamais ete emise par cette fenetre (elle vient d'ailleurs, ou l'extension
+   * host a redemarre depuis), ou elle l'a ete mais l'onglet ne correspond plus a ce qui avait
+   * ete releve. Dans les deux cas AUCUN onglet n'est ferme.
+   */
+  CONVERSATION_HANDLE_STALE: 'CONVERSATION_HANDLE_STALE',
+  /**
+   * La poignee a bien ete emise par cette fenetre, et plus aucun onglet ne lui correspond.
+   *
+   * Conduite OPPOSEE a celle de `CONVERSATION_HANDLE_STALE`, d'ou un second code : il n'y a
+   * rien a fermer, et relister n'y changera rien.
+   */
+  CONVERSATION_ALREADY_CLOSED: 'CONVERSATION_ALREADY_CLOSED',
+  /** La fermeture a ete demandee a l'editeur, et l'onglet est TOUJOURS enumere. */
+  CONVERSATION_CLOSE_FAILED: 'CONVERSATION_CLOSE_FAILED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -191,15 +226,23 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
   [ERROR_CODES.WINDOW_IDENTITY_MISMATCH]:
     "La fenetre qui a repondu n'est pas celle que le registre decrivait : son extension host n'est pas celui de l'entree lue. L'entree a ete substituee entre sa lecture et cet appel, ou le port a ete repris par une autre fenetre. AUCUNE DEMANDE N'A ETE EMISE — c'est ce que la confirmation de canal existe pour empecher. Relancer la commande, puis inspecter le registre si le desaccord persiste.",
   [ERROR_CODES.WINDOW_RESPONSE_UNREADABLE]:
-    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. AUCUN EFFET DE BORD N'A EU LIEU : cette illisibilite tombe sur une route de lecture, relancer est sur. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis mettre les deux artefacts a jour ensemble. Les details portent la route et ce qui manquait.",
+    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. RELANCER EST SUR, et c'est la seule chose qui distingue ce code de WINDOW_OPEN_RESPONSE_UNREADABLE : il ne tombe que sur des routes dont une seconde demande ne peut RIEN creer. Les routes de lecture (GET /health, cmgr conversations) n'ont aucun effet de bord du tout ; la FERMETURE en a un, et elle est neanmoins ici, parce qu'un second appel sur la meme poignee ne peut que constater CONVERSATION_ALREADY_CLOSED — jamais fermer une seconde conversation. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis mettre les deux artefacts a jour ensemble. Les details portent la route et ce qui manquait.",
   [ERROR_CODES.WINDOW_OPEN_RESPONSE_UNREADABLE]:
-    "La fenetre hote a repondu a la DEMANDE D'OUVERTURE, mais sa reponse n'est pas de la forme attendue. UNE CONVERSATION A PEUT-ETRE ETE OUVERTE, ET LE TOUR 1 JOUE : cette validation est posterieure a l'effet de bord, contrairement a WINDOW_RESPONSE_UNREADABLE. NE PAS RELANCER A L'AVEUGLE — une seconde demande ouvrirait une seconde conversation par-dessus la premiere. Constater l'etat reel dans la fenetre elle-meme (l'onglet de conversation y est visible) ; `cmgr conversations` le dira sans regarder l'ecran, increment C4, pas encore livre. Cause la plus probable : la version de l'extension compagnon installee dans cette fenetre ne parle pas le meme protocole que cette CLI — comparer son extensionVersion avec `cmgr windows`, mettre les deux artefacts a jour ensemble, puis ouvrir une fenetre NEUVE. NE PAS recharger celle-ci : un rechargement tue les claude.exe qui descendent de son extension host, donc la conversation qui vient peut-etre de s'ouvrir.",
+    "La fenetre hote a repondu a la DEMANDE D'OUVERTURE, mais sa reponse n'est pas de la forme attendue. UNE CONVERSATION A PEUT-ETRE ETE OUVERTE, ET LE TOUR 1 JOUE : cette validation est posterieure a l'effet de bord, contrairement a WINDOW_RESPONSE_UNREADABLE. NE PAS RELANCER A L'AVEUGLE — une seconde demande ouvrirait une seconde conversation par-dessus la premiere. Constater l'etat reel dans la fenetre elle-meme (l'onglet de conversation y est visible) ; `cmgr conversations` le dit sans regarder l'ecran, et sa relance est sure — c'est une route de lecture. Cause la plus probable : la version de l'extension compagnon installee dans cette fenetre ne parle pas le meme protocole que cette CLI — comparer son extensionVersion avec `cmgr windows`, mettre les deux artefacts a jour ensemble, puis ouvrir une fenetre NEUVE. NE PAS recharger celle-ci : un rechargement tue les claude.exe qui descendent de son extension host, donc la conversation qui vient peut-etre de s'ouvrir.",
   [ERROR_CODES.WINDOW_REQUEST_REFUSED]:
     "La fenetre hote a refuse la demande et a NOMME son refus ; le code exact figure dans les details. FORBIDDEN_HOST ou FORBIDDEN_ORIGIN signale qu'un intermediaire s'est interpose sur la boucle locale — aucun client de ClaudeManager ne produit ces refus. NOT_FOUND signale une extension compagnon trop ancienne pour cette route.",
   [ERROR_CODES.PROMPT_EMPTY]:
     "Le prompt est vide, ou ne porte que des blancs. Ouvrir une conversation sans prompt reviendrait a ouvrir un panneau pour rien : la demande est refusee AVANT toute ouverture. Verifier le fichier passe a --prompt-file, ou ce qui a ete ecrit sur stdin.",
   [ERROR_CODES.PROMPT_FILE_UNREADABLE]:
     "Le fichier de prompt n'a pas pu etre lu. Verifier que le chemin existe, qu'il designe un fichier et non un repertoire, et que les droits de lecture sont accordes. Le detail porte le seul code systeme : le message porterait le chemin, donc le nom du compte.",
+  [ERROR_CODES.CONVERSATION_HANDLE_INVALID]:
+    "L'identifiant attendu par `cmgr close` est celui que `cmgr conversations` rend dans le champ id : un uuid, emis par la fenetre elle-meme. AUCUNE DEMANDE N'A ETE EMISE — le refus precede tout acces au systeme. Lister d'abord (`cmgr conversations`), puis recopier l'identifiant tel quel. Il ne se devine pas, ne se derive ni d'un titre d'onglet ni d'un identifiant de session, et n'a de sens que dans la fenetre qui l'a emis.",
+  [ERROR_CODES.CONVERSATION_HANDLE_STALE]:
+    "La fenetre ne peut pas prouver que l'onglet designe est celui qui avait ete liste : soit elle n'a jamais emis cette poignee, soit l'onglet a change depuis — libelle, colonne ou rang dans son groupe. AUCUN ONGLET N'A ETE FERME, et c'est la garantie du produit : la fermeture exige une preuve d'identite plutot que de fermer au plus probable. Les poignees ne survivent PAS au redemarrage de l'extension host d'une fenetre, et aucun onglet Claude ne porte d'identifiant stable — c'est mesure (docs/compatibilite.md, D2 et D24). LE GESTE, EN DEUX TEMPS ET DANS CET ORDRE : relancer `cmgr conversations`, puis REGARDER si la conversation qu'on voulait fermer y figure encore. Si oui, retenter avec sa poignee fraiche. SI NON, ELLE EST DEJA FERMEE : ne pas fermer celle qui a pris sa place. Ce code ne dit PAS que l'onglet existe encore — il dit que la fenetre ne peut pas l'affirmer, et c'est mesure le 2026-07-27 : fermer un onglet fait glisser ses voisins d'un rang, et un onglet dont le libelle change sur place est alors indiscernable d'un onglet parti dont le voisin a pris la place.",
+  [ERROR_CODES.CONVERSATION_ALREADY_CLOSED]:
+    "Cette poignee a bien ete emise par cette fenetre, et plus aucun onglet de conversation ne lui correspond : il n'y a rien a fermer. NE PAS RETENTER — relister n'y changerait rien, c'est la difference exacte avec CONVERSATION_HANDLE_STALE. `cmgr conversations` enumere ce qui reste ouvert dans cette fenetre ; une liste vide n'est pas une erreur.",
+  [ERROR_CODES.CONVERSATION_CLOSE_FAILED]:
+    "L'editeur a recu la demande de fermeture et l'onglet est TOUJOURS enumere passe le delai accorde. L'absence d'erreur ne prouve jamais la fermeture : c'est l'enumeration qui fait foi, et elle dit le contraire. Causes connues : l'editeur retient l'onglet (une invite de sauvegarde, un panneau epingle), ou il a refuse la fermeture sans le dire. Relancer la fermeture est SUR — un second appel ne peut que constater l'etat reel —, et `cmgr conversations` dit ce que la fenetre porte encore.",
 };
 
 /**

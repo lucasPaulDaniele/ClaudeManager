@@ -1,9 +1,15 @@
 # Réponses réelles du serveur local d'une fenêtre
 
-`companion-responses.json` porte ce qu'une **vraie fenêtre VSCode** a réellement répondu à
-`GET /health` et à `POST /conversations`, relevé le **2026-07-26** par
-`npm run test:integration` — scénarios `nominal` et `open-conversation`, VSCode 1.122.1,
-extension compagnon 0.2.0, extension Claude 2.1.220.
+`companion-responses.json` porte ce qu'une **vraie fenêtre VSCode** a réellement répondu aux
+**quatre** routes du serveur local. Deux campagnes de capture y coexistent, et chaque entrée porte
+sa date et la version de l'extension compagnon qui l'a produite :
+
+| Campagne | Routes | Relevé le | Scénarios |
+|---|---|---|---|
+| lot B / C1–C3 | `GET /health`, `POST /conversations`, les quatre refus de transport | **2026-07-26** | `nominal`, `open-conversation` |
+| **C4** | `GET /conversations`, `POST /conversations/close`, et les deux refus de la fermeture | **2026-07-27** | `close-conversation` |
+
+VSCode 1.122.1, extension Claude 2.1.220.
 
 Ces réponses alimentent les tests unitaires de `packages/core/src/client/**`. Le principe
 fondateur n°5 l'exige : le client est éprouvé contre ce que la fenêtre **envoie**, jamais
@@ -26,6 +32,22 @@ ils sont tirés au sort à chaque exécution et ne désignent personne.
 | `health.body` | **corps verbatim**, tel que la socket l'a rendu |
 | `refusals.*.body` | **corps verbatim** (les quatre refus : 401, 403 × 2, 404) |
 | `openSeeded.result`, `openFallback.result` | **champ à champ**, tels que le scénario les a relevés après `JSON.parse` du corps réel |
+| `listConversations.body`, `listConversationsEmpty.body`, `closeConversation.body` | **corps verbatim** |
+| `closeRefusals.*.body` | corps réel, **moins son champ `remediation`** — voir ci-dessous |
+
+**Deux précisions sur les captures de C4, parce qu'elles ne sont pas verbatim au même titre :**
+
+- **`closeRefusals` ne porte pas `remediation`.** Le vrai corps la porte ; elle en a été retirée
+  parce que le client **ne la lit jamais** — il relit la remédiation dans sa propre table
+  (`ClaudeManagerError`), c'est même le point de `refusalOf`. Ce qui fait contrat ici est `error`
+  et `details`, et les recopier avec un paragraphe de texte français en prime n'aurait rien
+  éprouvé de plus.
+- **Les libellés sont ceux du HARNAIS, pas d'une vraie conversation.** `Conversation A`,
+  `Conversation B` : ce sont les titres des panneaux que le scénario `close-conversation` crée
+  lui-même. Un libellé de vraie conversation est **dérivé de son contenu** (D24 — mesuré le
+  2026-07-27 : `Confirm session response`), donc c'est du contenu de conversation, et **rien de tel
+  n'est versionné dans un dépôt public**. Le `viewType`, lui, est celui que VSCode a **réellement**
+  rendu — préfixé `mainThreadWebview-`, exactement comme sur un vrai panneau Claude.
 
 La nuance est réelle et elle est assumée : le rapport d'intégration de C1 relève les champs de
 `POST /conversations` un à un, il ne recopie pas le corps. Ce que la sérialisation seule
