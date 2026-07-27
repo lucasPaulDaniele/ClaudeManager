@@ -1,17 +1,35 @@
 /**
  * Serveur de controle local de CETTE fenetre, et d'aucune autre.
  *
- * DEUX ROUTES : `GET /health`, de diagnostic, et `POST /conversations`, LA PREMIERE ROUTE A
- * EFFET DE BORD DU PRODUIT. C'est ce changement de nature qui impose les gardes ci-dessous —
- * tant qu'aucune route n'agissait, le seul jeton suffisait ; il ne suffit plus.
+ * QUATRE ROUTES, dont DEUX A EFFET DE BORD :
  *
- * Fermer une conversation releve de l'increment C3 : `tabGroups.close` n'est appele nulle part.
+ *   - `GET /health` — diagnostic, ce que la fenetre dit d'elle-meme ;
+ *   - `GET /conversations` — les onglets de conversation de cette fenetre. LECTURE PURE ;
+ *   - `POST /conversations` — ouvrir. La premiere route a effet de bord du produit (C1) ;
+ *   - `POST /conversations/close` — fermer UN onglet, l'unique appel a `tabGroups.close` du
+ *     depot (C4).
+ *
+ * C'est le changement de nature apporte par les routes AGISSANTES qui impose les gardes de
+ * transport ci-dessous — tant qu'aucune route n'agissait, le seul jeton suffisait ; il ne
+ * suffit plus. Elles valent pour les QUATRE, `/health` comprise.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { HEALTH_ROUTE, isClaudeManagerError, OPEN_ROUTE, systemErrorCode } from './core.js';
+import {
+  CLOSE_ROUTE,
+  HEALTH_ROUTE,
+  isClaudeManagerError,
+  LIST_ROUTE,
+  OPEN_ROUTE,
+  systemErrorCode,
+} from './core.js';
 import type { OpenConversationRequest, OpenConversationResult } from './conversations.js';
+import type {
+  CloseConversationRequest,
+  CloseConversationResult,
+  ListConversationsResult,
+} from './tabs.js';
 
 /** Ce que la FENETRE dit d'elle-meme. Elle ne porte JAMAIS le jeton (principe n.6). */
 export interface HealthPayload {
@@ -78,6 +96,12 @@ export type OpenConversationRoute = (
   request: OpenConversationRequest
 ) => Promise<OpenConversationResult>;
 
+/** Les deux routes de conversation de l'increment C4 — voir `tabs.ts`. */
+export type ListConversationsRoute = () => Promise<ListConversationsResult>;
+export type CloseConversationRoute = (
+  request: CloseConversationRequest
+) => Promise<CloseConversationResult>;
+
 export interface StartServerOptions {
   readonly token: string;
   /**
@@ -90,6 +114,12 @@ export interface StartServerOptions {
    * commande interne. Il transporte une demande et met en forme un resultat.
    */
   readonly openConversation: OpenConversationRoute;
+  /**
+   * L'enumeration et la fermeture, injectees pour la MEME raison : le serveur ne connait pas
+   * `tabGroups`, et n'a aucune decision a prendre sur ce qui est fermable.
+   */
+  readonly listConversations: ListConversationsRoute;
+  readonly closeConversation: CloseConversationRoute;
   /** Defaillance survenant apres le demarrage — journalisee par l'appelant, jamais tue. */
   readonly onError: (error: unknown) => void;
   /**
@@ -196,16 +226,39 @@ function readBoundedBody(request: IncomingMessage): Promise<string | undefined> 
   });
 }
 
-/** Le prompt tel que la route l'accepte, ou `undefined` si le corps ne le porte pas. */
-function promptFrom(body: string): string | undefined {
+/** Le corps, s'il est un objet JSON — sinon `undefined`, et rien n'en est reflete. */
+function objectFrom(body: string): Readonly<Record<string, unknown>> | undefined {
   let value: unknown;
   try {
     value = JSON.parse(body);
   } catch {
     return undefined;
   }
-  if (typeof value !== 'object' || value === null) return undefined;
-  const prompt = (value as Record<string, unknown>)['prompt'];
+  // Un tableau est bien un objet : il ne porte aucun des champs attendus pour autant.
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return value as Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Longueur maximale d'une poignee ACCEPTEE en entree.
+ *
+ * La FORME, elle, n'est pas jugee ici, et c'est deliberе : une poignee inconnue du registre de
+ * la fenetre sort en `CONVERSATION_HANDLE_STALE`, avec la remediation qui va avec — redire la
+ * regle de forme du coeur a cet etage n'ajouterait qu'un second endroit ou elle peut diverger.
+ * Ce plafond ne juge donc rien de la valeur : il empeche seulement qu'un corps authentifie de
+ * 1 Mio devienne une clef de recherche. 200 caracteres pour un uuid de 36.
+ */
+const MAX_HANDLE_LENGTH = 200;
+
+/** La poignee telle que la route de fermeture l'accepte, ou `undefined`. */
+function handleFrom(body: string): string | undefined {
+  const id = objectFrom(body)?.['id'];
+  return typeof id === 'string' && id.length > 0 && id.length <= MAX_HANDLE_LENGTH ? id : undefined;
+}
+
+/** Le prompt tel que la route l'accepte, ou `undefined` si le corps ne le porte pas. */
+function promptFrom(body: string): string | undefined {
+  const prompt = objectFrom(body)?.['prompt'];
   // LE PROMPT PASSE PAR LE CORPS, JAMAIS PAR UN CHEMIN DE FICHIER fourni par l'appelant : un
   // chemin venu du reseau est une surface de traversee, un corps n'en est pas une.
   return typeof prompt === 'string' && prompt.trim().length > 0 ? prompt : undefined;
@@ -250,34 +303,25 @@ function routeOf(request: IncomingMessage): string {
 }
 
 /**
- * Sert `POST /conversations` — la seule route a effet de bord.
+ * Sert une route qui DELEGUE, et met en forme sa defaillance — LA MEME REGLE POUR LES TROIS.
  *
- * La reponse porte le CODE STABLE de l'erreur nommee, jamais un texte libre : le
- * consommateur est un agent. Le statut HTTP n'est qu'un signal grossier de transport ; c'est
- * `error` qui fait contrat.
+ * La reponse porte le CODE STABLE de l'erreur nommee, jamais un texte libre : le consommateur
+ * est un agent. Le statut HTTP n'est qu'un signal grossier de transport ; c'est `error` qui
+ * fait contrat.
+ *
+ * FACTORISEE A L'INCREMENT C4, ET C'EST UN CORRECTIF PAR AVANCE : trois routes deleguent
+ * desormais, et trois copies de ce `catch` auraient divergé le jour ou l'une aurait ete
+ * corrigee. C'est exactement ce qui est arrive aux libelles de route, dont `server.ts` gardait
+ * une copie locale.
  */
-async function serveOpenConversation(
-  request: IncomingMessage,
+async function serveDelegated(
   response: ServerResponse,
-  open: OpenConversationRoute
+  produce: () => Promise<unknown>
 ): Promise<void> {
-  const body = await readBoundedBody(request);
-  if (body === undefined) {
-    send(response, 413, { ok: false, error: 'BODY_TOO_LARGE', limitBytes: MAX_BODY_BYTES });
-    return;
-  }
-
-  const prompt = promptFrom(body);
-  if (prompt === undefined) {
-    // Rien de la requete n'est reflete : ni le corps recu, ni sa longueur.
-    send(response, 400, { ok: false, error: 'BAD_REQUEST' });
-    return;
-  }
-
   try {
-    // Le resultat porte `sessionId`, `extHostPid` et `mode`. JAMAIS le jeton, jamais un
-    // chemin absolu : ni le mecanisme ni les erreurs nommees n'en mettent dans leurs details.
-    send(response, 200, await open({ prompt }));
+    // Les resultats ne portent JAMAIS le jeton, jamais un chemin absolu : ni les mecanismes ni
+    // les erreurs nommees n'en mettent dans leurs details.
+    send(response, 200, await produce());
   } catch (error) {
     if (isClaudeManagerError(error)) {
       // `error` porte le CODE, comme sur toutes les autres reponses de refus de ce serveur
@@ -291,6 +335,55 @@ async function serveOpenConversation(
     // d'erreur `fs` porterait le chemin, donc le nom du compte, dans une reponse.
     send(response, 500, { ok: false, error: 'UNEXPECTED_FAILURE', cause: systemErrorCode(error) });
   }
+}
+
+/**
+ * Lit un corps BORNE et en tire ce que la route attend — ou refuse, sans rien refleter.
+ *
+ * Rend `undefined` quand elle a DEJA repondu : le statut differe selon la cause (413 pour un
+ * corps hors borne, 400 pour un corps qu'on ne comprend pas), et l'appelant n'a plus rien a
+ * faire dans ce cas.
+ */
+async function bodyValue<V>(
+  request: IncomingMessage,
+  response: ServerResponse,
+  extract: (body: string) => V | undefined
+): Promise<V | undefined> {
+  const body = await readBoundedBody(request);
+  if (body === undefined) {
+    send(response, 413, { ok: false, error: 'BODY_TOO_LARGE', limitBytes: MAX_BODY_BYTES });
+    return undefined;
+  }
+
+  const value = extract(body);
+  if (value === undefined) {
+    // Rien de la requete n'est reflete : ni le corps recu, ni sa longueur.
+    send(response, 400, { ok: false, error: 'BAD_REQUEST' });
+    return undefined;
+  }
+  return value;
+}
+
+/** Sert `POST /conversations` — ouvrir. */
+async function serveOpenConversation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  open: OpenConversationRoute
+): Promise<void> {
+  const prompt = await bodyValue(request, response, promptFrom);
+  if (prompt === undefined) return;
+  await serveDelegated(response, () => open({ prompt }));
+}
+
+/** Sert `POST /conversations/close` — fermer UN onglet, et un seul. */
+async function serveCloseConversation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  close: CloseConversationRoute
+): Promise<void> {
+  const id = await bodyValue(request, response, handleFrom);
+  if (id === undefined) return;
+  await serveDelegated(response, () => close({ id }));
 }
 
 export function startServer(options: StartServerOptions): Promise<ServerHandle> {
@@ -362,9 +455,19 @@ export function startServer(options: StartServerOptions): Promise<ServerHandle> 
       send(response, 200, payload);
       return;
     }
+    if (route === LIST_ROUTE) {
+      // LECTURE PURE : aucun corps a lire, aucun effet de bord a produire.
+      drain();
+      void serveDelegated(response, options.listConversations);
+      return;
+    }
+    // LES DEUX SEULS CHEMINS QUI LISENT LE CORPS : ils ne drainent pas, ils consomment.
     if (route === OPEN_ROUTE) {
-      // Le seul chemin qui LIT le corps : il ne draine pas, il consomme.
       void serveOpenConversation(request, response, options.openConversation);
+      return;
+    }
+    if (route === CLOSE_ROUTE) {
+      void serveCloseConversation(request, response, options.closeConversation);
       return;
     }
 

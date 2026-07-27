@@ -34,6 +34,11 @@ import { describe, readExtensionVersion } from './diagnostics.js';
 import { WindowPublisher, type WorkspaceState } from './publication.js';
 import { readWindowIdentity } from './registry.js';
 import { CLAUDE_EXTENSION_ID, type PanelTabLike } from './seed.js';
+import {
+  createConversationRoutes,
+  type ConversationTabLike,
+  type ConversationTabsPort,
+} from './tabs.js';
 
 const OUTPUT_CHANNEL = 'ClaudeManager';
 
@@ -126,8 +131,9 @@ function editorPort(): EditorPort {
       };
     },
 
-    // ENUMERATION EN LECTURE SEULE. `tabGroups.close` n'est appele nulle part : fermer une
-    // conversation releve de l'increment C3.
+    // ENUMERATION EN LECTURE SEULE — c'est tout ce que le mecanisme d'OUVERTURE demande aux
+    // onglets. La fermeture a son propre port (`conversationTabsPort`), et c'est lui qui porte
+    // l'unique appel a `tabGroups.close` du depot.
     //
     // Le diff du mecanisme compare des CLES (`viewType` + `label`), jamais l'identite des
     // objets `Tab` — celle-ci n'est garantie par aucune documentation, et ces enveloppes sont
@@ -139,6 +145,51 @@ function editorPort(): EditorPort {
           label: tab.label,
         }))
       ),
+  };
+}
+
+/**
+ * Un onglet enumere, ET l'objet `Tab` reel qui lui correspond.
+ *
+ * L'OBJET EST TRANSPORTE, PAS RECHERCHE UNE SECONDE FOIS, et c'est le point de conception :
+ * `tabs.ts` choisit un element de la liste que cet adaptateur vient de produire et le lui rend
+ * tel quel. Aucune selection n'est donc rejouee dans cette couche — qui est precisement celle
+ * qu'aucun test unitaire ne mesure. Rien ne repose sur la stabilite des objets `Tab` d'un releve
+ * a l'autre : la sienne ne vaut que pour la duree d'UNE demande.
+ */
+interface EditorConversationTab extends ConversationTabLike {
+  readonly tab: vscode.Tab;
+}
+
+/**
+ * LE PORT DES ONGLETS — traduction, ZERO decision, comme l'`EditorPort` du mecanisme.
+ *
+ * `preserveFocus: true` EST NON NEGOCIABLE (principe fondateur n.1) : sans lui, VSCode reporte
+ * le focus sur un autre onglet quand celui qu'on ferme etait actif, ce qui est un vol de focus
+ * dans une fenetre que l'humain n'a pas demande a voir. La signature relevee dans les typings de
+ * ce depot (`@types/vscode` 1.90.0) est
+ * `close(tab: Tab | readonly Tab[], preserveFocus?: boolean): Thenable<boolean>` — le parametre
+ * est OPTIONNEL, donc l'omettre compile parfaitement. Un test de source echoue si un seul appel
+ * a `tabGroups.close` du depot ne le passe pas.
+ *
+ * UN SEUL ONGLET, JAMAIS UN TABLEAU : `close` en accepte un, ce port ne l'expose pas.
+ */
+function conversationTabsPort(): ConversationTabsPort<EditorConversationTab> {
+  return {
+    listTabs: (): readonly EditorConversationTab[] =>
+      vscode.window.tabGroups.all.flatMap((group) =>
+        group.tabs.map((tab, indexInGroup) => ({
+          viewType: tab.input instanceof vscode.TabInputWebview ? tab.input.viewType : undefined,
+          label: tab.label,
+          viewColumn: group.viewColumn,
+          indexInGroup,
+          isActive: tab.isActive,
+          tab,
+        }))
+      ),
+
+    closeTab: (tab: EditorConversationTab): Promise<boolean> =>
+      Promise.resolve(vscode.window.tabGroups.close(tab.tab, true)),
   };
 }
 
@@ -270,6 +321,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  /**
+   * LES DEUX ROUTES DE CONVERSATION DE C4, cablees ici et nulle part ailleurs.
+   *
+   * UN SEUL registre de poignees par fenetre, partage par les deux routes : lister EMET les
+   * poignees que fermer VERIFIE. Deux registres, ou un registre par requete, rendraient toute
+   * fermeture impossible — c'est le contrat en deux temps, et il tient a cet objet.
+   */
+  const conversations = createConversationRoutes({
+    port: conversationTabsPort(),
+    extHostPid: identity.extHostPid,
+    log,
+  });
+
   const current = new WindowPublisher({
     identity,
     extensionVersion: readExtensionVersion(context.extension.packageJSON),
@@ -278,6 +342,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logDirectory: context.logUri.fsPath,
     readWorkspace,
     openConversation: openRoute,
+    listConversations: conversations.list,
+    closeConversation: conversations.close,
     log,
   });
   publisher = current;

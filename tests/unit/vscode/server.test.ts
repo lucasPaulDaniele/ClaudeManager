@@ -4,19 +4,28 @@ import { networkInterfaces } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ClaudeManagerError,
+  CLOSE_ROUTE,
+  CONVERSATION_CLOSE_PATH,
   CONVERSATIONS_PATH,
   ERROR_CODES,
   HEALTH_PATH,
   HEALTH_ROUTE,
+  LIST_ROUTE,
   OPEN_ROUTE,
 } from '../../../packages/core/src/index.js';
 import type { OpenConversationResult } from '../../../packages/vscode/src/conversations.js';
 import {
   startServer,
+  type CloseConversationRoute,
   type HealthPayload,
+  type ListConversationsRoute,
   type OpenConversationRoute,
   type ServerHandle,
 } from '../../../packages/vscode/src/server.js';
+import type {
+  CloseConversationResult,
+  ListConversationsResult,
+} from '../../../packages/vscode/src/tabs.js';
 
 /**
  * Le serveur de controle local, eprouve SUR DE VRAIES SOCKETS.
@@ -109,11 +118,17 @@ let closures = 0;
 let handles: ServerHandle[] = [];
 /** Les prompts REELLEMENT parvenus au mecanisme, dans l'ordre. */
 let opened: string[] = [];
+/** Les poignees REELLEMENT parvenues a la route de fermeture, dans l'ordre. */
+let closeRequests: string[] = [];
+/** Combien de fois la route d'enumeration a ete atteinte. */
+let listCalls = 0;
 /**
- * Ce que le mecanisme rend. Par defaut il LEVE : une route qui repondrait 200 sans avoir ete
- * cablee ferait passer les gardes de transport pour ce qu'elles ne sont pas.
+ * Ce que les mecanismes rendent. Par defaut ils LEVENT : une route qui repondrait 200 sans avoir
+ * ete cablee ferait passer les gardes de transport pour ce qu'elles ne sont pas.
  */
 let opener: OpenConversationRoute = () => Promise.reject(new Error('not wired'));
+let lister: ListConversationsRoute = () => Promise.reject(new Error('not wired'));
+let closer: CloseConversationRoute = () => Promise.reject(new Error('not wired'));
 
 async function open(health: () => HealthPayload = () => HEALTH): Promise<ServerHandle> {
   const handle = await startServer({
@@ -122,6 +137,14 @@ async function open(health: () => HealthPayload = () => HEALTH): Promise<ServerH
     openConversation: (request) => {
       opened.push(request.prompt);
       return opener(request);
+    },
+    listConversations: () => {
+      listCalls += 1;
+      return lister();
+    },
+    closeConversation: (request) => {
+      closeRequests.push(request.id);
+      return closer(request);
     },
     onError: (error) => errors.push(error),
     onClosed: () => (closures += 1),
@@ -141,6 +164,29 @@ function killListener(handle: ServerHandle): Promise<void> {
   return new Promise((done) => handle.socket.close(() => done()));
 }
 
+const LISTED: ListConversationsResult = {
+  ok: true,
+  extHostPid: 11172,
+  conversations: [
+    {
+      id: '8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77',
+      label: 'Respond with OK exactly',
+      viewType: 'mainThreadWebview-claudeVSCodePanel',
+      viewColumn: 1,
+      indexInGroup: 0,
+      isActive: true,
+    },
+  ],
+};
+
+const CLOSED: CloseConversationResult = {
+  ok: true,
+  extHostPid: 11172,
+  closed: LISTED.conversations[0] as ListConversationsResult['conversations'][number],
+  remaining: 0,
+  editorReportedClosed: true,
+};
+
 afterEach(async () => {
   const live = handles;
   handles = [];
@@ -148,7 +194,11 @@ afterEach(async () => {
   errors.length = 0;
   closures = 0;
   opened = [];
+  closeRequests = [];
+  listCalls = 0;
   opener = () => Promise.reject(new Error('not wired'));
+  lister = () => Promise.reject(new Error('not wired'));
+  closer = () => Promise.reject(new Error('not wired'));
 });
 
 describe('ecoute', () => {
@@ -385,11 +435,213 @@ describe('POST /conversations', () => {
     expect(opened).toEqual([]);
   });
 
-  it('n existe que sur POST : GET /conversations reste une route inconnue', async () => {
+  /**
+   * CE TEST A CHANGE DE SENS A L'INCREMENT C4, ET LE DIRE VAUT MIEUX QUE DE LE REECRIRE EN
+   * SILENCE : il affirmait « `GET /conversations` reste une route inconnue », ce qui etait vrai
+   * tant que rien n'enumerait. La propriete qu'il gardait — l'OUVERTURE n'existe que sur `POST` —
+   * tient toujours, et c'est elle qui est reformulee : la methode fait partie de la route, et une
+   * enumeration ne doit jamais atteindre le mecanisme d'ouverture.
+   */
+  it('la METHODE fait partie de la route : une lecture n atteint jamais le mecanisme d ouverture', async () => {
+    const handle = await open();
+    lister = () => Promise.resolve(LISTED);
+
+    expect((await call(handle, '/conversations', authorized())).status).toBe(200);
+    expect((await call(handle, '/conversations', authorized(), 'PUT')).status).toBe(404);
+    expect((await call(handle, '/conversations', authorized(), 'DELETE')).status).toBe(404);
+    // LE POINT : aucune de ces trois requetes n'a demande une ouverture.
+    expect(opened).toEqual([]);
+  });
+});
+
+describe('GET /conversations — la route de LECTURE', () => {
+  it('rend l enumeration de la fenetre, telle quelle', async () => {
+    const handle = await open();
+    lister = () => Promise.resolve(LISTED);
+
+    const reply = await call(handle, '/conversations', authorized());
+
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual(LISTED);
+    expect(listCalls).toBe(1);
+  });
+
+  it('une liste VIDE est un succes, jamais un 404', async () => {
+    const handle = await open();
+    lister = () => Promise.resolve({ ...LISTED, conversations: [] });
+
+    const reply = await call(handle, '/conversations', authorized());
+
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toMatchObject({ ok: true, conversations: [] });
+  });
+
+  it('DRAINE un corps qu elle ne lit pas, plutot que de laisser la socket en suspens', async () => {
+    const handle = await open();
+    lister = () => Promise.resolve(LISTED);
+    const noise = 'du bruit que cette route ne lit pas';
+
+    // LE `content-length` EST INDISPENSABLE, ET C'EST MESURE LE 2026-07-27 : sans lui, le CLIENT
+    // de Node n'encadre pas le corps d'un `GET` — il ecrit les octets bruts, que l'analyseur du
+    // serveur lit comme le debut d'une requete PIPELINEE, donc comme une erreur de protocole
+    // (`400`, corps vide, emis par Node avant nous). Ce n'etait pas une propriete de notre route.
+    // Avec le `content-length`, le corps est un vrai corps : la route le draine et repond.
+    const reply = await call(
+      handle,
+      '/conversations',
+      { ...authorized(), 'content-length': String(Buffer.byteLength(noise, 'utf8')) },
+      'GET',
+      '127.0.0.1',
+      noise
+    );
+
+    expect(reply.status).toBe(200);
+    expect(listCalls).toBe(1);
+    // Le corps n'est ni lu ni reflete : cette route n'a pas de corps a interpreter.
+    expect(reply.body).not.toContain('bruit');
+  });
+
+  it('rend l erreur NOMMEE de la fenetre, code stable compris', async () => {
+    const handle = await open();
+    lister = () => Promise.reject(new ClaudeManagerError(ERROR_CODES.REGISTRY_UNREADABLE, 'nope'));
+
+    const reply = await call(handle, '/conversations', authorized());
+
+    expect(reply.status).toBe(500);
+    expect(JSON.parse(reply.body)).toMatchObject({
+      ok: false,
+      error: ERROR_CODES.REGISTRY_UNREADABLE,
+    });
+  });
+
+  it('refuse sans jeton, sans jamais atteindre l enumeration', async () => {
     const handle = await open();
 
-    expect((await call(handle, '/conversations', authorized())).status).toBe(404);
-    expect(opened).toEqual([]);
+    expect((await call(handle, '/conversations')).status).toBe(401);
+    expect(listCalls).toBe(0);
+  });
+});
+
+describe('POST /conversations/close — la seconde route a effet de bord', () => {
+  const close = (
+    handle: ServerHandle,
+    payload: unknown,
+    extra: Record<string, string> = {}
+  ): Promise<Reply> =>
+    call(
+      handle,
+      CONVERSATION_CLOSE_PATH,
+      { ...authorized(), 'content-type': 'application/json', ...extra },
+      'POST',
+      '127.0.0.1',
+      typeof payload === 'string' ? payload : JSON.stringify(payload)
+    );
+
+  it('transmet la POIGNEE du CORPS a la route, et rend son resultat', async () => {
+    const handle = await open();
+    closer = () => Promise.resolve(CLOSED);
+
+    const reply = await close(handle, { id: '8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77' });
+
+    expect(reply.status).toBe(200);
+    expect(closeRequests).toEqual(['8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77']);
+    expect(JSON.parse(reply.body)).toEqual(CLOSED);
+  });
+
+  it("LA POIGNEE N'EST JAMAIS DANS LE CHEMIN — cette forme est une route inconnue", async () => {
+    const handle = await open();
+    closer = () => Promise.resolve(CLOSED);
+
+    // Un identifiant venu du reseau n'a rien a faire dans une URL : elle se journalise, se
+    // reflete dans les messages d'erreur, et traverse les intermediaires.
+    const reply = await call(
+      handle,
+      '/conversations/8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77',
+      authorized(),
+      'DELETE'
+    );
+
+    expect(reply.status).toBe(404);
+    expect(closeRequests).toEqual([]);
+    // Et rien de la requete n'est reflete, pas meme la poignee.
+    expect(reply.body).not.toContain('8d1f4f0e');
+  });
+
+  it('refuse un corps qui ne porte pas de poignee exploitable', async () => {
+    const handle = await open();
+    closer = () => Promise.resolve(CLOSED);
+
+    for (const payload of [
+      '{',
+      'null',
+      '[]',
+      '"texte"',
+      {},
+      { id: 42 },
+      { id: '' },
+      { id: 'A'.repeat(201) },
+      { conversationId: '8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77' },
+    ]) {
+      const reply = await close(handle, payload);
+      expect(reply.status).toBe(400);
+      expect(JSON.parse(reply.body)).toEqual({ ok: false, error: 'BAD_REQUEST' });
+    }
+    // LA ROUTE N'A JAMAIS ETE ATTEINTE : un refus de forme ne ferme rien.
+    expect(closeRequests).toEqual([]);
+  });
+
+  it('rend les TROIS refus de la fermeture avec leur code stable', async () => {
+    const handle = await open();
+    for (const code of [
+      ERROR_CODES.CONVERSATION_HANDLE_STALE,
+      ERROR_CODES.CONVERSATION_ALREADY_CLOSED,
+      ERROR_CODES.CONVERSATION_CLOSE_FAILED,
+    ]) {
+      closer = () => Promise.reject(new ClaudeManagerError(code, 'nope', { conversations: 2 }));
+
+      const reply = await close(handle, { id: '8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77' });
+
+      expect(reply.status).toBe(500);
+      expect(JSON.parse(reply.body)).toMatchObject({
+        ok: false,
+        error: code,
+        details: { conversations: 2 },
+      });
+    }
+  });
+
+  it('BORNE le corps lu, comme la route d ouverture', async () => {
+    const handle = await open();
+
+    const reply = await close(handle, { id: 'A'.repeat(2 * 1024 * 1024) }).catch(
+      (error: NodeJS.ErrnoException) => ({ status: `ERR(${error.code})`, body: '', headers: {} })
+    );
+
+    expect([413, 'ERR(ECONNRESET)', 'ERR(EPIPE)']).toContain(reply.status);
+    expect(closeRequests).toEqual([]);
+  });
+
+  it('est protegee par les DEUX gardes de transport et par le jeton', async () => {
+    const handle = await open();
+    closer = () => Promise.resolve(CLOSED);
+    const id = { id: '8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77' };
+
+    expect((await close(handle, id, { host: `evil.example:${handle.port}` })).status).toBe(403);
+    expect((await close(handle, id, { origin: 'https://claude.ai' })).status).toBe(403);
+    expect(
+      (
+        await call(
+          handle,
+          CONVERSATION_CLOSE_PATH,
+          { 'content-type': 'application/json' },
+          'POST',
+          '127.0.0.1',
+          JSON.stringify(id)
+        )
+      ).status
+    ).toBe(401);
+    // AUCUNE des trois n'a atteint la route : la fermeture est un effet de bord.
+    expect(closeRequests).toEqual([]);
   });
 });
 
@@ -499,24 +751,34 @@ describe('routage', () => {
    */
   it('sert exactement les chemins que le CLIENT du coeur emploie', async () => {
     opener = () => Promise.resolve(OPENED);
+    lister = () => Promise.resolve(LISTED);
+    closer = () => Promise.resolve(CLOSED);
     const handle = await open();
+    const json = { ...authorized(), 'content-type': 'application/json' };
 
     expect((await call(handle, HEALTH_PATH, authorized())).status).toBe(200);
+    expect((await call(handle, CONVERSATIONS_PATH, authorized())).status).toBe(200);
+    expect(
+      (await call(handle, CONVERSATIONS_PATH, json, 'POST', '127.0.0.1', JSON.stringify({ prompt: 'x' })))
+        .status
+    ).toBe(200);
     expect(
       (
         await call(
           handle,
-          CONVERSATIONS_PATH,
-          { ...authorized(), 'content-type': 'application/json' },
+          CONVERSATION_CLOSE_PATH,
+          json,
           'POST',
           '127.0.0.1',
-          JSON.stringify({ prompt: 'x' })
+          JSON.stringify({ id: '8d1f4f0e-6d2f-4a63-9d63-3a4f0e5b1c77' })
         )
       ).status
     ).toBe(200);
     // Et les libelles de route sont ceux du coeur, a la lettre : c'est ce que le routage compare.
     expect(`GET ${HEALTH_PATH}`).toBe(HEALTH_ROUTE);
+    expect(`GET ${CONVERSATIONS_PATH}`).toBe(LIST_ROUTE);
     expect(`POST ${CONVERSATIONS_PATH}`).toBe(OPEN_ROUTE);
+    expect(`POST ${CONVERSATION_CLOSE_PATH}`).toBe(CLOSE_ROUTE);
   });
 });
 

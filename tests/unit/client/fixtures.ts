@@ -32,6 +32,12 @@ import type {
 } from '../../../packages/vscode/src/conversations.js';
 import { startServer, type HealthPayload } from '../../../packages/vscode/src/server.js';
 import {
+  createConversationRoutes,
+  type ConversationRoutes,
+  type ConversationTabLike,
+  type ConversationTabsPort,
+} from '../../../packages/vscode/src/tabs.js';
+import {
   writeWindowEntry,
   type ProcessSnapshot,
   type WindowEntry,
@@ -70,6 +76,14 @@ interface CapturedResponses {
    */
   readonly openSeededLegacy: { readonly status: number; readonly result: Record<string, unknown> };
   readonly openFallback: { readonly status: number; readonly result: Record<string, unknown> };
+  /** Les captures de C4 — corps VERBATIM des deux routes nouvelles, et de leurs deux refus. */
+  readonly listConversations: CapturedExchange;
+  readonly listConversationsEmpty: CapturedExchange;
+  readonly closeConversation: CapturedExchange;
+  readonly closeRefusals: {
+    readonly alreadyClosed: CapturedExchange;
+    readonly handleStale: CapturedExchange;
+  };
 }
 
 export const CAPTURED: CapturedResponses = JSON.parse(
@@ -135,6 +149,24 @@ export function fallbackResultFor(entry: WindowEntry): OpenConversationResult {
   } as unknown as OpenConversationResult;
 }
 
+/** Le `viewType` REELLEMENT releve sur un panneau Claude — VSCode prefixe (D2, mesure C1). */
+export const CLAUDE_VIEW_TYPE = 'mainThreadWebview-claudeVSCodePanel';
+
+/** Un onglet de conversation, tel que l'adaptateur de l'extension en produit. */
+export function conversationTab(
+  label: string,
+  partial: Partial<ConversationTabLike> = {}
+): ConversationTabLike {
+  return {
+    viewType: CLAUDE_VIEW_TYPE,
+    label,
+    viewColumn: 1,
+    indexInGroup: 0,
+    isActive: false,
+    ...partial,
+  };
+}
+
 export interface Companion {
   readonly entry: WindowEntry;
   readonly registryDir: string;
@@ -142,6 +174,16 @@ export interface Companion {
   readonly port: number;
   /** Les prompts REELLEMENT recus par la route, dans l'ordre. */
   readonly received: readonly string[];
+  /**
+   * Les onglets que la fenetre porte — MODIFIABLES en cours de scenario.
+   *
+   * C'est ce qui permet d'eprouver la peremption d'une poignee de bout en bout : un libelle qui
+   * change entre l'enumeration et la fermeture est exactement ce que la vraie extension Claude
+   * fait quelques centaines de millisecondes apres l'attachement (D24).
+   */
+  tabs: readonly ConversationTabLike[];
+  /** Ce que la route de fermeture a REELLEMENT demande a l'editeur. */
+  readonly closed: readonly ConversationTabLike[];
   close(): Promise<void>;
 }
 
@@ -154,6 +196,14 @@ export interface CompanionOptions {
   readonly registryDir?: string;
   /** Identite publiee dans l'entree. Defaut : la fenetre hote de la table capturee. */
   readonly extHostPid?: number;
+  /** Les onglets que la fenetre porte au depart. Defaut : aucun. */
+  readonly tabs?: readonly ConversationTabLike[];
+  /**
+   * Les deux routes de conversation, REMPLACEES — pour les seuls cas que la vraie logique ne
+   * peut pas produire : une fenetre qui rend un corps illisible, ou un `extHostPid` qui n'est
+   * pas le sien. Defaut : les VRAIES routes (`createConversationRoutes`).
+   */
+  readonly conversations?: (entry: WindowEntry) => ConversationRoutes;
 }
 
 /**
@@ -167,10 +217,28 @@ export async function startCompanion(options: CompanionOptions = {}): Promise<Co
   const registryDir = options.registryDir ?? makeRegistryDir();
   const token = randomUUID();
   const received: string[] = [];
+  const closed: ConversationTabLike[] = [];
 
   // L'entree definitive ne peut etre ecrite qu'une fois le port connu : on la construit en
   // deux temps, le serveur ne connaissant son port qu'apres avoir ecoute.
   const draft = currentSchemaEntry(options.extHostPid ?? OWNING_EXT_HOST_PID);
+
+  /**
+   * Le PORT DES ONGLETS de cette fenetre de test — le meme role que celui d'`extension.ts`.
+   *
+   * Les VRAIES routes de conversation tournent derriere le VRAI serveur, sur une VRAIE socket :
+   * ce que les tests du client traversent est donc la chaine complete, poignees comprises. Seule
+   * l'API `vscode` est absente, parce qu'elle n'est pas ce qu'on eprouve ici.
+   */
+  const state: { tabs: readonly ConversationTabLike[] } = { tabs: options.tabs ?? [] };
+  const tabsPort: ConversationTabsPort<ConversationTabLike> = {
+    listTabs: () => state.tabs,
+    closeTab: (target) => {
+      closed.push(target);
+      state.tabs = state.tabs.filter((item) => item !== target);
+      return Promise.resolve(true);
+    },
+  };
 
   const handle = await startServer({
     token,
@@ -182,11 +250,21 @@ export async function startCompanion(options: CompanionOptions = {}): Promise<Co
         request
       );
     },
+    listConversations: () => routes.list(),
+    closeConversation: (request) => routes.close(request),
     onError: () => undefined,
     onClosed: () => undefined,
   });
 
   const published: WindowEntry = { ...draft, port: handle.port, token };
+  const routes: ConversationRoutes =
+    options.conversations?.(published) ??
+    createConversationRoutes({
+      port: tabsPort,
+      extHostPid: published.extHostPid,
+      log: () => undefined,
+      wait: () => Promise.resolve(),
+    });
   writeWindowEntry(published, { dir: registryDir });
 
   return {
@@ -195,6 +273,13 @@ export async function startCompanion(options: CompanionOptions = {}): Promise<Co
     token,
     port: handle.port,
     received,
+    closed,
+    get tabs(): readonly ConversationTabLike[] {
+      return state.tabs;
+    },
+    set tabs(value: readonly ConversationTabLike[]) {
+      state.tabs = value;
+    },
     close: () => handle.close(),
   };
 }
