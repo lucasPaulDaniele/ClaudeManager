@@ -572,7 +572,14 @@ async function awaitFirstTurn(
         ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND,
         'No transcript was written for the seeded session: the first turn never took place',
         // Des CHIFFRES, jamais un chemin : ces racines portent le nom du compte.
+        //
+        // LE `sessionId` EST L'EXCEPTION, ET IL FAUT LA : c'est un uuid que NOUS avons genere,
+        // rendu tel quel au premier niveau en cas de succes. Sans lui, l'appelant apprend qu'un
+        // `claude --session-id <uuid>` a ete lance sans savoir lequel — il ne peut ni constater
+        // un transcript apparu en retard derriere une porte du CLI, ni s'abstenir de relancer.
+        // La discipline visait les chemins qui portent le nom du compte, pas un identifiant.
         {
+          sessionId,
           waitedMs: appearedAfterMs,
           rootsScanned: roots.length,
           directoriesScanned: sighting.directoriesScanned,
@@ -673,7 +680,12 @@ async function attachPanel(
   throw new ClaudeManagerError(
     ERROR_CODES.CLAUDE_PANEL_VIEWTYPE_UNKNOWN,
     'No Claude conversation tab appeared after the attach command was issued',
-    { attempts, waitedMs: totalMs }
+    // LE `sessionId` EST DANS LES DETAILS, ET C'EST LE CAS LE PLUS COUTEUX DU PRODUIT : cette
+    // erreur tombe APRES `awaitFirstTurn`, donc apres un tour 1 REELLEMENT joue — les jetons du
+    // modele ont ete consommes, le transcript est sur le disque, et le `finally` va supprimer le
+    // terminal. Sans cet identifiant, une session complete existerait sans qu'aucun appelant
+    // puisse la designer, et la seule conduite possible serait d'en ouvrir une seconde.
+    { sessionId, attempts, waitedMs: totalMs }
   );
 }
 
