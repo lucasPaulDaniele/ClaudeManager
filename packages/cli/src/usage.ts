@@ -54,8 +54,21 @@ export const USAGE: Usage = {
     },
     {
       name: 'open',
+      /**
+       * IL A MENTI SUR UN FAIT OPERATOIRE, ET C'ETAIT LE PIRE ENDROIT POUR LE FAIRE.
+       *
+       * Ce resume annoncait « firstTurnVerified, TOUJOURS false ». C'etait vrai en C2 ; le
+       * correctif du 2026-07-26 a rendu ce champ `true` sur toute la voie amorcee, et le resume
+       * n'a pas suivi. Ce n'est pas de la prose : ce module pose qu'un agent doit pouvoir faire
+       * `JSON.parse(stdout)` SANS CONDITION, y compris sur l'aide. Un agent qui lisait ce
+       * contrat concluait que le champ ne porte AUCUNE information — l'inverse exact de ce que
+       * le correctif a construit, et le champ sur lequel il decide.
+       *
+       * Les TROIS etats reellement produits sont donc enonces ici, et un test interdit desormais
+       * qu'une valeur y soit redonnee pour constante.
+       */
       summary:
-        "Ouvre une conversation Claude dans la fenetre hote du processus appelant, avec un prompt d amorcage lu par --prompt-file ou sur stdin. Le canal est CONFIRME par GET /health avant toute demande — identite discordante, aucune ouverture. La sortie porte firstTurnVerified, TOUJOURS false : la route observe qu un processus a demarre, jamais que le tour ait ete joue (lot D). Un repli V5 sort en code 4, pas en 0.",
+        "Ouvre une conversation Claude dans la fenetre hote du processus appelant, avec un prompt d amorcage lu par --prompt-file ou sur stdin. Le canal est CONFIRME par GET /health avant toute demande — identite discordante, aucune ouverture. La sortie porte firstTurnVerified, qui a TROIS etats. (1) true, avec mode seeded : la fenetre a CONSTATE le transcript de la session, le tour 1 a eu lieu — son CONTENU n est pas lu pour autant, la REPONSE ne sera restituee que par cmgr open --wait (lot D). Seul cas qui sorte en code 0. (2) false, avec mode fallback : le repli V5 a joue, aucune session n est amorcee et le prompt est seulement PRE-REMPLI dans le champ de saisie. (3) false, avec mode seeded : la fenetre porte une version anterieure de l extension compagnon, qui n observait que le demarrage d un processus — c est la combinaison mesuree comme pouvant rendre un panneau VIDE. Les cas (2) et (3) sortent en code 4, jamais en 0, et aucun des deux ne se retente a l aveugle.",
     },
   ],
   options: [

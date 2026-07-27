@@ -157,6 +157,51 @@ describe('usage', () => {
     );
   });
 
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * `--help` EST MACHINE-LISIBLE : ce qu'il affirme est du CONTRAT, pas de la prose.
+   *
+   * Le resume d'`open` annoncait « firstTurnVerified, TOUJOURS false ». C'etait vrai en C2 ; le
+   * correctif du 2026-07-26 a rendu ce champ `true` sur toute la voie amorcee, et le resume n'a
+   * pas suivi — `git show` du correctif ne porte qu'une ligne sur ce fichier, le numero de
+   * version. Rien ne gardait ce texte : `contract.test.ts` n'asserait que la structure et les
+   * codes de sortie.
+   *
+   * Un agent qui lit « TOUJOURS false » conclut que le champ ne porte aucune information, alors
+   * que c'est le champ sur lequel il decide. La regle verifiee ici est donc mecanique : AUCUNE
+   * valeur de champ n'est donnee pour constante dans l'aide — un « toujours <valeur> » est
+   * precisement l'affirmation qui se perime en silence au premier changement de comportement.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  describe('l aide ne donne aucune valeur de champ pour constante', () => {
+    it("n annonce jamais un « TOUJOURS <valeur> » — c'est ce qui s'est perime en silence", () => {
+      const declared = JSON.stringify(USAGE);
+
+      expect(declared).not.toMatch(/TOUJOURS\s+(false|true|null|vide)/i);
+      // La forme exacte du defaut, nommee : elle ne doit pas revenir par une reformulation.
+      expect(declared).not.toContain('TOUJOURS false');
+    });
+
+    it("enonce les TROIS etats de firstTurnVerified, et lequel sort en 0", async () => {
+      const summary = USAGE.commands.find((command) => command.name === 'open')?.summary ?? '';
+
+      expect(summary).toContain('firstTurnVerified');
+      // Les trois etats, et le code de sortie de chacun : c'est ce que `openingNote` dit deja a
+      // l'humain sur `stderr`, et que l'aide taisait.
+      expect(summary).toContain('TROIS etats');
+      expect(summary).toContain('seeded');
+      expect(summary).toContain('fallback');
+      expect(summary).toContain('code 4');
+
+      // ET IL EST VRAI : la valeur annoncee pour le cas nominal est celle que `open` rend
+      // vraiment. Une aide juste au moment ou elle est ecrite ne prouve rien ; celle-ci est
+      // confrontee au comportement.
+      expect(summary).toContain('Seul cas qui sorte en code 0');
+      const help = expectSuccess(await runCli(['--help'], contextFor(undefined, CALLER)));
+      expect(JSON.stringify(help)).toContain('TROIS etats');
+    });
+  });
+
   it('la version annoncee est celle du manifeste', () => {
     // Meme garde que `tests/unit/vscode/manifest.test.ts` : deux nombres qui se
     // desolidarisent en silence font mentir `--version` sans qu'aucun test ne bronche.
