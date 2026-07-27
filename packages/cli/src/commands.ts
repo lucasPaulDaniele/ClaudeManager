@@ -1,18 +1,23 @@
 /**
- * Les trois commandes de `cmgr` : deux lectures, et une ouverture.
+ * Les cinq commandes de `cmgr` : trois lectures, une ouverture, une fermeture.
  *
  * PERIMETRE, ET C'EST UNE DECISION : ce module lit le registre et la table des processus, et
- * demande a SA fenetre — jamais a une autre — d'ouvrir une conversation. Il n'ecrit rien dans
- * le registre, ne purge rien — la purge appartient a l'extension compagnon, qui seule sait
- * quand sa fenetre s'active —, et ne ferme aucune conversation (increment C4).
+ * demande a SA fenetre — jamais a une autre — d'ouvrir, d'enumerer et de fermer des
+ * conversations. Il n'ecrit rien dans le registre et ne purge rien : la purge appartient a
+ * l'extension compagnon, qui seule sait quand sa fenetre s'active.
  *
- * LE RESEAU EST ENTRE DANS `cmgr` A L'INCREMENT C2, ET SEULEMENT PAR `open`. Les deux
- * commandes de lecture n'interrogent toujours aucun serveur, et ce n'est pas un residu du lot
- * B : faire dependre l'inventaire des fenetres de leur joignabilite melangerait deux questions
- * distinctes — « quelles fenetres existent ? » et « laquelle repond ? ». La seconde appartient
- * a `cmgr doctor` (lot D). Quand `open` fait du reseau, il le fait par le CLIENT DU COEUR
- * (`core/client`) : aucune source de la CLI n'importe `node:http`, et un test d'architecture
- * le verifie.
+ * TROIS COMMANDES FONT DU RESEAU, ET UNE SEULE AGIT — la distinction est celle qui compte, et
+ * elle n'est pas la meme que « lecture ou ecriture » :
+ *
+ *   - `windows` et `whoami` n'interrogent AUCUN serveur. Ce n'est pas un residu du lot B :
+ *     faire dependre l'inventaire des fenetres de leur joignabilite melangerait deux questions
+ *     distinctes — « quelles fenetres existent ? » et « laquelle repond ? ». La seconde
+ *     appartient a `cmgr doctor` (lot D) ;
+ *   - `conversations` interroge SA fenetre, et n'y produit AUCUN effet de bord ;
+ *   - `open` et `close` AGISSENT.
+ *
+ * Quand le reseau entre en jeu, il passe par le CLIENT DU COEUR (`core/client`) : aucune source
+ * de la CLI n'importe `node:http`, et un test d'architecture le verifie.
  *
  * AUCUNE FENETRE N'EST FABRIQUEE ICI. Toute la garantie d'identite vit dans
  * `parseWindowEntry` : validation de schema, confrontation du contenu au NOM du fichier,
@@ -25,7 +30,10 @@
 
 import {
   ancestorsOf,
+  assertConversationHandle,
   assertSubmittablePrompt,
+  closeConversationInWindow,
+  listConversationsInWindow,
   openConversationInWindow,
   readRegistry,
   redactWindowEntry,
@@ -388,5 +396,111 @@ export async function openCommand(
       // reconnaitre un prompt pris au mauvais endroit.
       prompt: { source: prompt.source, bytes: prompt.bytes },
     },
+  };
+}
+
+/**
+ * « Quelles conversations sont ouvertes dans MA fenetre ? »
+ *
+ * LECTURE, AUCUN EFFET DE BORD — mais du RESEAU, contrairement a `windows` et `whoami` : les
+ * onglets d'une fenetre ne se lisent que DANS cette fenetre. Le canal est confirme avant, comme
+ * partout, parce que les poignees rendues n'ont de sens que dans la fenetre qui les a emises.
+ *
+ * UNE LISTE VIDE SORT EN CODE 0, et c'est une decision : c'est l'etat parfaitement normal d'une
+ * fenetre ou aucune conversation n'est ouverte. En faire une erreur obligerait tout appelant a
+ * distinguer « rien d'ouvert » de « je n'ai pas pu regarder » — exactement ce que le code de
+ * sortie existe pour eviter.
+ *
+ * LE LIBELLE EST RENDU, ET C'EST NECESSAIRE : sans lui, un agent ne peut pas choisir quelle
+ * conversation fermer. Il est du CONTENU de conversation (D24), il ne sort donc que dans le
+ * corps de SUCCES — jamais dans les details d'une erreur, ou le filtre du client ne laisse
+ * passer que des nombres, des booleens et un `sessionId` en forme d'uuid.
+ */
+export async function conversationsCommand(
+  context: CliContext,
+  diagnostics: Diagnostics
+): Promise<CommandBody> {
+  const listing = await listConversationsInWindow({
+    pid: context.pid,
+    // UN SEUL instantane, comme toutes les autres commandes (alerte n.15).
+    snapshot: await context.readSnapshot(),
+    registryDir: context.registryDir,
+    transport: context.transport,
+    report: diagnostics,
+  });
+
+  const { conversations } = listing;
+  // CE QU'UN HUMAIN DOIT LIRE, et que le JSON seul laisserait passer : la poignee est un
+  // contrat en DEUX TEMPS, et une liste vide n'est pas une panne.
+  diagnostics.notes = [
+    conversations.length === 0
+      ? "aucune conversation ouverte dans cette fenetre — ce n est pas une erreur, et le code de sortie reste 0."
+      : `${conversations.length} conversation(s) ouverte(s). Les identifiants rendus ici sont exiges par cmgr close, et ils PERIMENT : si l onglet bouge, change de libelle, ou si la fenetre redemarre son extension host, relister avant de fermer.`,
+  ];
+
+  return {
+    conversations,
+    count: conversations.length,
+    channelConfirmed: listing.channel,
+    // Jeton masque, repertoire personnel masque : le coeur l'a deja applique.
+    window: listing.window,
+  };
+}
+
+/** Ce que l'analyse d'arguments a retenu pour `close`, et rien de plus. */
+export interface CloseOptions {
+  readonly id: string;
+}
+
+/**
+ * « Ferme CETTE conversation de ma fenetre. »
+ *
+ * CE QUE LA SORTIE DIT, ET QU'ELLE NE DOIT PAS TAIRE :
+ *   - `closed` decrit l'onglet TEL QU'IL ETAIT avant la fermeture — releve par la fenetre avant
+ *     l'effet de bord, puisque apres, il n'y a plus rien a decrire ;
+ *   - `editorReportedClosed` est ce que `tabGroups.close` a resolu. C'EST UN RELEVE, PAS LA
+ *     PREUVE : la fenetre a re-enumere ses onglets et n'a rendu ce succes qu'apres avoir
+ *     constate la disparition. Le champ est la pour qu'on puisse voir les deux se contredire ;
+ *   - `remaining` compte ce qui reste ouvert, sans qu'il faille relister.
+ *
+ * AUCUN SUCCES DEGRADE ICI, et c'est delibere : il n'existe pas d'etat intermediaire a nommer.
+ * Ou l'onglet a quitte `tabGroups` — succes, code 0 —, ou une erreur NOMMEE dit precisement
+ * laquelle des trois situations on a sous les yeux (poignee perimee, deja ferme, fermeture
+ * refusee par l'editeur), et chacune porte sa conduite.
+ */
+export async function closeCommand(
+  context: CliContext,
+  diagnostics: Diagnostics,
+  options: CloseOptions
+): Promise<CommandBody> {
+  // AVANT l'inventaire des processus, qui coute de 700 ms a 1,3 s : une valeur qui n'est pas une
+  // poignee n'a jamais pu etre emise par une fenetre. Meme discipline que `PROMPT_EMPTY`.
+  assertConversationHandle(options.id);
+
+  const closing = await closeConversationInWindow(
+    { id: options.id },
+    {
+      pid: context.pid,
+      snapshot: await context.readSnapshot(),
+      registryDir: context.registryDir,
+      transport: context.transport,
+      report: diagnostics,
+    }
+  );
+
+  const { closed } = closing;
+  diagnostics.notes = [
+    `onglet ferme : il a REELLEMENT quitte tabGroups (l enumeration fait foi, pas le booleen de l editeur, qui vaut ${String(closed.editorReportedClosed)}). ${closed.remaining} conversation(s) restante(s) dans cette fenetre.`,
+  ];
+
+  return {
+    // AU PREMIER NIVEAU : ce sont les champs sur lesquels un agent decide.
+    closed: closed.closed,
+    remaining: closed.remaining,
+    editorReportedClosed: closed.editorReportedClosed,
+    /** La fenetre qui a REELLEMENT agi, telle qu'elle s'est nommee, canal confirme. */
+    extHostPid: closed.extHostPid,
+    channelConfirmed: closing.channel,
+    window: closing.window,
   };
 }

@@ -12,6 +12,8 @@
  */
 
 import {
+  closeCommand,
+  conversationsCommand,
   openCommand,
   whoamiCommand,
   windowsCommand,
@@ -24,16 +26,22 @@ import { EXIT_CODES, renderFailure, usageFailure, type ExitCode, type Failure } 
 import { CLI_NAME, CLI_VERSION, USAGE } from './usage.js';
 
 /**
- * Les commandes de LECTURE reconnues.
+ * Les commandes de LECTURE reconnues — celles qui ne prennent AUCUN argument.
  *
- * Elles n'acceptent AUCUNE option, et c'est ce qui garantit qu'on ne peut pas decrire une
- * fenetre depuis la ligne de commande. `open` en accepte UNE — `--prompt-file` —, qui designe
- * un fichier de prompt et rien d'autre : elle ne dit rien d'une fenetre, ni d'un hote, ni d'un
- * port. La surface reste la garantie (alerte n.19).
+ * C'est ce qui garantit qu'on ne peut pas decrire une fenetre depuis la ligne de commande. Les
+ * deux commandes qui prennent un argument le prennent pour ce qu'il est, et pour rien d'autre :
+ * `open --prompt-file <chemin>` designe un fichier de prompt, `close <id>` une POIGNEE emise par
+ * la fenetre elle-meme. Aucune des deux ne dit quoi que ce soit d'une fenetre, d'un hote ou d'un
+ * port : la surface reste la garantie (alerte n.19).
+ *
+ * `conversations` Y FIGURE BIEN QU'ELLE FASSE DU RESEAU, et il faut le dire parce que la
+ * distinction a bouge a l'increment C4 : ce que cette table regroupe est « aucun argument »,
+ * jamais « aucun reseau ». Les onglets d'une fenetre ne se lisent que DANS cette fenetre.
  */
 const READ_COMMANDS = {
   windows: windowsCommand,
   whoami: whoamiCommand,
+  conversations: conversationsCommand,
 } as const;
 
 type ReadCommandName = keyof typeof READ_COMMANDS;
@@ -43,6 +51,7 @@ function isReadCommandName(value: string): value is ReadCommandName {
 }
 
 const OPEN_COMMAND = 'open';
+const CLOSE_COMMAND = 'close';
 const PROMPT_FILE_OPTION = '--prompt-file';
 
 export interface CliResult {
@@ -60,6 +69,7 @@ export interface CliResult {
 type ParsedInvocation =
   | { readonly kind: 'read'; readonly name: ReadCommandName }
   | { readonly kind: 'open'; readonly promptFile: string | undefined }
+  | { readonly kind: 'close'; readonly id: string }
   | { readonly kind: 'help' }
   | { readonly kind: 'version' }
   | { readonly kind: 'usage-error'; readonly failure: Failure };
@@ -109,6 +119,59 @@ function parseOpenArguments(argv: readonly string[]): ParsedInvocation {
 }
 
 /**
+ * Analyse ce qui suit `close` : UNE poignee, en argument positionnel, et rien d'autre.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * POURQUOI UN ARGUMENT POSITIONNEL ICI, ALORS QUE LE PROMPT N'EN A PAS LE DROIT. Ce ne sont pas
+ * deux regles contradictoires, c'est une seule regle appliquee a deux valeurs de natures
+ * differentes. Ce que la regle du prompt vise est nomme dans `USAGE` : « l'echappement des
+ * prompts longs en shell est une source de bugs inepuisable, et un prompt tronque partirait sans
+ * que rien ne le signale ». Une poignee est un UUID : 36 caracteres de `[0-9a-f-]`, sans un
+ * espace, sans un guillemet, sans un saut de ligne, et de longueur FIXE — aucun shell n'a de
+ * quoi la tronquer ni la reinterpreter, et sa forme est verifiee avant tout acces au systeme
+ * (`assertConversationHandle`). Le seul risque de la ligne de commande, ici, est de la recopier
+ * de travers, et c'est exactement ce que la verification de forme attrape.
+ *
+ * ET ELLE NE DECRIT AUCUNE FENETRE (alerte n.19) : une poignee est emise par une fenetre, connue
+ * d'elle seule, et structurellement inconnue de toute autre. Elle ne porte ni pid, ni port, ni
+ * jeton, ni hote — elle ne peut donc pas servir a designer une fenetre qu'on n'habite pas.
+ *
+ * PAS D'OPTION `--id`, POUR NE PAS CHOISIR DEUX FOIS : une option et un positionnel
+ * co-existants creeraient un « les deux fournis » a arbitrer, c'est-a-dire le cas dont C2 a
+ * montre qu'il ne se decide pas proprement.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+function parseCloseArguments(argv: readonly string[]): ParsedInvocation {
+  const id = argv[1];
+  if (id === undefined) {
+    return {
+      kind: 'usage-error',
+      failure: usageFailure(
+        'cmgr close expects the conversation id that cmgr conversations returned',
+        { argumentIndex: 2 }
+      ),
+    };
+  }
+  if (argv.length > 2) {
+    return {
+      kind: 'usage-error',
+      failure: usageFailure('Unexpected extra argument', { argumentIndex: 3 }),
+    };
+  }
+  // Une option a la place de la poignee est une erreur d'USAGE, pas une poignee malformee : ce
+  // que l'appelant a ecrit n'est pas une valeur, c'est une option qui n'existe pas.
+  if (id.startsWith('-')) {
+    return {
+      kind: 'usage-error',
+      failure: usageFailure('Unknown option: cmgr close takes the conversation id, nothing else', {
+        argumentIndex: 2,
+      }),
+    };
+  }
+  return { kind: 'close', id };
+}
+
+/**
  * Reconnait l'invocation, ou la refuse.
  *
  * Aucune tolerance : un argument surnumeraire est une erreur, pas un silence. Accepter en
@@ -124,9 +187,10 @@ function parseArguments(argv: readonly string[]): ParsedInvocation {
     return { kind: 'usage-error', failure: usageFailure('No command given') };
   }
 
-  // `open` est la SEULE commande qui prenne des arguments : elle analyse la suite elle-meme,
-  // les autres n'en tolerent aucun.
+  // `open` et `close` sont les SEULES commandes qui prennent des arguments : elles analysent la
+  // suite elles-memes, les autres n'en tolerent aucun.
   if (first === OPEN_COMMAND) return parseOpenArguments(argv);
+  if (first === CLOSE_COMMAND) return parseCloseArguments(argv);
 
   const recognized: ParsedInvocation | undefined =
     first === '--help' || first === '-h'
@@ -245,6 +309,15 @@ export async function runCli(argv: readonly string[], context: CliContext): Prom
       return outcome.kind === 'usage'
         ? failed(OPEN_COMMAND, outcome.failure, diagnostics)
         : succeeded(OPEN_COMMAND, outcome.body, diagnostics);
+    }
+
+    if (parsed.kind === 'close') {
+      command = CLOSE_COMMAND;
+      return succeeded(
+        CLOSE_COMMAND,
+        await closeCommand(context, diagnostics, { id: parsed.id }),
+        diagnostics
+      );
     }
 
     command = parsed.name;
