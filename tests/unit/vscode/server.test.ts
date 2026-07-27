@@ -2,7 +2,14 @@ import { Agent, request } from 'node:http';
 import { connect } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ClaudeManagerError, ERROR_CODES } from '../../../packages/core/src/index.js';
+import {
+  ClaudeManagerError,
+  CONVERSATIONS_PATH,
+  ERROR_CODES,
+  HEALTH_PATH,
+  HEALTH_ROUTE,
+  OPEN_ROUTE,
+} from '../../../packages/core/src/index.js';
 import type { OpenConversationResult } from '../../../packages/vscode/src/conversations.js';
 import {
   startServer,
@@ -475,6 +482,41 @@ describe('routage', () => {
 
     expect((await call(handle, '/health', authorized(), 'POST')).status).toBe(404);
     expect((await call(handle, '/health', authorized(), 'DELETE')).status).toBe(404);
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LE SERVEUR ET SON CLIENT NOMMENT LES ROUTES AU MEME ENDROIT.
+   *
+   * `server.ts` en gardait une COPIE LOCALE alors qu'il importait deja `./core.js`, qui les
+   * reexporte. Deux declarations de la meme chaine, dans deux paquets dont l'un sert ce que
+   * l'autre appelle : le jour ou une route change, elle change d'un cote et pas de l'autre — et
+   * le client recoit un `404 NOT_FOUND` sans que rien, a la compilation, ne l'ait signale.
+   *
+   * L'import rend la divergence impossible par construction ; ce test le dit dans le langage du
+   * produit, en servant les chemins que le CLIENT emploie, jamais des litteraux recopies ici.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('sert exactement les chemins que le CLIENT du coeur emploie', async () => {
+    opener = () => Promise.resolve(OPENED);
+    const handle = await open();
+
+    expect((await call(handle, HEALTH_PATH, authorized())).status).toBe(200);
+    expect(
+      (
+        await call(
+          handle,
+          CONVERSATIONS_PATH,
+          { ...authorized(), 'content-type': 'application/json' },
+          'POST',
+          '127.0.0.1',
+          JSON.stringify({ prompt: 'x' })
+        )
+      ).status
+    ).toBe(200);
+    // Et les libelles de route sont ceux du coeur, a la lettre : c'est ce que le routage compare.
+    expect(`GET ${HEALTH_PATH}`).toBe(HEALTH_ROUTE);
+    expect(`POST ${CONVERSATIONS_PATH}`).toBe(OPEN_ROUTE);
   });
 });
 
