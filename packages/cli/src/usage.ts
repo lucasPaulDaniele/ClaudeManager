@@ -75,7 +75,7 @@ export const USAGE: Usage = {
     [String(EXIT_CODES.UNEXPECTED_ERROR)]:
       'defaillance imprevue de ClaudeManager — reduite a son type et a son code systeme, jamais une trace de pile',
     [String(EXIT_CODES.DEGRADED_SUCCESS)]:
-      'succes DEGRADE — le repli V5 a joue : la conversation est ouverte, mais le prompt y est seulement PRE-REMPLI et attend une validation humaine. Ni 0 (le tour ne tourne pas) ni 1 (l operation a bien eu lieu, la retenter ouvrirait une seconde conversation)',
+      "succes DEGRADE — une conversation EXISTE, mais le tour 1 n est pas acquis. DEUX cas le portent : le repli V5 (mode fallback — le prompt est seulement PRE-REMPLI dans le champ de saisie et attend une validation humaine) et un tour NON VERIFIE sur la voie amorcee (mode seeded avec firstTurnVerified false — la combinaison mesuree comme pouvant rendre un panneau VIDE). Dans les deux cas : ne pas retenter a l aveugle, une relance ouvrirait une seconde conversation. Ni 0 (le tour ne tourne pas) ni 1 (l operation a bien eu lieu)",
   },
   notes: [
     "stdout ne porte QU'UNE SEULE valeur JSON, en succes comme en echec. Les diagnostics lisibles par un humain vont sur stderr.",

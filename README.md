@@ -263,9 +263,18 @@ cmgr doctor                              # 🚧 lot D — diagnostiquer l'enviro
 
 **Codes de sortie** — un agent décide sans analyser la sortie : `0` succès, `1` erreur nommée du
 domaine, `2` erreur d'usage, `3` défaillance imprévue de ClaudeManager, et `4` **succès dégradé** —
-le repli V5 a joué, la conversation est ouverte mais le prompt n'y est que **pré-rempli** et
-attend un geste humain. Ni `0` (le tour ne tourne pas) ni `1` (l'opération a bien eu lieu ;
-la retenter ouvrirait une seconde conversation).
+une conversation **existe**, mais le tour 1 n'est pas acquis. Ni `0` (le tour ne tourne pas) ni `1`
+(l'opération a bien eu lieu ; la retenter ouvrirait une seconde conversation).
+
+**Deux cas portent le `4`**, et ils disent la même chose : *ne retente pas à l'aveugle.*
+
+| Cas | Ce que la sortie porte | Le geste |
+|---|---|---|
+| **Repli V5** | `mode: "fallback"`, `humanActionRequired: true`, `degradedFrom` | Le prompt est **pré-rempli** dans le champ de saisie : le valider. |
+| **Tour 1 non vérifié** | `mode: "seeded"`, `firstTurnVerified: false` | La fenêtre porte une version de l'extension qui n'observait que le démarrage d'un processus — **c'est la combinaison mesurée comme pouvant rendre un panneau vide**. Comparer son `extensionVersion` avec `cmgr windows`, puis **renouveler la fenêtre**. |
+
+Un seul code pour les deux : ces codes encodent une **décision**, et la décision est la même. Ce
+qui diffère est un renseignement, et il est dans la sortie JSON comme sur `stderr`.
 
 Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain. Cela vaut **sans exception**, y compris pour `--help` et pour les erreurs — un agent doit pouvoir faire `JSON.parse(stdout)` sans condition.
 

@@ -83,7 +83,13 @@ export interface CliContext {
 export interface Diagnostics {
   skipped?: readonly SkippedEntry[];
   /**
-   * Le repli V5 a joue : la commande a produit son resultat, mais pas le nominal.
+   * La commande a produit un resultat, mais PAS LE NOMINAL — et il y a DEUX facons.
+   *
+   * Le repli V5 en est une : la conversation est ouverte, le prompt seulement pre-rempli.
+   * L'autre est un tour 1 NON VERIFIE sur une voie amorcee — ce qu'une fenetre portant une
+   * version anterieure de l'extension rend —, c'est-a-dire exactement la combinaison mesuree
+   * comme produisant un panneau VIDE. Les deux disent la meme chose a l'appelant : la
+   * conversation existe, ce n'est pas ce qu'il a demande, et retenter en ouvrirait une seconde.
    *
    * C'est le CODE DE SORTIE qui en depend (`DEGRADED_SUCCESS`), et c'est pourquoi il passe par
    * ici plutot que d'etre relu dans le corps de la reponse : lire un champ du JSON pour
@@ -286,7 +292,7 @@ function openingNote(conversation: {
   }
   return conversation.firstTurnVerified
     ? 'le tour 1 a EU LIEU (firstTurnVerified: true) : le transcript de la session existe sur le disque. Son CONTENU n est pas lu — la REPONSE du tour ne sera restituee que par cmgr open --wait, lot D.'
-    : 'le tour 1 n est PAS verifie (firstTurnVerified: false) : cette fenetre porte une version de l extension qui n observait que le demarrage d un processus, jamais le tour lui-meme. Comparer son extensionVersion avec cmgr windows, puis la mettre a jour.';
+    : "le tour 1 n est PAS verifie (firstTurnVerified: false) : cette fenetre porte une version de l extension qui n observait que le demarrage d un processus, jamais le tour lui-meme — c est la combinaison mesuree comme pouvant rendre un panneau VIDE. Un panneau a ete ouvert : NE PAS RELANCER, ce serait ouvrir une seconde conversation. Comparer son extensionVersion avec cmgr windows, puis la mettre a jour.";
 }
 
 /**
@@ -338,7 +344,21 @@ export async function openCommand(
   );
 
   const { conversation } = opening;
-  diagnostics.degraded = conversation.mode === 'fallback';
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * UN TOUR 1 NON VERIFIE N'EST PAS UN SUCCES NOMINAL, ET SORTAIT POURTANT EN `0`.
+   *
+   * Le repli V5 seul portait le code 4. Une ouverture `mode: 'seeded'` avec
+   * `firstTurnVerified: false` sortait donc en `0` — c'est-a-dire sur la combinaison meme que la
+   * recette du 2026-07-26 a mesuree comme produisant un panneau VIDE, sans prompt ni reponse.
+   * Le champ etait dans le JSON et la phrase sur `stderr`, mais la doctrine de `exit.ts` est
+   * qu'un agent doit pouvoir decider SANS analyser la sortie : le seul canal qui satisfait cette
+   * exigence disait « succes nominal ». Et le raisonnement qui a cree le code 4 s'applique mot
+   * pour mot — un `0` fait enchainer l'agent sur « ma conversation tourne » et attendre une
+   * reponse qui ne viendra jamais.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  diagnostics.degraded = conversation.mode === 'fallback' || !conversation.firstTurnVerified;
   diagnostics.notes = [openingNote(conversation)];
 
   return {

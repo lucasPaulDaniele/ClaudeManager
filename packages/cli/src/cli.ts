@@ -190,8 +190,9 @@ function succeeded(command: string, body: CommandBody, diagnostics: Diagnostics)
     stderr: say([...(diagnostics.notes ?? []), ...skippedLines(diagnostics.skipped)]),
     /**
      * UN SUCCES DEGRADE N'EST PAS UN SUCCES NOMINAL, et le code de sortie le dit sans qu'il
-     * faille analyser la sortie : la conversation est ouverte, mais le prompt n'y est que
-     * PRE-REMPLI et attend un geste humain. Voir `EXIT_CODES.DEGRADED_SUCCESS`.
+     * faille analyser la sortie : une conversation existe, mais le tour 1 n'est pas acquis —
+     * prompt seulement PRE-REMPLI en repli V5, ou tour NON VERIFIE sur la voie amorcee.
+     * Voir `EXIT_CODES.DEGRADED_SUCCESS`.
      */
     exitCode: diagnostics.degraded === true ? EXIT_CODES.DEGRADED_SUCCESS : EXIT_CODES.SUCCESS,
   };
