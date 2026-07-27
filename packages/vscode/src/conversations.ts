@@ -64,8 +64,10 @@ import {
   CLAUDE_OPEN_COMMAND,
   neutralizedTerminalEnvironment,
   resolveExecutable,
+  SEED_SHELL_ARGUMENTS,
   seedLeadingArguments,
   selectNewPanel,
+  SESSION_ID_SHAPE,
   shellNames,
   splitPathVariable,
   type PanelTabLike,
@@ -165,6 +167,58 @@ const TAB_POLL_INTERVAL_MS = 250;
  * l'attente autour d'une dizaine de secondes, sans qu'aucun nombre ne soit invente.
  */
 const SEED_PROCESS_ATTEMPTS = 8;
+
+/**
+ * ATTENTE DU PID DU SHELL — bornee, et LA BORNE EST LE CORRECTIF (gate C, volet 2).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * CE QUI ETAIT CASSE : `await terminal.processId()` n'etait borne par RIEN. Un commentaire
+ * annoncait « la course contre l'echelle ci-dessous le borne » — cette course n'etait pas
+ * ecrite : la boucle des tentatives ne demarrait qu'APRES la resolution de cet `await`. Or
+ * l'ecueil est mesure dans ce depot (ADR-002, ecueil n.5) : « `terminal.processId` ne se
+ * resout JAMAIS pour un pty deja mort. Une boucle qui l'attend se bloque indefiniment. » Et
+ * l'adaptateur reel propage le thenable sans le borner — `Promise.resolve(terminal.processId)`
+ * ADOPTE un thenable qui ne se regle jamais.
+ *
+ * CE QUE CA PRODUISAIT, ET AUCUN NIVEAU N'EN RATTRAPAIT RIEN : la route pend sans borne, donc
+ * le `finally` n'est jamais atteint — terminal masque NON SUPPRIME et fichier de prompt laisse
+ * EN CLAIR sur le disque —, et `serializeOpenings` etant une file d'un seul rang, plus aucune
+ * ouverture n'est possible dans cette fenetre jusqu'a rechargement — que le README interdit
+ * precisement sur une fenetre qui heberge une conversation. Cote client, l'abandon a 300 s
+ * sort en `WINDOW_UNREACHABLE`, qui designe la mauvaise cause.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * HUIT ECHELONS DE 250 ms, SOIT 2 s. C'est une borne de VIVACITE, pas de performance : le pid
+ * est resolu par l'editeur des que le pty est engendre, et un pty qui n'existe pas apres 2 s
+ * n'existera pas. Elle ne s'ajoute pas au pire cas de la route — quand elle s'epuise, on leve,
+ * et rien de ce qui suit n'a lieu.
+ */
+const SHELL_PID_ATTEMPTS = 8;
+
+/**
+ * ATTENTE DE L'ACTIVATION DE L'EXTENSION CLAUDE — bornee pour la meme raison, et sans mesure.
+ *
+ * `extension.activate()` est une promesse de l'editeur : rien ne garantit qu'elle se regle.
+ * Non bornee, elle bloque la meme file d'un rang que ci-dessus, avec la meme consequence pour
+ * l'appelant — sauf qu'ici aucun terminal n'existe encore et aucun prompt n'est ecrit, donc
+ * rien ne fuit : seule la fenetre devient inutilisable.
+ *
+ * 10 s, ET CE CHIFFRE N'EST PAS MESURE — il est assume comme tel. Aucun spike n'a chronometre
+ * l'activation de l'extension Claude ; ce qu'on sait est qu'elle enregistre ses commandes a ce
+ * moment-la, et qu'une activation qui n'a pas rendu la main au bout de 10 s ne servira aucune
+ * commande dans ce cycle. Une erreur nommee vaut alors mieux qu'une route qui ne revient pas.
+ */
+const EXTENSION_ACTIVATION_BUDGET_MS = 10_000;
+
+/**
+ * « Rien ne s'est encore regle » — A NE PAS CONFONDRE AVEC `undefined`, qui est une REPONSE.
+ *
+ * Les deux ne decrivent pas le meme defaut : `undefined` est ce que l'editeur repond quand il
+ * n'a pas de pid a donner ; l'absence de reponse, elle, est l'ecueil n.5. Un `await` non borne
+ * ne distingue que le premier — c'est meme la raison pour laquelle le double de test, qui
+ * rendait `undefined` sous un nom annoncant l'ecueil, ne couvrait pas le cas reel.
+ */
+const NOTHING_SETTLED = Symbol('nothing-settled');
 
 /** Granularite du sondage du transcript — deux passages par seconde. */
 const TRANSCRIPT_POLL_INTERVAL_MS = 500;
@@ -402,8 +456,27 @@ function writePromptFile(directory: string, sessionId: string, prompt: string): 
  *
  * Ne leve JAMAIS : c'est de l'hygiene, et une hygiene qui ferait echouer une ouverture serait
  * pire que le residu qu'elle vise. Ce qu'elle n'a pas pu faire est journalise.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * DEUX SITES D'APPEL, ET LE SECOND EST LE CORRECTIF (V2-4). Elle n'etait appelee que depuis
+ * `openConversation` : si l'extension host MEURT entre l'ecriture du fichier et l'envoi de la
+ * ligne, le prompt reste en clair INDEFINIMENT tant qu'aucune ouverture ne survient dans cette
+ * fenetre — c'est-a-dire, pour une fenetre qui n'en fera plus jamais, pour toujours.
+ * L'ACTIVATION est le moment qui manquait : un host qui demarre prouve que le precedent est
+ * mort. `activate()` y balaie deja le registre (`sweepStaleEntries`) ; la symetrie est faite.
+ *
+ * L'AGE RESTE EXIGE A L'ACTIVATION, ET CE N'EST PAS UNE PRUDENCE DE STYLE : le repertoire de
+ * transit est le `globalStorage` de l'EXTENSION, pas de la fenetre — TOUTES les fenetres du
+ * poste y ecrivent. « Le host precedent est mort, donc ses prompts sont abandonnes par
+ * construction » vaut pour LE NOTRE ; il ne dit rien de l'ouverture qu'une AUTRE fenetre est
+ * peut-etre en train de jouer a la seconde ou l'on demarre. Effacer sans age tuerait son tour 1.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
  */
-function sweepAbandonedPrompts(directory: string, now: number, log: (message: string) => void): void {
+export function sweepAbandonedPrompts(
+  directory: string,
+  now: number,
+  log: (message: string) => void
+): void {
   let files: readonly string[];
   try {
     files = readdirSync(directory);
@@ -443,6 +516,7 @@ function sweepAbandonedPrompts(directory: string, now: number, log: (message: st
  */
 async function requireAttachCommand(
   editor: EditorPort,
+  wait: (ms: number) => Promise<void>,
   log: (message: string) => void
 ): Promise<ClaudeExtensionHandle> {
   const extension = editor.getClaudeExtension();
@@ -456,8 +530,24 @@ async function requireAttachCommand(
 
   if (!extension.isActive) {
     try {
-      await extension.activate();
+      // BORNEE : c'est une promesse de l'editeur, rien ne garantit qu'elle se regle. Non
+      // bornee, elle bloquerait la file d'ouverture de cette fenetre pour toujours — le meme
+      // defaut que celui du pid du shell, un etage plus haut.
+      const settled = await Promise.race([
+        extension.activate(),
+        wait(EXTENSION_ACTIVATION_BUDGET_MS).then((): typeof NOTHING_SETTLED => NOTHING_SETTLED),
+      ]);
+      if (settled === NOTHING_SETTLED) {
+        throw new ClaudeManagerError(
+          ERROR_CODES.CLAUDE_EXTENSION_INACTIVE,
+          `The ${CLAUDE_EXTENSION_ID} extension activation did not return within the allotted time`,
+          { extensionId: CLAUDE_EXTENSION_ID, waitedMs: EXTENSION_ACTIVATION_BUDGET_MS }
+        );
+      }
     } catch (cause) {
+      // Deja nommee — l'echeance ci-dessus : elle porte son propre detail, la reemballer le
+      // perdrait et ferait passer une borne pour un rejet de l'extension.
+      if (isClaudeManagerError(cause)) throw cause;
       throw new ClaudeManagerError(
         ERROR_CODES.CLAUDE_EXTENSION_INACTIVE,
         `The ${CLAUDE_EXTENSION_ID} extension failed to activate in this window`,
@@ -491,6 +581,36 @@ async function requireAttachCommand(
 }
 
 /**
+ * LE PID DU SHELL, OU L'AVEU QU'IL N'EST JAMAIS VENU — et l'attente est BORNEE.
+ *
+ * LA COURSE EST ECRITE, CETTE FOIS. Elle etait promise par un commentaire et absente du code :
+ * `await terminal.processId()` precedait la boucle des tentatives au lieu de courir contre
+ * elle. Ici, chaque echelon confronte la promesse de l'editeur a une attente courte — la
+ * promesse gagne des qu'elle se regle, l'echelle gagne quand elle ne se regle jamais.
+ *
+ * `NOTHING_SETTLED` DISTINGUE CE QUE `undefined` CONFONDAIT : l'editeur n'a rien repondu, par
+ * opposition a « il a repondu qu'il n'avait pas de pid ». L'appelant en fait deux erreurs
+ * distinctes.
+ */
+async function resolveShellPid(
+  terminal: HiddenTerminal,
+  wait: (ms: number) => Promise<void>
+): Promise<number | undefined | typeof NOTHING_SETTLED> {
+  // UNE SEULE FOIS, hors de la boucle : rappeler `processId()` a chaque echelon demanderait un
+  // nouveau thenable a l'editeur a chaque tour, et l'on n'attendrait jamais le MEME.
+  const resolving = terminal.processId();
+
+  for (let attempt = 1; attempt <= SHELL_PID_ATTEMPTS; attempt += 1) {
+    const settled = await Promise.race([
+      resolving,
+      wait(TAB_POLL_INTERVAL_MS).then((): typeof NOTHING_SETTLED => NOTHING_SETTLED),
+    ]);
+    if (settled !== NOTHING_SETTLED) return settled;
+  }
+  return NOTHING_SETTLED;
+}
+
+/**
  * Attend que le shell du terminal ait REELLEMENT engendre le processus du tour 1.
  *
  * L'observation est faite sur la TABLE DES PROCESSUS du systeme — la meme que celle qui
@@ -510,14 +630,23 @@ async function awaitSeedProcess(
   readTable: () => Promise<ProcessSnapshot>,
   wait: (ms: number) => Promise<void>,
   log: (message: string) => void
-): Promise<{ readonly shellPid: number | undefined; readonly seedPid: number | undefined }> {
-  // Ecueil ADR-002 n.5 : `processId` ne se resout JAMAIS pour un pty deja mort. La course
-  // contre l'echelle ci-dessous le borne — on ne l'attend pas seul.
-  const shellPid = await terminal.processId();
+): Promise<{ readonly shellPid: number; readonly seedPid: number }> {
+  const shellPid = await resolveShellPid(terminal, wait);
+  if (shellPid === NOTHING_SETTLED) {
+    throw new ClaudeManagerError(
+      ERROR_CODES.SEED_PROCESS_NOT_STARTED,
+      'The hidden terminal never settled its shell process id within the allotted time',
+      // LES DEUX CAS SE DISTINGUENT ICI, ET C'EST TOUT L'INTERET DU DETAIL : « jamais reglee »
+      // designe un pty deja mort (ecueil ADR-002 n.5) ; « undefined » est une REPONSE de
+      // l'editeur. Meme code de sortie, deux diagnostics.
+      { shellPid: 'never-settled', waitedMs: SHELL_PID_ATTEMPTS * TAB_POLL_INTERVAL_MS }
+    );
+  }
   if (shellPid === undefined) {
     throw new ClaudeManagerError(
       ERROR_CODES.SEED_PROCESS_NOT_STARTED,
-      'The hidden terminal never resolved a shell process id'
+      'The hidden terminal never resolved a shell process id',
+      { shellPid: 'undefined' }
     );
   }
 
@@ -744,7 +873,23 @@ export async function openConversation(
   const readTable = dependencies.readProcessTable ?? readProcessTable;
   const transcriptRoots =
     dependencies.transcriptProjectRoots ?? transcriptProjectRoots(environment, homedir());
+
+  // ---- Etape 0 : l'identifiant de session est CONFORME -----------------------------------
+  // AVANT TOUT LE RESTE, parce que cette valeur va servir a deux choses qui ne pardonnent
+  // pas : NOMMER UN FICHIER dans le repertoire de transit du prompt — un separateur de chemin
+  // ecrirait le prompt en clair ailleurs — et S'ECRIRE DANS LA LIGNE POWERSHELL du terminal
+  // d'amorcage. La fabrique est injectee : la garde n'est donc pas inatteignable, elle est
+  // simplement satisfaite par `randomUUID()` en production (V2-5).
   const sessionId = (dependencies.newSessionId ?? randomUUID)();
+  if (!SESSION_ID_SHAPE.test(sessionId)) {
+    throw new ClaudeManagerError(
+      ERROR_CODES.SEED_SESSION_ID_INVALID,
+      'The session id to seed is not a uuid',
+      // LA LONGUEUR, JAMAIS LA VALEUR : c'est precisement une valeur dont on ne sait pas d'ou
+      // elle vient qui ne doit pas etre recopiee dans une sortie qui part vers un journal.
+      { length: sessionId.length }
+    );
+  }
 
   // ---- Etape 1 : refus precoce ----------------------------------------------------------
   // AVANT TOUT LE RESTE, et sans repli : ce sont des etats de la FENETRE, pas des defaillances
@@ -775,7 +920,7 @@ export async function openConversation(
   //
   // Une fois cette etape franchie, le repli est DISPONIBLE — et il le restera jusqu'a la
   // creation du terminal, pas au-dela (voir `seeded` ci-dessous).
-  const claudeExtension = await requireAttachCommand(editor, log);
+  const claudeExtension = await requireAttachCommand(editor, wait, log);
 
   let seeded = false;
   let terminal: HiddenTerminal | undefined;
@@ -852,7 +997,9 @@ export async function openConversation(
       // correspond au workspace de la fenetre — sinon il reussit en ouvrant un panneau VIDE.
       cwd,
       shellPath: shell,
-      shellArgs: ['-NoLogo'],
+      // `-NoProfile` FAIT PARTIE DU MECANISME : un profil PowerShell s'execute APRES la
+      // neutralisation de l'environnement et peut la defaire. Voir `SEED_SHELL_ARGUMENTS`.
+      shellArgs: SEED_SHELL_ARGUMENTS,
       env: neutralizedTerminalEnvironment(environment),
     });
 
@@ -907,11 +1054,41 @@ export async function openConversation(
     return await runFallback(editor, request.prompt, error, extHostPid, log);
   } finally {
     // ---- Etape 7 : le terminal disparait SUR TOUS LES CHEMINS, succes comme echec --------
-    // Le `claude` du panneau survit, l'onglet reste intact (mesure, ADR-002).
-    terminal?.dispose();
+    //
+    // ───────────────────────────────────────────────────────────────────────────────────────
+    // AUCUNE DES DEUX OPERATIONS NE PEUT JETER, ET C'EST UN CORRECTIF (V2-2). Une exception
+    // levee dans un `finally` REMPLACE la valeur de retour : une ouverture parfaitement
+    // REUSSIE — tour 1 joue, panneau attache — ressortait alors en `500 UNEXPECTED_FAILURE`,
+    // exactement le contraire de ce que C3-FIX venait de corriger. Et le cas n'est pas
+    // theorique : `force: true` couvre `ENOENT`, le cas nominal, mais PAS `EPERM`/`EBUSY` —
+    // un antivirus qui tient encore le handle, c'est-a-dire le scenario que la remediation de
+    // `PROMPT_FILE_UNWRITABLE` cite deja.
+    //
+    // Les DEUX sont concernees, pas seulement la seconde : un jet de `dispose()` court-
+    // circuiterait en plus le `rmSync`, laissant le prompt EN CLAIR sur le disque.
+    //
+    // C'est la discipline deja appliquee a `sweepAbandonedPrompts` — « ne leve JAMAIS » —, qui
+    // n'avait pas ete reportee ici. Ce que le nettoyage n'a pas pu faire est JOURNALISE : une
+    // hygiene silencieuse est une hygiene dont personne ne peut dire si elle a eu lieu.
+    // ───────────────────────────────────────────────────────────────────────────────────────
+    try {
+      // Le `claude` du panneau survit, l'onglet reste intact (mesure, ADR-002).
+      terminal?.dispose();
+    } catch (error) {
+      log(`could not dispose the seed terminal, it may linger hidden — ${describe(error)}`);
+    }
     // FILET : la ligne efface le fichier elle-meme, avant meme que `claude` ne demarre. Ce
     // filet couvre le cas ou elle n'a jamais pu s'executer.
-    if (promptFile !== undefined) rmSync(promptFile, { force: true });
+    if (promptFile !== undefined) {
+      try {
+        rmSync(promptFile, { force: true });
+      } catch (error) {
+        // Le prompt reste EN CLAIR sur le disque : le dire est le minimum, et le balayage des
+        // prompts abandonnes — a l'ouverture suivante comme a la prochaine activation — le
+        // reprendra passe son age.
+        log(`could not remove the transient prompt file, it stays on disk — ${describe(error)}`);
+      }
+    }
   }
 }
 

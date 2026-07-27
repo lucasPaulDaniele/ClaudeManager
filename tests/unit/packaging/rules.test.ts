@@ -132,6 +132,41 @@ describe('CHAQUE regle peut echouer — une mutation du releve reel, une violati
     });
   }
 
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LA GARDE DE DEMAIN, ET C'EST TOUT SON OBJET (V2-6).
+   *
+   * `.vscodeignore` est une DENYLIST : elle est muette sur ce qui n'existe pas encore. Le
+   * tarball de la CLI, lui, est protege PAR CONSTRUCTION (`files: [...]`, une liste blanche
+   * npm). L'asymetrie etait le defaut — pas le contenu du jour, qui est propre des deux cotes.
+   *
+   * CE QUE CE CAS DERIVE DU RELEVE REEL : un fichier de mesure depose demain dans
+   * `packages/vscode/`. Ce chantier mesure avec `claude --debug-file` : le scenario n'est pas
+   * theorique. Un tel fichier passe LES DIX predicats de `FORBIDDEN`, vit sous le prefixe
+   * `extension/`, et partait donc dans l'archive. Le test `vsce ls` ne le rattrape pas
+   * davantage : il est TAUTOLOGIQUE pour ce cas, les deux cotes derivant du meme repertoire.
+   *
+   * PREUVE DU FAILS-BEFORE : contre le `rules.ts` d'avant le correctif, chacun de ces relevés
+   * ne porte AUCUNE violation.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  const undeclared: ReadonlyArray<readonly [string, string]> = [
+    ['un journal de mesure', 'extension/debug.log'],
+    ['un transcript capture', 'extension/session-4f2a.jsonl'],
+    ['un fichier d environnement', 'extension/.env'],
+    ['une note de travail laissee a la racine du paquet', 'extension/NOTES.md'],
+  ];
+
+  for (const [label, entry] of undeclared) {
+    it(`refuse ${label} — hors de la liste blanche des entrees declarees`, () => {
+      expect(reasons([...VSIX_REAL, entry], VSIX_SPEC).length).toBeGreaterThan(0);
+    });
+  }
+
+  it('refuse un fichier non declare AUSSI dans le tarball de la CLI', () => {
+    expect(reasons([...CLI_REAL, 'package/debug.log'], CLI_TARBALL_SPEC).length).toBeGreaterThan(0);
+  });
+
   it('refuse un VSIX AMPUTE DE `dist/core` — le piege central de cet empaquetage', () => {
     // LE cas. Le coeur est compile A COTE de l'extension, jamais recopie : un VSIX sans lui
     // s'installe sans un mot et echoue au CHARGEMENT, ce qu'aucun typecheck ne rattrape.

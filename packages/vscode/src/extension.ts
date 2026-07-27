@@ -21,6 +21,7 @@ import * as vscode from 'vscode';
 import {
   openConversation,
   serializeOpenings,
+  sweepAbandonedPrompts,
   type ClaudeExtensionHandle,
   type EditorPort,
   type HiddenTerminal,
@@ -157,10 +158,24 @@ function editorPort(): EditorPort {
 async function sweepStaleEntries(current: WindowPublisher): Promise<void> {
   const start = performance.now();
   try {
-    const { removed } = purgeStaleEntries({ snapshot: await readProcessTable() });
+    const { removed, removedTemporaries, kept } = purgeStaleEntries({
+      snapshot: await readProcessTable(),
+    });
     const elapsed = Math.round(performance.now() - start);
     const detail = removed.length > 0 ? ` (${removed.join(', ')})` : '';
-    log(`sweep completed in ${elapsed} ms: ${removed.length} stale entries removed${detail}`);
+    // LES TROIS COMPTES, ET C'EST CE QUI REND LA PROMESSE DE `PurgeResult` VRAIE MAINTENANT
+    // (V2-11) : ce type annonce que `kept` existe pour empecher « une disparition
+    // silencieuse », et que `removedTemporaries` recense des fichiers QUI PORTAIENT UN JETON
+    // EN CLAIR. Leur unique appelant les jetait — la propriete n'etait donc vraie nulle part.
+    // Le consommateur NOMME reste `cmgr doctor` (lot D) ; en attendant, une interpolation dans
+    // une ligne de journal deja ecrite coute zero et rend la trace consultable.
+    log(
+      `sweep completed in ${elapsed} ms: ${removed.length} stale entries removed${detail}, ` +
+        `${removedTemporaries.length} abandoned write temporaries removed, ${kept.length} kept`
+    );
+    // Ce qui est LAISSE est nomme un par un, avec son motif : une entree immortelle — pid
+    // recycle, suppression refusee par le systeme — n'est utile que si on peut la designer.
+    for (const entry of kept) log(`  kept ${entry.file}: ${entry.reason}`);
   } catch (error) {
     const elapsed = Math.round(performance.now() - start);
     log(`sweep failed after ${elapsed} ms, this window stays published — ${describe(error)}`);
@@ -245,11 +260,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * l'extension, HORS du workspace de l'utilisateur — un prompt d'orchestration n'a rien a
    * faire dans un depot, fut-ce une milliseconde.
    */
+  const promptDirectory = path.join(context.globalStorageUri.fsPath, 'prompts');
   const openRoute = serializeOpenings((request: OpenConversationRequest): Promise<OpenConversationResult> =>
     openConversation(request, {
       editor: editorPort(),
       extHostPid: identity.extHostPid,
-      promptDirectory: path.join(context.globalStorageUri.fsPath, 'prompts'),
+      promptDirectory,
       log,
     })
   );
@@ -291,6 +307,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Lance sans etre attendu : `activate` rend la main immediatement, et le balayage — qui
   // ne bloque plus rien — rapporte sa ligne de journal quand il aboutit.
   void sweepStaleEntries(current);
+
+  // LE MOMENT QUI MANQUAIT, ET C'EST LE SEUL GARANTI (V2-4) : un host qui demarre prouve que
+  // le precedent est mort. Le balayage des prompts abandonnes n'avait qu'un site d'appel,
+  // `openConversation` — un prompt laisse en clair par un host tue entre l'ecriture du fichier
+  // et l'envoi de la ligne y restait donc indefiniment dans une fenetre qui n'ouvre plus rien.
+  // La symetrie avec `sweepStaleEntries`, qui balaie le registre a cet instant precis, est
+  // faite. Synchrone et sans risque : un `readdir` sur un repertoire de transit, et la
+  // fonction ne leve JAMAIS. L'age reste exige — ce repertoire est partage par toutes les
+  // fenetres du poste, voir `sweepAbandonedPrompts`.
+  sweepAbandonedPrompts(promptDirectory, Date.now(), log);
 
   log(`activation completed in ${(performance.now() - activationStart).toFixed(1)} ms`);
 }

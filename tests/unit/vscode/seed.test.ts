@@ -15,8 +15,10 @@ import {
   neutralizedTerminalEnvironment,
   quotePowerShellLiteral,
   resolveExecutable,
+  SEED_SHELL_ARGUMENTS,
   seedLeadingArguments,
   selectNewPanel,
+  SESSION_ID_SHAPE,
   shellNames,
   splitPathVariable,
   type PanelTabLike,
@@ -135,7 +137,39 @@ describe('la ligne envoyee au shell — forme L2', () => {
   it('lit le prompt en DONNEE : il ne traverse jamais l analyseur du shell', () => {
     expect(line).toContain("$p = [IO.File]::ReadAllText('c:\\tmp\\abc-123.prompt.txt')");
     // Le prompt lui-meme n'apparait NULLE PART dans la ligne — c'est tout l'objet de L2.
-    expect(line).toContain('--session-id abc-123 $p');
+    expect(line).toContain("--session-id 'abc-123' $p");
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LES TROIS INTERPOLATIONS SONT CITEES, ET LE `sessionId` NE L'ETAIT PAS (V2-5).
+   *
+   * Il n'y avait aucun chemin d'exploitation : la valeur vient de `randomUUID()`. Mais rien ne
+   * l'imposait — ni type, ni assertion, ni test —, et la fabrique d'identifiants est injectee.
+   * Une garde de forme est posee a la source ; la citation est la SECONDE, parce que deux
+   * gardes independantes valent mieux qu'une quand l'autre tient a une regex.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('CITE le sessionId comme les deux autres interpolations — plus aucune exception', () => {
+    const hostile = buildSeedCommandLine({
+      claudeBinary: 'c:\\ext\\claude.exe',
+      sessionId: "x'; & calc.exe; '",
+      promptFile: 'c:\\tmp\\p.txt',
+    });
+
+    // La valeur reste une DONNEE : l'apostrophe est doublee, le litteral ne se referme pas.
+    expect(hostile).toContain("--session-id 'x''; & calc.exe; ''' $p");
+    // Et il n'existe aucune occurrence de `calc.exe` hors du litteral cite.
+    expect(hostile).not.toContain('; & calc.exe; $p');
+  });
+
+  it('n accepte comme identifiant a amorcer que la forme d un uuid', () => {
+    expect(SESSION_ID_SHAPE.test('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')).toBe(true);
+    // La casse n'est pas un critere de surete : le CLI accepte les deux.
+    expect(SESSION_ID_SHAPE.test('AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE')).toBe(true);
+    for (const refused of ["x'; & calc.exe; '", '../../evade', 'a/b', '', 'abc-123']) {
+      expect(SESSION_ID_SHAPE.test(refused), refused).toBe(false);
+    }
   });
 
   it('efface le fichier DANS LA MEME LIGNE, avant que claude ne demarre', () => {
@@ -270,6 +304,16 @@ describe('resolution des executables', () => {
     expect(claudeBinaryNames('linux')).toEqual(['claude']);
     expect(shellNames('win32')).toEqual(['pwsh.exe']);
     expect(shellNames('darwin')).toEqual(['pwsh']);
+  });
+
+  it('lance ce shell SANS PROFIL — le profil defait la neutralisation de l environnement', () => {
+    // V2-3, et c'est le piege majeur du chantier par une voie que rien ne surveillait : la
+    // neutralisation a lieu A LA CREATION du terminal, le profil s'execute APRES. Un profil qui
+    // pose `$env:CLAUDE_*` fait que le `claude` amorce se declare agent enfant non interactif
+    // et coupe la sauvegarde de son transcript, silencieusement. Rien du profil n'est
+    // necessaire : le binaire et le shell sont resolus en chemins ABSOLUS.
+    expect(SEED_SHELL_ARGUMENTS).toContain('-NoProfile');
+    expect(SEED_SHELL_ARGUMENTS).toContain('-NoLogo');
   });
 
   it('derive le chemin du bundle du repertoire RENDU par l editeur — jamais code en dur', () => {

@@ -74,23 +74,39 @@ export const HEALTH_TIMEOUT_MS = 5_000;
  *
  * La route d'ouverture borne son propre travail (`packages/vscode/src/conversations.ts`), et le
  * calcul est REFAIT ici a chaque fois qu'une de ses echelles change — sans quoi la CLI
- * abandonnerait pendant que la fenetre travaille encore, ce qui est le pire des mensonges :
+ * abandonnerait pendant que la fenetre travaille encore, ce qui est le pire des mensonges.
+ *
+ * ADDITION REFAITE AU VOLET 2 DU GATE C, DEUX BORNES AYANT ETE AJOUTEES :
+ *   - activation de l'extension Claude : **10 s** — bornee au volet 2, elle ne l'etait pas ;
+ *   - resolution du pid du shell : 8 echelons de 250 ms, soit **2 s** — bornee au volet 2 ;
  *   - attente du processus amorce : 8 lectures de table a 0,7–1,3 s, plus 8 respirations de
  *     250 ms, soit **~12 s** au pire ;
  *   - apparition du transcript : **45 s** — mesure du 2026-07-26, elle survient a 2,5 s ;
  *   - grace accordee a la sortie du tour : **30 s** apres l'apparition — mesure, elle retombe
  *     ~9 s apres l'envoi ;
  *   - echelle d'attachement : 2 + 4 + 8 + 16 + 32 = **62 s**.
- * Pire cas de la fenetre : **~149 s**. Les deux premieres bornes ne s'additionnent pas avec la
- * suite quand elles echouent — une absence de transcript sort par une erreur nommee, sans
- * attacher quoi que ce soit.
  *
- * DEUX FOIS CE PIRE CAS, ET LE FACTEUR EST MOTIVE : les ouvertures d'une meme fenetre sont
- * SERIALISEES (`serializeOpenings`). Une demande peut donc attendre derriere une AUTRE, chacune
- * a sa borne. 300 s couvrent une file d'un rang ; elles ne couvrent pas une file sans fin, et
- * c'est voulu. Le facteur etait de trois quand le pire cas de la fenetre etait de 75 s ; le
- * produit, lui, ne doit pas depasser le `requestTimeout` par defaut de Node (300 s), au-dela
- * duquel le serveur detruirait la socket sans qu'aucun des deux delais ne soit en cause.
+ * CES BORNES NE S'ADDITIONNENT PAS TOUTES, et le detail compte : celles qui S'EPUISENT levent
+ * une erreur nommee et rien de ce qui suit n'a lieu. Le chemin le plus long est donc celui qui
+ * REUSSIT partout, ou chaque etape consomme son pire cas SANS l'epuiser :
+ *   10 (activation) + 0,25 (le pid tombe au premier echelon) + 12,4 + 45 + 30 + 62 = **~159,7 s**.
+ *
+ * LE FACTEUR N'EST PLUS DEUX, ET LE DIRE VAUT MIEUX QUE DE L'ECRIRE FAUX. Les ouvertures d'une
+ * meme fenetre sont SERIALISEES (`serializeOpenings`) : une demande peut attendre derriere une
+ * AUTRE, chacune a sa borne. Couvrir une file d'un rang exigerait 319 s. Or le plafond n'est pas
+ * le notre : c'est le `requestTimeout` par defaut de Node (300 s), au-dela duquel le SERVEUR
+ * detruit la socket — un delai client plus long n'attendrait donc rien. 300 s valent **1,88 fois**
+ * le pire cas de la fenetre.
+ *
+ * CE QUI N'EST DONC PLUS GARANTI, ECRIT PLUTOT QUE TU : une demande mise en file derriere une
+ * ouverture qui consomme son pire cas peut etre abandonnee cote client ~19 s avant que la
+ * fenetre n'ait fini. L'abandon N'ANNULE RIEN — la conversation peut s'ouvrir apres coup —, et
+ * c'est pourquoi la remediation de `WINDOW_UNREACHABLE` interdit de relancer a l'aveugle. Le
+ * seul moyen de restaurer le facteur deux serait de fixer explicitement `requestTimeout` cote
+ * serveur ; ce n'est pas fait, et ce n'est pas un oubli : une CLI qui attendrait plus longtemps
+ * que le serveur d'une fenetre restee en version anterieure verrait sa socket detruite a 300 s
+ * et rendrait `WINDOW_UNREACHABLE` sur une ouverture peut-etre reussie. Ce compromis se tranche
+ * avec le lot E, quand les deux artefacts seront publies ensemble.
  *
  * POURQUOI PAS D'ATTENTE INFINIE, alors que la fenetre se borne deja : parce que ce n'est pas
  * la fenetre qu'on attend, c'est une SOCKET. Un occupant silencieux du port ne se borne pas,

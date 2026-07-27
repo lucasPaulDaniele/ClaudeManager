@@ -40,6 +40,7 @@ import {
   CLAUDE_OPEN_COMMAND,
   CLAUDE_PANEL_VIEW_TYPE,
   neutralizedTerminalEnvironment,
+  SEED_SHELL_ARGUMENTS,
   type PanelTabLike,
 } from '../../../../packages/vscode/src/seed.js';
 import { windowEntryPath, type WindowEntry } from '../../../../packages/core/src/index.js';
@@ -815,7 +816,12 @@ async function probeTerminalEnvironment(scratchDir: string): Promise<{
     name: 'ClaudeManager env probe',
     cwd: scratchDir,
     shellPath: 'pwsh.exe',
-    shellArgs: ['-NoLogo'],
+    // LES MEMES ARGUMENTS QUE LE MECANISME, empruntes et non recopies — `-NoProfile` compris.
+    // Une sonde qui monterait son terminal autrement mesurerait un environnement que le
+    // mecanisme ne produit pas : c'est justement le profil de l'utilisateur qui peut
+    // REINTRODUIRE les `CLAUDE_*` qu'on vient de neutraliser, et cette sonde est ce qui
+    // l'observe.
+    shellArgs: [...SEED_SHELL_ARGUMENTS],
     hideFromUser: true,
     env: { ...neutralized },
   });

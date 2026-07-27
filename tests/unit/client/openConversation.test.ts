@@ -2,14 +2,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   ClaudeManagerError,
   createLoopbackTransport,
-  HEALTH_TIMEOUT_MS,
   isClaudeManagerError,
-  OPEN_TIMEOUT_MS,
   openConversationInWindow,
   type RegistryReport,
   type WindowRequest,
   type WindowTransport,
 } from '../../../packages/core/src/index.js';
+// PRIS A LEUR MODULE, ET PLUS AU CONTRAT (V2-12) : deux delais internes, sans consommateur
+// hors d'ici. Ce qu'ils sont — des details eprouves — se lit mieux ainsi.
+import {
+  HEALTH_TIMEOUT_MS,
+  OPEN_TIMEOUT_MS,
+} from '../../../packages/core/src/client/openConversation.node.js';
 import {
   CALLER_PID,
   CAPTURED,
