@@ -76,7 +76,7 @@ export default defineConfig({
          * SUR LES DEUX PLATEFORMES :
          *
          *   Windows, poste de reference : 99,63 instructions · 99,21 branches · 99,00 fonctions · 99,63 lignes
-         *   Linux, CI GitHub : a consigner des la premiere execution de cette branche
+         *   Linux, CI GitHub (execution 30295846984) : 99,63 · 99,21 · 99,00 · 99,63 — IDENTIQUES
          *
          * Plancher retenu : 99 / 98 / 98 / 99 — INCHANGE. Marges : 0,63 · 1,21 · 1,00 · 0,63 point.
          *
