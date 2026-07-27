@@ -5,8 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { runCli, type CliResult } from '../../../packages/cli/src/cli.js';
 import { EXIT_CODES } from '../../../packages/cli/src/exit.js';
-import { CLI_VERSION } from '../../../packages/cli/src/usage.js';
-import { readProcessTable, writeWindowEntry } from '../../../packages/core/src/index.js';
+import { CLI_VERSION, USAGE } from '../../../packages/cli/src/usage.js';
+import {
+  ClaudeManagerError,
+  ERROR_CODES,
+  readProcessTable,
+  writeWindowEntry,
+} from '../../../packages/core/src/index.js';
 import {
   contextFor,
   contextWithSnapshot,
@@ -164,6 +169,66 @@ describe('usage', () => {
     expect(manifest['version']).toBe(CLI_VERSION);
     // Le binaire designe bien le point d'entree emis, pas une source `.ts`.
     expect((manifest['bin'] as Record<string, string>)['cmgr']).toBe('./dist/cli/src/cmgr.js');
+  });
+});
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * UNE REMEDIATION NE RENVOIE JAMAIS A UNE COMMANDE QUI N'EXISTE PAS.
+ *
+ * Quatre remediations renvoyaient a `cmgr doctor`, qui n'a AUCUNE occurrence dans
+ * `packages/cli/src`. Un agent qui recoit `SEED_TRANSCRIPT_NOT_FOUND`, lit « verifier avec
+ * cmgr doctor » et l'execute obtient `CLI_USAGE`, exit 2 : la remediation ne se contente pas
+ * d'etre inutile, elle FABRIQUE une seconde defaillance, d'une autre nature, qui egare le
+ * diagnostic. Et ce sont les erreurs les plus probables du produit — les deux portes du CLI se
+ * presentent des la premiere utilisation dans chaque nouveau dossier.
+ *
+ * La regle verifiee ici est mecanique : toute commande `cmgr <nom>` citee par une remediation
+ * est soit livree — donc dans `USAGE` —, soit annoncee comme NON LIVREE dans la meme phrase.
+ * Annoncer une cible future est legitime ; laisser croire qu'elle est disponible ne l'est pas.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+describe('la surface annoncee par les remediations est celle qui est livree', () => {
+  it('aucune remediation ne renvoie a une commande absente sans le dire', () => {
+    // La reference est `USAGE` lui-meme, pas une liste recopiee : le jour ou `cmgr close`
+    // arrive, ce test cesse de l'exiger sans qu'on ait a y toucher.
+    const delivered = new Set<string>([
+      ...USAGE.commands.map((command) => command.name),
+      // « --help, -h » -> « --help » : le premier jeton est le nom.
+      ...USAGE.options.map((option) => option.name.split(/[ ,]/)[0] as string),
+    ]);
+
+    const cited: string[] = [];
+    for (const code of Object.values(ERROR_CODES)) {
+      const { remediation } = new ClaudeManagerError(code, 'peu importe');
+      for (const match of remediation.matchAll(/cmgr (--)?([a-z][a-z-]*)/g)) {
+        const name = `${match[1] ?? ''}${match[2] as string}`;
+        cited.push(`${code}:${name}`);
+        if (delivered.has(name)) continue;
+        expect(
+          remediation.toUpperCase(),
+          `${code} renvoie a \`cmgr ${name}\`, qui n'est pas livre, sans le dire`
+        ).toContain('PAS ENCORE LIVRE');
+      }
+    }
+
+    // L'assertion serait VIDE si aucune remediation ne citait de commande : on le verifie.
+    expect(cited.length).toBeGreaterThan(2);
+  });
+
+  it('cmgr doctor n est cite que comme une promesse, jamais comme un geste a faire', () => {
+    // Contrôle positif : `windows` EST livre, et plusieurs remediations y renvoient sans reserve.
+    const promises = Object.values(ERROR_CODES)
+      .map((code) => new ClaudeManagerError(code, 'x'))
+      .filter((error) => error.remediation.includes('cmgr doctor'));
+
+    // L'assertion serait vide si plus rien ne le citait : on le verifie.
+    expect(promises.length).toBeGreaterThan(0);
+    for (const error of promises) {
+      expect(error.remediation.toUpperCase(), error.code).toContain('PAS ENCORE LIVRE');
+      // Le geste MANUEL qui marche, lui, est present : c'est ce que le lecteur peut faire ce soir.
+      expect(error.remediation, error.code).toContain('A LA MAIN');
+    }
   });
 });
 
