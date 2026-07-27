@@ -247,7 +247,8 @@ function identityMismatch(
  * Comparer deux valeurs masquees reviendrait a comparer deux `***`.
  *
  * @throws {ClaudeManagerError} `WINDOW_UNREACHABLE`, `WINDOW_TOKEN_REJECTED`,
- * `WINDOW_REQUEST_REFUSED`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_IDENTITY_MISMATCH`
+ * `WINDOW_REQUEST_REFUSED`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_IDENTITY_MISMATCH` — toutes
+ * SANS effet de bord : c'est la raison d'etre de cette etape.
  */
 async function confirmChannel(
   entry: WindowEntry,
@@ -300,9 +301,13 @@ async function confirmChannel(
  * pid, plutot que de rendre un succes : rendre `ok` sur une fenetre qui n'est pas la sienne
  * violerait l'invariant du produit, et l'appelant croirait piloter ce qu'il ne pilote pas.
  *
+ * TOUT CE QUI ECHOUE ICI ECHOUE APRES L'EFFET DE BORD, et les codes le disent : la relecture
+ * rend `WINDOW_OPEN_RESPONSE_UNREADABLE` — jamais `WINDOW_RESPONSE_UNREADABLE`, reserve aux
+ * routes de lecture —, dont la remediation avertit qu'une conversation existe peut-etre deja.
+ *
  * @throws {ClaudeManagerError} `WINDOW_UNREACHABLE`, `WINDOW_TOKEN_REJECTED`,
- * `WINDOW_REQUEST_REFUSED`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_IDENTITY_MISMATCH`, ou
- * toute erreur nommee que la FENETRE a formulee, rendue telle quelle.
+ * `WINDOW_REQUEST_REFUSED`, `WINDOW_OPEN_RESPONSE_UNREADABLE`, `WINDOW_IDENTITY_MISMATCH`, ou
+ * le CODE de toute erreur nommee que la FENETRE a formulee.
  */
 async function postConversation(
   entry: WindowEntry,

@@ -160,10 +160,14 @@ La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.4.0`.
 
 **Conséquence, tant qu'une fenêtre n'a pas été renouvelée** : elle sert **l'ancienne version** de
 l'extension à une CLI déjà à jour. Ce décalage n'est **jamais silencieux**, dans les deux sens —
-une fenêtre restée en 0.3.0 fait dire à `cmgr open` que le tour 1 **n'est pas vérifié**, en vous
-renvoyant à `cmgr windows` pour comparer les versions ; une CLI restée en 0.2.0, elle, **refuse**
-la réponse d'une fenêtre à jour par `WINDOW_RESPONSE_UNREADABLE`. **Installez donc les deux
-artefacts ensemble**, puis renouvelez les fenêtres.
+une fenêtre restée en 0.3.0 fait dire à `cmgr open` que le tour 1 **n'est pas vérifié** — et le
+fait sortir en **code 4**, jamais en `0` —, en vous renvoyant à `cmgr windows` pour comparer les
+versions ; une CLI restée en 0.2.0, elle, **refuse** la réponse d'une fenêtre à jour par
+`WINDOW_OPEN_RESPONSE_UNREADABLE`. **Ce second cas mérite un mot** : ce refus est **postérieur à
+l'ouverture** — la conversation est ouverte et le tour 1 joué, alors que la CLI sort en erreur.
+C'est pourquoi il porte un code distinct de `WINDOW_RESPONSE_UNREADABLE`, qui ne tombe que sur des
+routes de lecture : sa remédiation dit de **ne pas relancer à l'aveugle**, sous peine d'ouvrir une
+seconde conversation. **Installez donc les deux artefacts ensemble**, puis renouvelez les fenêtres.
 
 Constater l'activation, sans rien solliciter :
 

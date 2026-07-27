@@ -432,7 +432,7 @@ describe('POST /conversations, tel qu une vraie fenetre le rend', () => {
       readOpenedConversation(openBodyWith('openFallback', { firstTurnVerified: true }))
     );
 
-    expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
+    expect(error.code).toBe('WINDOW_OPEN_RESPONSE_UNREADABLE');
     expect(error.details).toEqual({ route: 'POST /conversations', missing: 'firstTurnVerified' });
   });
 
@@ -503,8 +503,53 @@ describe('POST /conversations, tel qu une vraie fenetre le rend', () => {
     it(`refuse une reponse dont ${field} n est pas de la forme attendue`, () => {
       const error = caught(() => readOpenedConversation(openBodyWith('openSeeded', patch)));
 
-      expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
+      expect(error.code).toBe('WINDOW_OPEN_RESPONSE_UNREADABLE');
       expect(error.details).toEqual({ route: 'POST /conversations', missing: field });
     });
   }
+});
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * L'ILLISIBILITE N'EST PAS LA MEME NOUVELLE AVANT ET APRES L'OUVERTURE.
+ *
+ * Sur `GET /health`, elle tombe avant tout effet de bord : relancer est sur. Sur
+ * `POST /conversations`, la validation est POSTERIEURE — une fenetre plus recente qui
+ * qualifierait le tour d'une facon inconnue de ce client fait sortir la CLI en erreur alors que
+ * la conversation est ouverte et le tour 1 joue. Le README annonce ce cas comme ATTENDU ; sa
+ * remediation restait muette sur la consequence.
+ *
+ * La route etait deja dans les `details` ; elle ne servait a rien la ou l'appelant decide sans
+ * lire la sortie, et la remediation ne peut varier qu'avec le CODE.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+describe('illisible AVANT l ouverture, ou APRES : deux codes, deux conduites', () => {
+  it('GET /health : relancer est SUR, et la remediation le dit', () => {
+    const error = caught(() => readHealth(healthBodyWith({ mainPid: null })));
+
+    expect(error.code).toBe('WINDOW_RESPONSE_UNREADABLE');
+    expect(error.remediation).toContain('AUCUN EFFET DE BORD');
+  });
+
+  it('POST /conversations : la remediation AVERTIT qu une conversation existe peut-etre', () => {
+    const error = caught(() =>
+      readOpenedConversation(openBodyWith('openSeeded', { firstTurn: 'response-observed' }))
+    );
+
+    expect(error.code).toBe('WINDOW_OPEN_RESPONSE_UNREADABLE');
+    expect(error.details).toEqual({ route: 'POST /conversations', missing: 'firstTurn' });
+    expect(error.remediation).toContain('A PEUT-ETRE ETE OUVERTE');
+    expect(error.remediation).toContain("NE PAS RELANCER A L'AVEUGLE");
+    // Le geste dangereux est NOMME : un rechargement tuerait le claude qui vient de naitre.
+    expect(error.remediation).toContain('NE PAS recharger');
+  });
+
+  it('vaut aussi pour un corps qui n est meme pas du JSON', () => {
+    expect(caught(() => readOpenedConversation({ status: 200, body: '<html>' })).code).toBe(
+      'WINDOW_OPEN_RESPONSE_UNREADABLE'
+    );
+    expect(caught(() => readHealth({ status: 200, body: '<html>' })).code).toBe(
+      'WINDOW_RESPONSE_UNREADABLE'
+    );
+  });
 });

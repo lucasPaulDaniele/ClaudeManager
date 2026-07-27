@@ -20,11 +20,15 @@
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────
  * RIEN N'EST DEVINE, ET RIEN N'EST TOLERE EN SILENCE. Une reponse dont un champ manque, ou
- * porte un type inattendu, est une reponse qu'on ne comprend pas : elle sort en
- * `WINDOW_RESPONSE_UNREADABLE` avec ce qui manquait, jamais en objet a moitie rempli. Le cas
- * n'est pas theorique — une fenetre peut porter une version de l'extension compagnon plus
- * ancienne, ou plus recente, que la CLI qui l'interroge : elles vivent dans deux processus
- * mis a jour separement.
+ * porte un type inattendu, est une reponse qu'on ne comprend pas : elle sort en erreur nommee
+ * avec ce qui manquait, jamais en objet a moitie rempli. Le cas n'est pas theorique — une
+ * fenetre peut porter une version de l'extension compagnon plus ancienne, ou plus recente, que
+ * la CLI qui l'interroge : elles vivent dans deux processus mis a jour separement.
+ *
+ * DEUX CODES, SELON LA ROUTE, et cette distinction est tout sauf cosmetique :
+ * `WINDOW_RESPONSE_UNREADABLE` sur `GET /health` — aucun effet de bord, relancer est sur — et
+ * `WINDOW_OPEN_RESPONSE_UNREADABLE` sur `POST /conversations`, ou la validation est POSTERIEURE
+ * a l'ouverture. Voir `unreadable`.
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 
@@ -92,8 +96,8 @@ export type OpenMode = 'seeded' | 'fallback';
  * `'process-started'` — CE QUE LES VERSIONS ANTERIEURES DE L'EXTENSION RENDENT, et rien d'autre.
  *   Il est accepte EN LECTURE, et il ne faut pas le retirer sans y penser : la fenetre et cette
  *   CLI vivent dans deux processus mis a jour separement, et une fenetre encore en 0.3.0 rend
- *   cette valeur. La refuser transformerait un ecart de version en `WINDOW_RESPONSE_UNREADABLE`
- *   sur une ouverture parfaitement reussie. Le mecanisme, lui, ne la produit plus : ce qu'elle
+ *   cette valeur. La refuser transformerait un ecart de version en
+ *   `WINDOW_OPEN_RESPONSE_UNREADABLE` sur une ouverture parfaitement reussie. Le mecanisme, lui, ne la produit plus : ce qu'elle
  *   observait — « un enfant du shell existe » — ne discriminait pas un CLI qui joue le tour d'un
  *   CLI arrete a une porte.
  */
@@ -206,9 +210,26 @@ function relayedDetails(raw: unknown): Readonly<Record<string, unknown>> | undef
   return Object.keys(relayed).length === 0 ? undefined : relayed;
 }
 
+/**
+ * L'ILLISIBILITE, NOMMEE — ET LA ROUTE EST DANS LE CODE, PAS SEULEMENT DANS LES DETAILS.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * DEUX CODES, PARCE QUE L'APPELANT EN TIRE DEUX CONDUITES OPPOSEES. Sur `GET /health`, la
+ * validation precede tout effet de bord : relancer est sur. Sur `POST /conversations`, elle lui
+ * est POSTERIEURE — une fenetre plus recente qui rendrait un champ que ce client ne comprend pas
+ * sort en erreur alors que la conversation est ouverte et le tour 1 joue. Un `1` y ferait
+ * retenter, donc ouvrir une SECONDE conversation.
+ *
+ * La route etait deja dans les `details` ; elle ne servait a rien la ou l'appelant decide sans
+ * lire la sortie. La remediation, elle, ne peut varier qu'avec le CODE — elle est relue dans la
+ * table de `ClaudeManagerError`.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
 function unreadable(route: string, missing: string): ClaudeManagerError {
   return new ClaudeManagerError(
-    ERROR_CODES.WINDOW_RESPONSE_UNREADABLE,
+    route === OPEN_ROUTE
+      ? ERROR_CODES.WINDOW_OPEN_RESPONSE_UNREADABLE
+      : ERROR_CODES.WINDOW_RESPONSE_UNREADABLE,
     `The owning window answered ${route} with a payload this client does not understand`,
     // Le NOM du champ fautif, jamais sa valeur : elle vient d'une socket, rien ne la contraint.
     { route, missing }

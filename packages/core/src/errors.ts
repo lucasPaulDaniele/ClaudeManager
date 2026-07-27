@@ -21,7 +21,8 @@
  * fichier, cette limite cesserait de s'appliquer sans que Windows ait change.
  *
  * LES CODES DU CLIENT — `WINDOW_UNREACHABLE`, `WINDOW_TOKEN_REJECTED`,
- * `WINDOW_IDENTITY_MISMATCH`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_REQUEST_REFUSED` — N'Y
+ * `WINDOW_IDENTITY_MISMATCH`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_OPEN_RESPONSE_UNREADABLE`,
+ * `WINDOW_REQUEST_REFUSED` — N'Y
  * FIGURENT PAS NON PLUS, et c'est exactement le motif du registre : le protocole qu'ils jugent
  * est LE NOTRE — le serveur local de l'extension compagnon, arbitre a l'ADR-003 —, il n'est
  * emprunte a personne et aucune mise a jour de l'extension Claude ne peut le changer. Idem
@@ -75,8 +76,19 @@ export const ERROR_CODES = {
   WINDOW_TOKEN_REJECTED: 'WINDOW_TOKEN_REJECTED',
   /** La fenetre qui a repondu n'est pas celle que l'entree de registre decrivait. */
   WINDOW_IDENTITY_MISMATCH: 'WINDOW_IDENTITY_MISMATCH',
-  /** La reponse de la fenetre hote n'est pas du JSON, ou pas de la forme attendue. */
+  /**
+   * La reponse de la fenetre hote n'est pas du JSON, ou pas de la forme attendue — sur une
+   * route SANS EFFET DE BORD (`GET /health`). Relancer est sur.
+   */
   WINDOW_RESPONSE_UNREADABLE: 'WINDOW_RESPONSE_UNREADABLE',
+  /**
+   * LA MEME ILLISIBILITE, MAIS APRES LA DEMANDE D'OUVERTURE — et ce n'est pas la meme nouvelle.
+   *
+   * La validation de la reponse est POSTERIEURE a l'effet de bord : quand elle echoue, une
+   * conversation a peut-etre ete ouverte et le tour 1 joue. Deux codes plutot qu'un parce que
+   * l'appelant en tire deux conduites opposees — relancer, ou surtout pas.
+   */
+  WINDOW_OPEN_RESPONSE_UNREADABLE: 'WINDOW_OPEN_RESPONSE_UNREADABLE',
   /** La fenetre hote a NOMME son refus, et ce nom n'est pas une erreur du coeur. */
   WINDOW_REQUEST_REFUSED: 'WINDOW_REQUEST_REFUSED',
   /** Le prompt est vide : la conversation s'ouvrirait sans que rien ne soit soumis. */
@@ -153,7 +165,9 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
   [ERROR_CODES.WINDOW_IDENTITY_MISMATCH]:
     "La fenetre qui a repondu n'est pas celle que le registre decrivait : son extension host n'est pas celui de l'entree lue. L'entree a ete substituee entre sa lecture et cet appel, ou le port a ete repris par une autre fenetre. AUCUNE DEMANDE N'A ETE EMISE — c'est ce que la confirmation de canal existe pour empecher. Relancer la commande, puis inspecter le registre si le desaccord persiste.",
   [ERROR_CODES.WINDOW_RESPONSE_UNREADABLE]:
-    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis recharger la fenetre apres mise a jour. Les details portent la route et ce qui manquait.",
+    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. AUCUN EFFET DE BORD N'A EU LIEU : cette illisibilite tombe sur une route de lecture, relancer est sur. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis mettre les deux artefacts a jour ensemble. Les details portent la route et ce qui manquait.",
+  [ERROR_CODES.WINDOW_OPEN_RESPONSE_UNREADABLE]:
+    "La fenetre hote a repondu a la DEMANDE D'OUVERTURE, mais sa reponse n'est pas de la forme attendue. UNE CONVERSATION A PEUT-ETRE ETE OUVERTE, ET LE TOUR 1 JOUE : cette validation est posterieure a l'effet de bord, contrairement a WINDOW_RESPONSE_UNREADABLE. NE PAS RELANCER A L'AVEUGLE — une seconde demande ouvrirait une seconde conversation par-dessus la premiere. Constater l'etat reel dans la fenetre elle-meme (l'onglet de conversation y est visible) ; `cmgr conversations` le dira sans regarder l'ecran, increment C4, pas encore livre. Cause la plus probable : la version de l'extension compagnon installee dans cette fenetre ne parle pas le meme protocole que cette CLI — comparer son extensionVersion avec `cmgr windows`, mettre les deux artefacts a jour ensemble, puis ouvrir une fenetre NEUVE. NE PAS recharger celle-ci : un rechargement tue les claude.exe qui descendent de son extension host, donc la conversation qui vient peut-etre de s'ouvrir.",
   [ERROR_CODES.WINDOW_REQUEST_REFUSED]:
     "La fenetre hote a refuse la demande et a NOMME son refus ; le code exact figure dans les details. FORBIDDEN_HOST ou FORBIDDEN_ORIGIN signale qu'un intermediaire s'est interpose sur la boucle locale — aucun client de ClaudeManager ne produit ces refus. NOT_FOUND signale une extension compagnon trop ancienne pour cette route.",
   [ERROR_CODES.PROMPT_EMPTY]:
