@@ -27,6 +27,10 @@
  * est LE NOTRE — le serveur local de l'extension compagnon, arbitre a l'ADR-003 —, il n'est
  * emprunte a personne et aucune mise a jour de l'extension Claude ne peut le changer. Idem
  * pour `PROMPT_EMPTY` et `PROMPT_FILE_UNREADABLE`, qui portent sur ce que l'APPELANT fournit.
+ *
+ * `SEED_SESSION_ID_INVALID` N'Y FIGURE PAS, pour un motif encore plus etroit : il juge une
+ * valeur que NOUS produisons. Le CLI accepte l'uuid qu'on lui impose (D3) ; ce code ne dit rien
+ * de ce qu'il accepte, il dit que la valeur qu'on s'apprete a lui donner n'en est pas un.
  */
 
 export const ERROR_CODES = {
