@@ -10,7 +10,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { isClaudeManagerError, systemErrorCode } from './core.js';
+import { HEALTH_ROUTE, isClaudeManagerError, OPEN_ROUTE, systemErrorCode } from './core.js';
 import type { OpenConversationRequest, OpenConversationResult } from './conversations.js';
 
 /** Ce que la FENETRE dit d'elle-meme. Elle ne porte JAMAIS le jeton (principe n.6). */
@@ -124,8 +124,16 @@ const LOOPBACK = '127.0.0.1';
  */
 const EPHEMERAL_PORT = 0;
 
-const HEALTH_ROUTE = 'GET /health';
-const OPEN_ROUTE = 'POST /conversations';
+/**
+ * LES ROUTES VIENNENT DU COEUR, ET ELLES N'Y SONT DECLAREES QU'UNE FOIS.
+ *
+ * Ce fichier en gardait une COPIE LOCALE alors qu'il importait deja `./core.js`, qui les
+ * reexporte. Deux declarations de la meme chaine, dans deux paquets, dont l'un sert ce que
+ * l'autre appelle : le jour ou une route change, elle change ici et pas la — et le client
+ * recevrait un `404 NOT_FOUND` sans que rien, a la compilation, ne l'ait signale. C'est la
+ * classe de defaut que `store.node.ts` raconte avoir eliminee pour la convention de nommage du
+ * registre, reintroduite ici.
+ */
 
 /**
  * Taille maximale du corps LU, en octets.

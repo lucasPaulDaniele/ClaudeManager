@@ -160,10 +160,14 @@ La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.4.0`.
 
 **Conséquence, tant qu'une fenêtre n'a pas été renouvelée** : elle sert **l'ancienne version** de
 l'extension à une CLI déjà à jour. Ce décalage n'est **jamais silencieux**, dans les deux sens —
-une fenêtre restée en 0.3.0 fait dire à `cmgr open` que le tour 1 **n'est pas vérifié**, en vous
-renvoyant à `cmgr windows` pour comparer les versions ; une CLI restée en 0.2.0, elle, **refuse**
-la réponse d'une fenêtre à jour par `WINDOW_RESPONSE_UNREADABLE`. **Installez donc les deux
-artefacts ensemble**, puis renouvelez les fenêtres.
+une fenêtre restée en 0.3.0 fait dire à `cmgr open` que le tour 1 **n'est pas vérifié** — et le
+fait sortir en **code 4**, jamais en `0` —, en vous renvoyant à `cmgr windows` pour comparer les
+versions ; une CLI restée en 0.2.0, elle, **refuse** la réponse d'une fenêtre à jour par
+`WINDOW_OPEN_RESPONSE_UNREADABLE`. **Ce second cas mérite un mot** : ce refus est **postérieur à
+l'ouverture** — la conversation est ouverte et le tour 1 joué, alors que la CLI sort en erreur.
+C'est pourquoi il porte un code distinct de `WINDOW_RESPONSE_UNREADABLE`, qui ne tombe que sur des
+routes de lecture : sa remédiation dit de **ne pas relancer à l'aveugle**, sous peine d'ouvrir une
+seconde conversation. **Installez donc les deux artefacts ensemble**, puis renouvelez les fenêtres.
 
 Constater l'activation, sans rien solliciter :
 
@@ -259,9 +263,18 @@ cmgr doctor                              # 🚧 lot D — diagnostiquer l'enviro
 
 **Codes de sortie** — un agent décide sans analyser la sortie : `0` succès, `1` erreur nommée du
 domaine, `2` erreur d'usage, `3` défaillance imprévue de ClaudeManager, et `4` **succès dégradé** —
-le repli V5 a joué, la conversation est ouverte mais le prompt n'y est que **pré-rempli** et
-attend un geste humain. Ni `0` (le tour ne tourne pas) ni `1` (l'opération a bien eu lieu ;
-la retenter ouvrirait une seconde conversation).
+une conversation **existe**, mais le tour 1 n'est pas acquis. Ni `0` (le tour ne tourne pas) ni `1`
+(l'opération a bien eu lieu ; la retenter ouvrirait une seconde conversation).
+
+**Deux cas portent le `4`**, et ils disent la même chose : *ne retente pas à l'aveugle.*
+
+| Cas | Ce que la sortie porte | Le geste |
+|---|---|---|
+| **Repli V5** | `mode: "fallback"`, `humanActionRequired: true`, `degradedFrom` | Le prompt est **pré-rempli** dans le champ de saisie : le valider. |
+| **Tour 1 non vérifié** | `mode: "seeded"`, `firstTurnVerified: false` | La fenêtre porte une version de l'extension qui n'observait que le démarrage d'un processus — **c'est la combinaison mesurée comme pouvant rendre un panneau vide**. Comparer son `extensionVersion` avec `cmgr windows`, puis **renouveler la fenêtre**. |
+
+Un seul code pour les deux : ces codes encodent une **décision**, et la décision est la même. Ce
+qui diffère est un renseignement, et il est dans la sortie JSON comme sur `stderr`.
 
 Toutes les commandes écrivent du **JSON sur stdout** et les diagnostics sur stderr : le consommateur visé est un agent, pas un humain. Cela vaut **sans exception**, y compris pour `--help` et pour les erreurs — un agent doit pouvoir faire `JSON.parse(stdout)` sans condition.
 
@@ -291,11 +304,11 @@ Outils exposés : `claude_whoami`, `claude_list_conversations`, `claude_open_con
 
 Ce projet repose sur des **API internes non documentées** de l'extension Claude Code. C'est un choix assumé, pas un angle mort : il n'existe aucune API publique pour ce besoin.
 
-- **Une mise à jour de l'extension peut tout casser.** Chaque point d'adhérence est recensé dans [`docs/compatibilite.md`](docs/compatibilite.md), avec la trace de sa vérification — ou un `— non vérifié` explicite quand aucune mesure ne l'étaie encore. `cmgr doctor` vérifie les présupposés et **échoue explicitement** — jamais de dégradation silencieuse.
+- **Une mise à jour de l'extension peut tout casser.** Chaque point d'adhérence est recensé dans [`docs/compatibilite.md`](docs/compatibilite.md), avec la trace de sa vérification — ou un `— non vérifié` explicite quand aucune mesure ne l'étaie encore. Quand un présupposé tombe, l'outil **échoue explicitement** — jamais de dégradation silencieuse — et sa remédiation nomme le geste manuel qui le rétablit. Le diagnostic *automatique* de ces présupposés viendra avec `cmgr doctor` : **lot D, pas encore livré**.
 - **Le tour d'amorçage se joue dans un terminal invisible.** La session est **réellement interactive** — c'est mesuré, pas déduit — mais le terminal n'est jamais affiché : vous ne voyez le premier tour qu'une fois le panneau attaché.
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
-- **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr doctor` le détecte et le nomme.
-- **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : `cmgr doctor` les vérifie et les nomme plutôt que de les franchir à l'aveugle.
+- **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr open` le détecte et le nomme (`WORKSPACE_NOT_TRUSTED`), avant toute autre tentative.
+- **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : ClaudeManager ne les franchit **jamais** à l'aveugle — il refuse en nommant (`SEED_TRANSCRIPT_NOT_FOUND`, `SEED_PROCESS_NOT_STARTED`) et renvoie au geste qui marche : lancer `claude` **une fois à la main dans ce dossier**. Les *vérifier* et les nommer d'avance relèvera de `cmgr doctor` : **lot D, pas encore livré**.
 - **L'extension compagnon écrit dans votre répertoire personnel et ouvre une écoute locale.** Chaque fenêtre publie un fichier `~/.claudemanager/windows/<pid>.json` décrivant ce qu'elle est, et ouvre un serveur HTTP sur `127.0.0.1`, port éphémère, protégé par un **jeton porteur** que ce fichier porte en clair. Le répertoire est en `0700`, l'entrée en `0600`, le jeton n'est jamais journalisé ni rendu par `/health`, et il ne survit pas à un rechargement de fenêtre. Rien n'est joignable depuis le réseau. Le détail, et les raisons de chaque choix, sont dans [l'ADR-003](docs/adr/003-registre-et-serveur-local.md).
 - **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture. Les tests d'intégration — une **vraie fenêtre VSCode**, via `@vscode/test-electron` — existent et tournent, mais **localement** : la CI publique devrait télécharger un éditeur complet et disposer d'un affichage. Leurs logs sont joints en preuve aux PR. Le **packaging** est outillé depuis l'incrément **C3** (`npm run package:all`), et sa vérification — le contenu réel des deux archives, `cmgr --version` lancé depuis le tarball — est **locale** au même titre, pour la même raison : elle exige des artefacts bâtis (`npm run verify:packaging`). La **publication** sur npm et sur le Marketplace, elle, n'est pas outillée : elle relève du lot **E**.
 

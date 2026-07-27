@@ -21,7 +21,8 @@
  * fichier, cette limite cesserait de s'appliquer sans que Windows ait change.
  *
  * LES CODES DU CLIENT — `WINDOW_UNREACHABLE`, `WINDOW_TOKEN_REJECTED`,
- * `WINDOW_IDENTITY_MISMATCH`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_REQUEST_REFUSED` — N'Y
+ * `WINDOW_IDENTITY_MISMATCH`, `WINDOW_RESPONSE_UNREADABLE`, `WINDOW_OPEN_RESPONSE_UNREADABLE`,
+ * `WINDOW_REQUEST_REFUSED` — N'Y
  * FIGURENT PAS NON PLUS, et c'est exactement le motif du registre : le protocole qu'ils jugent
  * est LE NOTRE — le serveur local de l'extension compagnon, arbitre a l'ADR-003 —, il n'est
  * emprunte a personne et aucune mise a jour de l'extension Claude ne peut le changer. Idem
@@ -51,9 +52,20 @@ export const ERROR_CODES = {
   SEED_TRANSCRIPT_NOT_FOUND: 'SEED_TRANSCRIPT_NOT_FOUND',
   /** La fenetre cible n'a aucun dossier de travail : rien ne peut y servir de `cwd`. */
   WORKSPACE_FOLDER_MISSING: 'WORKSPACE_FOLDER_MISSING',
-  /** Le CLI n'a pas rendu la session demandee lors de l'amorcage headless. */
-  SEED_SESSION_ID_MISMATCH: 'SEED_SESSION_ID_MISMATCH',
-  /** Le transcript d'une session est introuvable ou illisible. */
+  /**
+   * Le transcript d'une session est introuvable ou illisible.
+   *
+   * **LOT D, AUCUN EMETTEUR A CE JOUR** — et la mention est la pour qu'on distingue une
+   * ANTICIPATION d'un RESIDU. Lire un transcript est la frontiere du lot D ; le mecanisme
+   * d'ouverture, lui, ne fait que constater l'existence d'un fichier et relever sa taille, ce
+   * qui sort en `SEED_TRANSCRIPT_NOT_FOUND`, jamais ici.
+   *
+   * `SEED_SESSION_ID_MISMATCH` lui tenait compagnie et a ete SUPPRIME a la correction du gate C :
+   * son enonce — « le CLI n'a pas rendu la session demandee lors de l'amorcage HEADLESS » —
+   * appartenait a l'ADR-001, rejete en recette. Sous V1 la sortie du terminal n'est jamais
+   * capturee : rien ne pouvait constater ce desaccord, a aucun moment. Un code inatteignable PAR
+   * CONSTRUCTION laisse croire qu'un cas a ete prevu et ne se verifiera jamais.
+   */
   TRANSCRIPT_UNREADABLE: 'TRANSCRIPT_UNREADABLE',
   /** Aucune fenetre enregistree ne revendique le processus appelant. */
   OWNING_WINDOW_NOT_FOUND: 'OWNING_WINDOW_NOT_FOUND',
@@ -75,8 +87,19 @@ export const ERROR_CODES = {
   WINDOW_TOKEN_REJECTED: 'WINDOW_TOKEN_REJECTED',
   /** La fenetre qui a repondu n'est pas celle que l'entree de registre decrivait. */
   WINDOW_IDENTITY_MISMATCH: 'WINDOW_IDENTITY_MISMATCH',
-  /** La reponse de la fenetre hote n'est pas du JSON, ou pas de la forme attendue. */
+  /**
+   * La reponse de la fenetre hote n'est pas du JSON, ou pas de la forme attendue — sur une
+   * route SANS EFFET DE BORD (`GET /health`). Relancer est sur.
+   */
   WINDOW_RESPONSE_UNREADABLE: 'WINDOW_RESPONSE_UNREADABLE',
+  /**
+   * LA MEME ILLISIBILITE, MAIS APRES LA DEMANDE D'OUVERTURE — et ce n'est pas la meme nouvelle.
+   *
+   * La validation de la reponse est POSTERIEURE a l'effet de bord : quand elle echoue, une
+   * conversation a peut-etre ete ouverte et le tour 1 joue. Deux codes plutot qu'un parce que
+   * l'appelant en tire deux conduites opposees — relancer, ou surtout pas.
+   */
+  WINDOW_OPEN_RESPONSE_UNREADABLE: 'WINDOW_OPEN_RESPONSE_UNREADABLE',
   /** La fenetre hote a NOMME son refus, et ce nom n'est pas une erreur du coeur. */
   WINDOW_REQUEST_REFUSED: 'WINDOW_REQUEST_REFUSED',
   /** Le prompt est vide : la conversation s'ouvrirait sans que rien ne soit soumis. */
@@ -113,7 +136,7 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
   [ERROR_CODES.CLAUDE_COMMAND_MISSING]:
     "L'extension Claude Code est active mais n'expose plus la commande claude-vscode.editor.open. Cette commande n'est pas contractuelle : consulter docs/compatibilite.md (D1). Aucun repli n'est possible, le repli lui-meme passe par cette commande.",
   [ERROR_CODES.CLAUDE_PANEL_VIEWTYPE_UNKNOWN]:
-    "Aucun onglet de conversation Claude n'a ete reconnu. Trois causes possibles, dans cet ordre de vraisemblance : le CLI attend derriere une de ses deux portes (onboarding, ou 'Quick safety check' du dossier — les verifier avec cmgr doctor), la session n'a pas demarre, ou la version installee de l'extension a change son viewType (docs/compatibilite.md, D2).",
+    "Aucun onglet de conversation Claude n'a ete reconnu, alors que le tour 1 a bien EU LIEU. UNE SESSION EXISTE DONC : son transcript est sur le disque et son identifiant est dans les details (sessionId). NE PAS RELANCER A L'AVEUGLE — ce serait ouvrir une SECONDE conversation en laissant la premiere orpheline. Seul l'attachement du panneau a echoue ; les deux portes du CLI ne peuvent pas etre en cause ici, elles auraient empeche le tour (SEED_TRANSCRIPT_NOT_FOUND). Cause la plus vraisemblable : la version installee de l'extension Claude a change le viewType de son panneau (docs/compatibilite.md, D2) — comparer sa version a celle qui est recensee. Le terminal d'amorcage a ete supprime : le claude du tour 1 ne tourne plus, le transcript reste.",
   [ERROR_CODES.CLAUDE_BINARY_NOT_FOUND]:
     "Le binaire claude est introuvable : ni sous resources/native-binary du repertoire de l'extension Claude Code, ni sur le PATH de cette fenetre. Verifier l'installation de l'extension ; ne jamais coder son chemin en dur, il porte le numero de version (docs/compatibilite.md, D16).",
   [ERROR_CODES.SEED_SHELL_NOT_FOUND]:
@@ -123,13 +146,11 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
   [ERROR_CODES.PROMPT_FILE_UNWRITABLE]:
     "Le fichier transitoire portant le prompt n'a pas pu etre ecrit dans le repertoire de stockage de l'extension. Verifier les droits d'ecriture de ce repertoire et qu'aucun antivirus ne le verrouille.",
   [ERROR_CODES.SEED_PROCESS_NOT_STARTED]:
-    "Le shell du terminal masque n'a engendre aucun processus : le tour 1 n'a pas demarre. Causes connues, dans cet ordre : une des deux portes du CLI attend une reponse (onboarding, ou 'Quick safety check' du dossier — les verifier avec cmgr doctor), le binaire claude a refuse de demarrer, ou le shell n'a pas execute la ligne.",
+    "Le shell du terminal masque n'a engendre aucun processus : le tour 1 n'a pas demarre. Causes connues, dans cet ordre : une des deux portes du CLI attend une reponse (onboarding du CLI interactif, ou 'Quick safety check' du dossier), le binaire claude a refuse de demarrer, ou le shell n'a pas execute la ligne. LE GESTE QUI LEVE LES DEUX PORTES : lancer claude UNE FOIS A LA MAIN dans ce dossier, accorder l'autorisation et approuver le dossier — la confiance se pose PAR REPERTOIRE et ne s'herite jamais d'un dossier voisin. La verification automatique de ces presupposes viendra avec cmgr doctor (lot D) : elle n'est PAS ENCORE LIVREE, cette commande n'existe pas aujourd'hui.",
   [ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND]:
-    "Le processus du tour 1 a demarre, mais aucun transcript <sessionId>.jsonl n'est apparu sous les racines de projets du CLI : le tour n'a PAS eu lieu, et le terminal a ete supprime. Trois causes, dans cet ordre de vraisemblance, toutes SILENCIEUSES cote CLI : (1) une porte du CLI attend une reponse dans ce repertoire — la confiance du dossier ('Quick safety check') se pose PAR REPERTOIRE et n'a jamais ete accordee pour celui-ci, cas MESURE le 2026-07-26 sur un dossier neuf ; (2) le CLI s'est cru agent enfant non interactif et a coupe la sauvegarde du transcript (contamination de l'environnement, voir docs/compatibilite.md) ; (3) la racine de configuration du CLI a change (CLAUDE_CONFIG_DIR, D17). Verifier avec cmgr doctor, qui doit NOMMER ces portes — jamais les franchir.",
+    "Le processus du tour 1 a demarre, mais aucun transcript <sessionId>.jsonl n'est apparu sous les racines de projets du CLI : le tour n'a PAS eu lieu, et le terminal a ete supprime. L'IDENTIFIANT DE LA SESSION DEMANDEE EST DANS LES DETAILS (sessionId) : un claude a bien tourne sous ce nom, et s'il attendait derriere une porte, un transcript peut encore apparaitre sous ce meme nom apres coup. Le verifier AVANT de relancer — relancer a l'aveugle ouvrirait une seconde conversation. Trois causes, dans cet ordre de vraisemblance, toutes SILENCIEUSES cote CLI : (1) une porte du CLI attend une reponse dans ce repertoire — la confiance du dossier ('Quick safety check') se pose PAR REPERTOIRE et n'a jamais ete accordee pour celui-ci, cas MESURE le 2026-07-26 sur un dossier neuf ; (2) le CLI s'est cru agent enfant non interactif et a coupe la sauvegarde du transcript (contamination de l'environnement, voir docs/compatibilite.md) ; (3) la racine de configuration du CLI a change (CLAUDE_CONFIG_DIR, D17). LE GESTE QUI LEVE LA CAUSE (1), LA PLUS FREQUENTE : lancer claude UNE FOIS A LA MAIN dans ce dossier, accorder l'autorisation et approuver le dossier. La verification automatique de ces presupposes viendra avec cmgr doctor (lot D) : elle n'est PAS ENCORE LIVREE, cette commande n'existe pas aujourd'hui.",
   [ERROR_CODES.WORKSPACE_FOLDER_MISSING]:
     "La fenetre cible n'a aucun dossier de travail. Le tour 1 est joue dans le workspace de la fenetre — c'est ce qui garantit que le panneau attache bien la session ouverte. Ouvrir un dossier dans cette fenetre.",
-  [ERROR_CODES.SEED_SESSION_ID_MISMATCH]:
-    "Le CLI claude n'a pas honore l'identifiant de session demande. Verifier la version du binaire avec `cmgr doctor`.",
   [ERROR_CODES.TRANSCRIPT_UNREADABLE]:
     'Le transcript de la session est introuvable ou illisible. La conversation existe peut-etre sans avoir encore produit de tour.',
   [ERROR_CODES.OWNING_WINDOW_NOT_FOUND]:
@@ -153,7 +174,9 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
   [ERROR_CODES.WINDOW_IDENTITY_MISMATCH]:
     "La fenetre qui a repondu n'est pas celle que le registre decrivait : son extension host n'est pas celui de l'entree lue. L'entree a ete substituee entre sa lecture et cet appel, ou le port a ete repris par une autre fenetre. AUCUNE DEMANDE N'A ETE EMISE — c'est ce que la confirmation de canal existe pour empecher. Relancer la commande, puis inspecter le registre si le desaccord persiste.",
   [ERROR_CODES.WINDOW_RESPONSE_UNREADABLE]:
-    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis recharger la fenetre apres mise a jour. Les details portent la route et ce qui manquait.",
+    "La fenetre hote a repondu, mais sa reponse n'est pas de la forme attendue. AUCUN EFFET DE BORD N'A EU LIEU : cette illisibilite tombe sur une route de lecture, relancer est sur. La version de l'extension compagnon installee dans cette fenetre ne parle probablement pas le meme protocole que cette CLI : comparer son extensionVersion avec `cmgr windows`, puis mettre les deux artefacts a jour ensemble. Les details portent la route et ce qui manquait.",
+  [ERROR_CODES.WINDOW_OPEN_RESPONSE_UNREADABLE]:
+    "La fenetre hote a repondu a la DEMANDE D'OUVERTURE, mais sa reponse n'est pas de la forme attendue. UNE CONVERSATION A PEUT-ETRE ETE OUVERTE, ET LE TOUR 1 JOUE : cette validation est posterieure a l'effet de bord, contrairement a WINDOW_RESPONSE_UNREADABLE. NE PAS RELANCER A L'AVEUGLE — une seconde demande ouvrirait une seconde conversation par-dessus la premiere. Constater l'etat reel dans la fenetre elle-meme (l'onglet de conversation y est visible) ; `cmgr conversations` le dira sans regarder l'ecran, increment C4, pas encore livre. Cause la plus probable : la version de l'extension compagnon installee dans cette fenetre ne parle pas le meme protocole que cette CLI — comparer son extensionVersion avec `cmgr windows`, mettre les deux artefacts a jour ensemble, puis ouvrir une fenetre NEUVE. NE PAS recharger celle-ci : un rechargement tue les claude.exe qui descendent de son extension host, donc la conversation qui vient peut-etre de s'ouvrir.",
   [ERROR_CODES.WINDOW_REQUEST_REFUSED]:
     "La fenetre hote a refuse la demande et a NOMME son refus ; le code exact figure dans les details. FORBIDDEN_HOST ou FORBIDDEN_ORIGIN signale qu'un intermediaire s'est interpose sur la boucle locale — aucun client de ClaudeManager ne produit ces refus. NOT_FOUND signale une extension compagnon trop ancienne pour cette route.",
   [ERROR_CODES.PROMPT_EMPTY]:

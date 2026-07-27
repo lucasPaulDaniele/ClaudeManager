@@ -20,11 +20,15 @@
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────
  * RIEN N'EST DEVINE, ET RIEN N'EST TOLERE EN SILENCE. Une reponse dont un champ manque, ou
- * porte un type inattendu, est une reponse qu'on ne comprend pas : elle sort en
- * `WINDOW_RESPONSE_UNREADABLE` avec ce qui manquait, jamais en objet a moitie rempli. Le cas
- * n'est pas theorique — une fenetre peut porter une version de l'extension compagnon plus
- * ancienne, ou plus recente, que la CLI qui l'interroge : elles vivent dans deux processus
- * mis a jour separement.
+ * porte un type inattendu, est une reponse qu'on ne comprend pas : elle sort en erreur nommee
+ * avec ce qui manquait, jamais en objet a moitie rempli. Le cas n'est pas theorique — une
+ * fenetre peut porter une version de l'extension compagnon plus ancienne, ou plus recente, que
+ * la CLI qui l'interroge : elles vivent dans deux processus mis a jour separement.
+ *
+ * DEUX CODES, SELON LA ROUTE, et cette distinction est tout sauf cosmetique :
+ * `WINDOW_RESPONSE_UNREADABLE` sur `GET /health` — aucun effet de bord, relancer est sur — et
+ * `WINDOW_OPEN_RESPONSE_UNREADABLE` sur `POST /conversations`, ou la validation est POSTERIEURE
+ * a l'ouverture. Voir `unreadable`.
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 
@@ -92,8 +96,8 @@ export type OpenMode = 'seeded' | 'fallback';
  * `'process-started'` — CE QUE LES VERSIONS ANTERIEURES DE L'EXTENSION RENDENT, et rien d'autre.
  *   Il est accepte EN LECTURE, et il ne faut pas le retirer sans y penser : la fenetre et cette
  *   CLI vivent dans deux processus mis a jour separement, et une fenetre encore en 0.3.0 rend
- *   cette valeur. La refuser transformerait un ecart de version en `WINDOW_RESPONSE_UNREADABLE`
- *   sur une ouverture parfaitement reussie. Le mecanisme, lui, ne la produit plus : ce qu'elle
+ *   cette valeur. La refuser transformerait un ecart de version en
+ *   `WINDOW_OPEN_RESPONSE_UNREADABLE` sur une ouverture parfaitement reussie. Le mecanisme, lui, ne la produit plus : ce qu'elle
  *   observait — « un enfant du shell existe » — ne discriminait pas un CLI qui joue le tour d'un
  *   CLI arrete a une porte.
  */
@@ -105,7 +109,9 @@ export interface OpenedConversation {
   readonly sessionId: string | null;
   /** La fenetre qui a REELLEMENT agi, telle qu'elle se nomme elle-meme. */
   readonly extHostPid: number;
+  /** `true` OBLIGATOIRE en repli : le prompt n'y est que pre-rempli. Libre ailleurs. */
   readonly humanActionRequired: boolean;
+  /** COHERENT avec `mode` et `firstTurnVerified` — deux equivalences, voir `requireFirstTurn`. */
   readonly firstTurn: FirstTurnOutcome;
   /**
    * LE TOUR 1 A-T-IL EU LIEU ? RENDU TEL QUE LA FENETRE LE DIT — et il peut valoir `true`.
@@ -130,7 +136,13 @@ export interface OpenedConversation {
    * anterieure de l'extension rend, et le client ne doit pas casser sur un ecart de version.
    */
   readonly firstTurnVerified: boolean;
-  /** `viewType` de l'onglet apparu, releve tel quel. Absent en repli. */
+  /**
+   * `viewType` de l'onglet apparu, releve tel quel — EXIGE en voie amorcee.
+   *
+   * En repli, il est absent aujourd'hui (le repli ne diffe pas les onglets) mais il est RELAYE
+   * s'il est la : le repli ouvre un vrai panneau, un `viewType` n'y designerait rien
+   * d'inexistant. Voir `requirePanelViewType` pour pourquoi il n'est pas couple au `mode`.
+   */
   readonly panelViewType: string | undefined;
   /**
    * L'ERREUR QUI A CAUSE LE REPLI, RENDUE VERBATIM — jamais relue, jamais reinterpretee.
@@ -147,9 +159,89 @@ export interface OpenedConversation {
 /** Le champ `error` d'un refus : un CODE, en majuscules, et jamais une phrase. */
 const REFUSAL_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+/**
+ * LA MEME REGLE QUE `REFUSAL_CODE`, APPLIQUEE AUX `details` — et elle y manquait.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * Le champ `error` etait filtre par un motif strict, au motif ecrit plus bas : cette valeur
+ * vient d'une SOCKET, ce qui occupe le port n'est pas forcement notre serveur, et cette sortie
+ * part vers un agent, vers un journal, et vers une PR d'un depot PUBLIC. La branche voisine —
+ * celle qui relaie une erreur nommee — reprenait pourtant `message` ET `details` VERBATIM,
+ * depuis la meme source. Un occupant du port ephemere y placait donc une consigne dans l'entree
+ * de l'agent appelant, un chemin ou un jeton dans un journal public, et de fausses lignes
+ * `cmgr: …` sur `stderr` par un simple saut de ligne. Rien de tout cela n'exigeait le moindre
+ * privilege, et la confirmation de canal ne protege pas ce chemin : `readHealth` appelle
+ * `refusalOf` AVANT que `confirmChannel` n'ait compare le moindre pid.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * CE QUI PASSE : des nombres finis, des booleens, et UN SEUL texte — le `sessionId`, sous la
+ * forme d'un uuid. Cette exception n'est pas une commodite : sans elle, l'appelant recevrait
+ * `SEED_TRANSCRIPT_NOT_FOUND` ou `CLAUDE_PANEL_VIEWTYPE_UNKNOWN` sans le seul identifiant par
+ * lequel il peut retrouver la session DEJA amorcee, et il relancerait a l'aveugle. Un uuid ne
+ * porte ni chemin, ni jeton, ni phrase — c'est exactement le critere de `REFUSAL_CODE`.
+ *
+ * Tout autre texte est ECARTE, y compris sous une clef qui nous est familiere : le nom du champ
+ * ne prouve rien de sa valeur.
+ */
+const DETAIL_SESSION_ID = 'sessionId';
+const DETAIL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Les CLEFS viennent aussi de la socket : ni separateur, ni espace, ni longueur de phrase. */
+const DETAIL_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
+/** Ce qui a ete ecarte est COMPTE, jamais tu — voir `relayedDetails`. */
+const OMITTED_DETAILS = 'detailsOmitted';
+
+/**
+ * Reduit les `details` d'un refus a ce qu'un texte venu d'une socket ne peut pas empoisonner.
+ *
+ * LE COMPTE DES ECARTES EST RENDU, et ce n'est pas de la coquetterie : sans lui, une fenetre
+ * plus recente qui ajouterait un detail textuel semblerait n'en avoir envoye AUCUN — la
+ * degradation silencieuse que l'en-tete de ce module interdit.
+ */
+function relayedDetails(raw: unknown): Readonly<Record<string, unknown>> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+
+  const relayed: Record<string, unknown> = {};
+  let omitted = 0;
+
+  for (const [key, value] of Object.entries(raw as Readonly<Record<string, unknown>>)) {
+    const keeps =
+      DETAIL_KEY.test(key) &&
+      // NOTRE PROPRE CLEF EST RESERVEE : elle vient d'une socket comme les autres, et un
+      // `detailsOmitted` forge mentirait sur ce que ce filtre a fait — le compte qu'on rend
+      // doit etre le notre, jamais celui d'en face.
+      key !== OMITTED_DETAILS &&
+      ((typeof value === 'number' && Number.isFinite(value)) ||
+        typeof value === 'boolean' ||
+        (key === DETAIL_SESSION_ID && typeof value === 'string' && DETAIL_UUID.test(value)));
+
+    if (keeps) relayed[key] = value;
+    else omitted += 1;
+  }
+
+  if (omitted > 0) relayed[OMITTED_DETAILS] = omitted;
+  return Object.keys(relayed).length === 0 ? undefined : relayed;
+}
+
+/**
+ * L'ILLISIBILITE, NOMMEE — ET LA ROUTE EST DANS LE CODE, PAS SEULEMENT DANS LES DETAILS.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * DEUX CODES, PARCE QUE L'APPELANT EN TIRE DEUX CONDUITES OPPOSEES. Sur `GET /health`, la
+ * validation precede tout effet de bord : relancer est sur. Sur `POST /conversations`, elle lui
+ * est POSTERIEURE — une fenetre plus recente qui rendrait un champ que ce client ne comprend pas
+ * sort en erreur alors que la conversation est ouverte et le tour 1 joue. Un `1` y ferait
+ * retenter, donc ouvrir une SECONDE conversation.
+ *
+ * La route etait deja dans les `details` ; elle ne servait a rien la ou l'appelant decide sans
+ * lire la sortie. La remediation, elle, ne peut varier qu'avec le CODE — elle est relue dans la
+ * table de `ClaudeManagerError`.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
 function unreadable(route: string, missing: string): ClaudeManagerError {
   return new ClaudeManagerError(
-    ERROR_CODES.WINDOW_RESPONSE_UNREADABLE,
+    route === OPEN_ROUTE
+      ? ERROR_CODES.WINDOW_OPEN_RESPONSE_UNREADABLE
+      : ERROR_CODES.WINDOW_RESPONSE_UNREADABLE,
     `The owning window answered ${route} with a payload this client does not understand`,
     // Le NOM du champ fautif, jamais sa valeur : elle vient d'une socket, rien ne la contraint.
     { route, missing }
@@ -220,22 +312,27 @@ function refusalOf(route: string, response: WindowResponse): ClaudeManagerError 
 
   // Le corps d'un refus n'est pas garanti lisible : ce qui occupe le port peut n'etre pas
   // notre serveur. On le lit s'il l'est, on s'en passe sinon — sans jamais echouer ici.
-  let named: unknown;
+  let payload: Readonly<Record<string, unknown>> | undefined;
   try {
-    named = asRecord(route, response.body)['error'];
+    payload = asRecord(route, response.body);
   } catch {
-    named = undefined;
+    payload = undefined;
   }
+  const named = payload?.['error'];
 
-  // UNE ERREUR DU COEUR TRAVERSE TELLE QUELLE : son code, son message et sa remediation ont
-  // ete ecrits par le coeur, dans la fenetre ; les reformuler ici les appauvrirait.
+  // LE CODE D'UNE ERREUR DU COEUR TRAVERSE — LUI, ET RIEN D'AUTRE DE CE QUE LA SOCKET ECRIT.
+  //
+  // La remediation est celle du coeur LOCAL : `ClaudeManagerError` la relit dans sa propre
+  // table, elle n'a jamais transite. Le message, lui, est REECRIT ici, et il le faut : celui
+  // de la reponse est du texte libre venu d'une socket (voir `relayedDetails`). Ce qu'il
+  // apportait — la nuance entre deux formulations d'un meme code — ne vaut pas une consigne
+  // injectee dans l'entree d'un agent.
   if (isErrorCode(named)) {
-    const raw = asRecord(route, response.body);
-    const message = typeof raw['message'] === 'string' ? raw['message'] : `The owning window failed on ${route}`;
-    const details = raw['details'];
-    return typeof details === 'object' && details !== null && !Array.isArray(details)
-      ? new ClaudeManagerError(named, message, details as Readonly<Record<string, unknown>>)
-      : new ClaudeManagerError(named, message);
+    return new ClaudeManagerError(
+      named,
+      `The owning window named ${named} on ${route}`,
+      relayedDetails(payload?.['details'])
+    );
   }
 
   return new ClaudeManagerError(
@@ -277,7 +374,32 @@ function requireMode(raw: Readonly<Record<string, unknown>>): OpenMode {
   return mode;
 }
 
-function requireFirstTurn(raw: Readonly<Record<string, unknown>>): FirstTurnOutcome {
+/**
+ * `firstTurn` : la valeur, ET SA COHERENCE AVEC LES DEUX AUTRES CHAMPS QUI EN PARLENT.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * TROIS CHAMPS DECRIVENT LE MEME FAIT — `mode`, `firstTurn`, `firstTurnVerified` —, et jusqu'a
+ * la correction du gate C ils n'etaient confrontes qu'un a un. L'en-tete de ce module promet
+ * pourtant que rien n'est devine et rien n'est tolere en silence.
+ *
+ * DEUX EQUIVALENCES SUFFISENT A TOUT DETERMINER, et chacune se lit comme une contradiction
+ * quand elle est rompue :
+ *
+ *   - `'not-attempted'` <=> `mode === 'fallback'`. Un « aucun tour tente » sur une voie amorcee
+ *     dirait qu'une session a ete ouverte sans qu'on ait rien tente d'y jouer.
+ *   - `'transcript-observed'` <=> `firstTurnVerified`. « J'ai vu le transcript » avec un tour
+ *     non verifie, ou l'inverse, sont la meme phrase qui se contredit.
+ *
+ * Il en decoule que `'process-started'` designe exactement l'etat d'une fenetre anterieure :
+ * amorcee, non verifiee. Les trois captures reelles le confirment, et aucune quatrieme
+ * combinaison n'existe.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+function requireFirstTurn(
+  raw: Readonly<Record<string, unknown>>,
+  mode: OpenMode,
+  verified: boolean
+): FirstTurnOutcome {
   const outcome = raw['firstTurn'];
   if (
     outcome !== 'transcript-observed' &&
@@ -286,7 +408,35 @@ function requireFirstTurn(raw: Readonly<Record<string, unknown>>): FirstTurnOutc
   ) {
     throw unreadable(OPEN_ROUTE, 'firstTurn');
   }
+  if ((outcome === 'not-attempted') !== (mode === 'fallback')) {
+    throw unreadable(OPEN_ROUTE, 'firstTurn');
+  }
+  if ((outcome === 'transcript-observed') !== verified) {
+    throw unreadable(OPEN_ROUTE, 'firstTurn');
+  }
   return outcome;
+}
+
+/**
+ * `humanActionRequired` : un booleen, et `true` OBLIGATOIRE en repli.
+ *
+ * LE COUPLE NE VAUT QUE DANS CE SENS, ET C'EST DELIBERE. En repli V5, la valeur est
+ * DETERMINEE : le prompt est seulement pre-rempli dans le champ de saisie, jamais soumis —
+ * prouve au source et par mesure (ADR-002). Un `false` y ferait attendre a un agent une reponse
+ * que personne n'a demandee.
+ *
+ * L'INVERSE N'EST PAS EXIGE : rien ne dit qu'une voie amorcee n'aura jamais de geste humain a
+ * signaler, et refuser ce cas ferait echouer une ouverture PARFAITEMENT REUSSIE le jour ou une
+ * fenetre plus recente aurait quelque chose de plus a dire. C'est exactement le piege du
+ * litteral `false` de `firstTurnVerified`, que ce module documente pour ne pas le reintroduire.
+ */
+function requireHumanActionRequired(
+  raw: Readonly<Record<string, unknown>>,
+  mode: OpenMode
+): boolean {
+  const required = requireBoolean(OPEN_ROUTE, raw, 'humanActionRequired');
+  if (mode === 'fallback' && !required) throw unreadable(OPEN_ROUTE, 'humanActionRequired');
+  return required;
 }
 
 /**
@@ -344,13 +494,34 @@ function requireDegradedFrom(
   return undefined;
 }
 
-/** `panelViewType` : releve tel quel en mode amorce, absent en repli — aucun diff n'y est fait. */
+/**
+ * `panelViewType` : EXIGE en mode amorce, RELAYE s'il est la en repli — jamais jete en silence.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * IL ETAIT SILENCIEUSEMENT JETE EN REPLI, et c'etait le defaut : la fonction rendait `undefined`
+ * sans meme regarder le champ. Une fenetre qui l'aurait envoye voyait son renseignement
+ * disparaitre sans trace — exactement ce que l'en-tete de ce module interdit.
+ *
+ * IL N'EST PAS POUR AUTANT COUPLE AU `mode`, et le refuser en repli serait un CONTRESENS : le
+ * repli V5 ouvre BEL ET BIEN un panneau — `editor.open(null, <prompt>)` —, il ne le diffe
+ * simplement pas aujourd'hui. Un `panelViewType` en repli ne designerait donc rien
+ * d'inexistant, a la difference d'un `sessionId` ou d'un `firstTurnVerified: true`, dont le
+ * couple tient parce qu'aucune session n'y est amorcee. Exiger son absence ferait echouer une
+ * ouverture parfaitement reussie le jour ou le repli releverait son onglet — c'est le motif meme
+ * pour lequel `degradedFrom` n'est pas relu champ a champ.
+ *
+ * CE QUI EST VERIFIE, DONC : sa presence en voie amorcee — c'est la trace du relevé
+ * d'attachement — et son TYPE partout ou il figure. Rien de plus, rien de moins.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
 function requirePanelViewType(
   raw: Readonly<Record<string, unknown>>,
   mode: OpenMode
 ): string | undefined {
-  if (mode === 'fallback') return undefined;
-  return requireString(OPEN_ROUTE, raw, 'panelViewType');
+  if (mode !== 'fallback') return requireString(OPEN_ROUTE, raw, 'panelViewType');
+  return raw['panelViewType'] === undefined
+    ? undefined
+    : requireString(OPEN_ROUTE, raw, 'panelViewType');
 }
 
 /** @throws {ClaudeManagerError} tout refus, ou une reponse illisible. */
@@ -361,15 +532,18 @@ export function readOpenedConversation(response: WindowResponse): OpenedConversa
   if (raw['ok'] !== true) throw unreadable(OPEN_ROUTE, 'ok');
 
   const mode = requireMode(raw);
+  // RELU AVANT `firstTurn`, qui le CONFRONTE : les deux champs decrivent le meme fait, et une
+  // reponse qui les contredit n'est pas une reponse qu'on comprend a moitie.
+  const firstTurnVerified = requireFirstTurnVerified(raw, mode);
   return {
     mode,
     sessionId: requireSessionId(raw, mode),
     extHostPid: requireInteger(OPEN_ROUTE, raw, 'extHostPid'),
-    humanActionRequired: requireBoolean(OPEN_ROUTE, raw, 'humanActionRequired'),
-    firstTurn: requireFirstTurn(raw),
+    humanActionRequired: requireHumanActionRequired(raw, mode),
+    firstTurn: requireFirstTurn(raw, mode, firstTurnVerified),
     // RENDU TEL QUEL, et plus jamais code en dur : c'est la fenetre qui sait si elle a
     // constate le transcript de la session.
-    firstTurnVerified: requireFirstTurnVerified(raw, mode),
+    firstTurnVerified,
     panelViewType: requirePanelViewType(raw, mode),
     degradedFrom: requireDegradedFrom(raw, mode),
   };

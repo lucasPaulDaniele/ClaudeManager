@@ -470,7 +470,15 @@ describe('etapes 3 a 6 — la voie nominale', () => {
     expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.CLAUDE_PANEL_VIEWTYPE_UNKNOWN);
     const attempts = harness.trace.calls.filter((call) => call.includes('sessionId')).length;
     expect(attempts).toBe(5);
-    expect(isClaudeManagerError(error) && error.details).toMatchObject({ attempts: 5, waitedMs: 62_000 });
+    // LE `sessionId` EST DANS LES DETAILS, et c'est le cas le plus couteux du produit : le tour
+    // 1 a REELLEMENT ete joue avant cet echec. Sans cet identifiant, une session complete
+    // existerait sur le disque sans qu'aucun appelant puisse la designer.
+    expect(isClaudeManagerError(error) && error.details).toMatchObject({
+      sessionId: SESSION_ID,
+      attempts: 5,
+      waitedMs: 62_000,
+    });
+    expect(isClaudeManagerError(error) && error.remediation).toContain('SECONDE conversation');
   });
 
   it('ne confond pas un panneau DEJA la avec celui qu on vient d ouvrir', async () => {
@@ -631,7 +639,10 @@ describe('etape 6 — LE TOUR 1 A EU LIEU (defaut de recette du 2026-07-26)', ()
 
     expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND);
     // 45 s d'echelle a 500 ms de sondage : l'attente est BORNEE, et le detail le dit.
+    // Le `sessionId` y figure aussi : un `claude` a tourne sous ce nom, et l'appelant doit
+    // pouvoir le nommer plutot que de relancer a l'aveugle.
     expect(isClaudeManagerError(error) && error.details).toMatchObject({
+      sessionId: SESSION_ID,
       waitedMs: 45_000,
       rootsScanned: 1,
     });
@@ -641,7 +652,19 @@ describe('etape 6 — LE TOUR 1 A EU LIEU (defaut de recette du 2026-07-26)', ()
     expect(harness.trace.calls.some((call) => call.includes('sessionId'))).toBe(false);
   });
 
-  it('ne rend AUCUN chemin dans l erreur — le depot est public, ces racines portent le compte', async () => {
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * CE TEST A CHANGE DE SENS A LA CORRECTION DU GATE C, ET LA NUANCE EST TOUT LE FINDING.
+   *
+   * Il exigeait l'absence du `SESSION_ID` au meme titre que celle des chemins. C'etait
+   * confondre deux choses : la discipline « des chiffres, jamais un chemin » protege le NOM DU
+   * COMPTE et l'arborescence personnelle, que les racines de projets portent. Un `sessionId`
+   * est un uuid que NOUS generons, deja rendu tel quel au premier niveau en cas de succes — le
+   * cacher en cas d'echec ne protegeait rien et privait l'appelant du seul identifiant par
+   * lequel il peut ne PAS relancer a l'aveugle.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('ne rend AUCUN chemin dans l erreur — mais rend l identifiant de session', async () => {
     const harness = makeHarness({ withoutTranscript: true });
 
     const error = await refusal(harness);
@@ -652,7 +675,10 @@ describe('etape 6 — LE TOUR 1 A EU LIEU (defaut de recette du 2026-07-26)', ()
     const serialized = JSON.stringify(isClaudeManagerError(error) ? error.toJSON() : {});
     expect(serialized).not.toContain('cmgr-open-');
     expect(serialized).not.toContain(PROJECT_SLUG);
-    expect(serialized).not.toContain(SESSION_ID);
+    expect(serialized).not.toContain(os.homedir());
+    // L'uuid, LUI, est rendu — et la remediation dit quoi en faire.
+    expect(serialized).toContain(SESSION_ID);
+    expect(isClaudeManagerError(error) && error.remediation).toContain('sessionId');
   });
 
   it('ne bascule JAMAIS en repli V5 quand le tour n a pas eu lieu — une session tourne peut-etre', async () => {

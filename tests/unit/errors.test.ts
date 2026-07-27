@@ -59,7 +59,7 @@ describe('ClaudeManagerError', () => {
 
 describe('isClaudeManagerError', () => {
   it('reconnait une erreur du domaine', () => {
-    expect(isClaudeManagerError(new ClaudeManagerError(ERROR_CODES.SEED_SESSION_ID_MISMATCH, 'x'))).toBe(true);
+    expect(isClaudeManagerError(new ClaudeManagerError(ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND, 'x'))).toBe(true);
   });
 
   it('rejette tout le reste', () => {

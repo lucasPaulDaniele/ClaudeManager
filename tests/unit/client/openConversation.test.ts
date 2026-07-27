@@ -273,15 +273,23 @@ describe('refus en amont de tout reseau', () => {
   });
 });
 
-describe('une erreur nommee de la fenetre traverse telle quelle', () => {
-  it('rend le code, le message et les details que la FENETRE a formules', async () => {
+describe('le CODE d une erreur nommee de la fenetre traverse la socket', () => {
+  /**
+   * DE BOUT EN BOUT, ET C'EST CE QUI COMPTE ICI : l'erreur part du VRAI serveur local, traverse
+   * une VRAIE socket, et est relue par le VRAI client. Le `sessionId` que la fenetre met dans ses
+   * details doit ressortir intact — c'est la seule chose qui empeche l'appelant d'ouvrir une
+   * seconde conversation par-dessus une session complete.
+   */
+  const SESSION_ID = 'f0bd7609-81b9-414f-bb6b-af35237ef276';
+
+  it('rend le code et les details SCALAIRES, sessionId compris', async () => {
     const companion = await companionIn({
       open: () =>
         Promise.reject(
           new ClaudeManagerError(
             'CLAUDE_PANEL_VIEWTYPE_UNKNOWN',
             'No Claude conversation tab appeared after the attach command was issued',
-            { attempts: 5, waitedMs: 62_000 }
+            { sessionId: SESSION_ID, attempts: 5, waitedMs: 62_000 }
           )
         ),
     });
@@ -289,8 +297,12 @@ describe('une erreur nommee de la fenetre traverse telle quelle', () => {
     const error = await caught(open(companion.registryDir, 'Reponds OK.'));
 
     expect(error.code).toBe('CLAUDE_PANEL_VIEWTYPE_UNKNOWN');
-    expect(error.details).toEqual({ attempts: 5, waitedMs: 62_000 });
-    expect(error.remediation).toContain('cmgr doctor');
+    expect(error.details).toEqual({ sessionId: SESSION_ID, attempts: 5, waitedMs: 62_000 });
+    // La remediation vient du coeur LOCAL, et elle dit quoi faire de cet identifiant.
+    expect(error.remediation).toContain('UNE SESSION EXISTE');
+    expect(error.remediation).toContain('sessionId');
+    // Elle ne renvoie plus a une commande qui n'existe pas.
+    expect(error.remediation).not.toContain('cmgr doctor');
   });
 });
 

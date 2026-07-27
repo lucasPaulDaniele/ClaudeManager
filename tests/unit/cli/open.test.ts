@@ -11,7 +11,13 @@ import {
   startCompanion,
   type Companion,
 } from '../client/fixtures.js';
-import { contextFor, expectFailure, expectSuccess, WINDOWS_ROLES } from './fixtures.js';
+import {
+  contextFor,
+  expectFailure,
+  expectSoleJsonValue,
+  expectSuccess,
+  WINDOWS_ROLES,
+} from './fixtures.js';
 
 /**
  * `cmgr open` — l'interface de la commande vis-a-vis de son appelant.
@@ -260,12 +266,19 @@ describe('ce que la sortie DIT, et ne doit pas taire', () => {
     expect(result.stderr).toContain('lot D');
   });
 
-  it('DIT qu une fenetre trop ancienne ne verifie PAS le tour, et comment le voir', async () => {
+  it('un tour NON VERIFIE sur la voie amorcee sort en code 4, jamais en 0', async () => {
     // ─────────────────────────────────────────────────────────────────────────────────────
     // LE TROISIEME ETAT, ET IL N'EST PAS THEORIQUE : la fenetre et cette CLI vivent dans deux
     // processus mis a jour separement. Une fenetre en 0.3.0 rend `firstTurnVerified: false` sur
-    // une voie amorcee — elle n'observait que le demarrage d'un processus. Rendre la meme phrase
-    // que pour un tour verifie affirmerait ce que personne n'a constate.
+    // une voie amorcee — elle n'observait que le demarrage d'un processus. C'est EXACTEMENT la
+    // combinaison que la recette du 2026-07-26 a mesuree comme produisant un panneau VIDE, sans
+    // prompt ni reponse, pendant que la route rendait un succes complet.
+    //
+    // ELLE SORTAIT EN `0`. Le champ etait dans le JSON et la phrase sur `stderr`, mais la
+    // doctrine du projet est qu'un agent decide SANS analyser la sortie : le seul canal qui
+    // satisfait cette exigence disait « succes nominal ». Un `0` fait enchainer l'agent sur
+    // « ma conversation tourne » et attendre une reponse qui ne viendra jamais — le raisonnement
+    // meme qui a fait creer le code 4 pour le repli.
     // ─────────────────────────────────────────────────────────────────────────────────────
     const companion = await companionIn({
       open: (entry) => Promise.resolve(legacySeededResultFor(entry)),
@@ -276,13 +289,33 @@ describe('ce que la sortie DIT, et ne doit pas taire', () => {
       ['open', '--prompt-file', file],
       contextFor(companion.registryDir, CALLER)
     );
-    const payload = expectSuccess(result);
 
+    expect(result.exitCode).toBe(EXIT_CODES.DEGRADED_SUCCESS);
+    const payload = expectSoleJsonValue(result);
+    // `ok` reste vrai : un panneau a bien ete ouvert. C'est le code de sortie qui porte la nuance.
+    expect(payload['ok']).toBe(true);
+    expect(payload['mode']).toBe('seeded');
     expect(payload['firstTurnVerified']).toBe(false);
     expect(payload['firstTurn']).toBe('process-started');
     expect(result.stderr).toContain('firstTurnVerified: false');
     // La remediation, et elle est ACTIONNABLE : comparer la version, puis mettre a jour.
     expect(result.stderr).toContain('extensionVersion');
+    // Et la conduite a tenir, qui est la meme que pour le repli.
+    expect(result.stderr).toContain('NE PAS RELANCER');
+  });
+
+  it('un tour VERIFIE sur la voie amorcee reste le SEUL cas qui sorte en 0', async () => {
+    // Le controle positif du test precedent : sans lui, un `degraded` toujours vrai passerait.
+    const companion = await companionIn();
+    const file = promptFile('nominal-0.md', 'Reponds exactement OK.');
+
+    const result = await runCli(
+      ['open', '--prompt-file', file],
+      contextFor(companion.registryDir, CALLER)
+    );
+
+    expect(result.exitCode).toBe(EXIT_CODES.SUCCESS);
+    expect(expectSuccess(result)['firstTurnVerified']).toBe(true);
   });
 
   it('NOMME la confirmation de canal : une verification silencieuse ne se prouve pas', async () => {

@@ -36,24 +36,41 @@ export const EXIT_CODES = {
    */
   UNEXPECTED_ERROR: 3,
   /**
-   * SUCCES DEGRADE — le repli V5 a joue : la conversation est ouverte, mais UN GESTE HUMAIN
-   * MANQUE. C'est le cinquieme code, ajoute a l'increment C2, et voici pourquoi il en fallait
-   * un cinquieme plutot qu'un des quatre existants.
+   * SUCCES DEGRADE — une conversation existe, mais LE TOUR 1 N'EST PAS ACQUIS. C'est le
+   * cinquieme code, ajoute a l'increment C2, et voici pourquoi il en fallait un cinquieme plutot
+   * qu'un des quatre existants.
    *
-   * `0` MENTIRAIT PAR OMISSION, et c'est le mensonge le plus couteux du produit : un repli
-   * ouvre bien une conversation, mais le prompt y est seulement PRE-REMPLI dans le champ de
-   * saisie — jamais soumis (prouve au source et par mesure, ADR-002). Un agent qui lit `0`
-   * enchaine sur « ma conversation tourne » et attend une reponse qui ne viendra jamais : il
-   * pendrait, ou conclurait a un service muet. Or c'est exactement le scenario de l'orchestrateur
-   * qui motive tout ce chantier.
+   * `0` MENTIRAIT PAR OMISSION, et c'est le mensonge le plus couteux du produit. Un agent qui
+   * lit `0` enchaine sur « ma conversation tourne » et attend une reponse qui ne viendra jamais :
+   * il pendrait, ou conclurait a un service muet. Or c'est exactement le scenario de
+   * l'orchestrateur qui motive tout ce chantier.
    *
    * `1` MENTIRAIT DANS L'AUTRE SENS : une erreur nommee dit « l'operation n'a pas eu lieu ».
    * Ici elle a eu lieu, un panneau est ouvert, et un `1` ferait retenter — donc ouvrir une
    * SECONDE conversation par-dessus la premiere.
    *
-   * Ce que ce code dit tient en une phrase : « la conversation existe, le tour 1 n'a pas ete
-   * soumis, va valider ». `mode`, `humanActionRequired` et `degradedFrom` le detaillent dans
-   * la sortie ; le code de sortie, lui, se lit sans l'analyser.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * DEUX CAS LE PORTENT, ET LE SECOND A ETE AJOUTE A LA CORRECTION DU GATE C :
+   *
+   *   - LE REPLI V5 : le prompt est seulement PRE-REMPLI dans le champ de saisie, jamais soumis
+   *     (prouve au source et par mesure, ADR-002). Un geste humain manque.
+   *   - UN TOUR 1 NON VERIFIE SUR LA VOIE AMORCEE (`mode: 'seeded'`,
+   *     `firstTurnVerified: false`) : ce qu'une fenetre portant une version anterieure de
+   *     l'extension rend, et c'est EXACTEMENT la combinaison mesuree comme produisant un panneau
+   *     VIDE — sans prompt ni reponse — pendant que la route rendait un succes complet. Elle
+   *     sortait en `0`.
+   *
+   * UN SEUL CODE POUR LES DEUX, ET C'EST UN CHOIX : ces codes encodent une DECISION, pas un
+   * diagnostic — « ils sont DISJOINTS parce qu'un agent doit pouvoir decider sans analyser la
+   * sortie ». Or la decision est la meme dans les deux cas : ne pas retenter, et faire regarder.
+   * Ce qui differe — quel geste humain, sur quoi — est un renseignement, et il est deja dans
+   * `mode`, `firstTurnVerified`, `humanActionRequired` et `degradedFrom`, redit en clair sur
+   * `stderr`. Un sixieme code aurait fait porter au canal de decision ce que le canal de
+   * renseignement dit deja mieux.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   *
+   * Ce que ce code dit tient en une phrase : « la conversation existe, ce n'est pas ce que tu as
+   * demande, ne retente pas a l'aveugle ».
    */
   DEGRADED_SUCCESS: 4,
 } as const;
