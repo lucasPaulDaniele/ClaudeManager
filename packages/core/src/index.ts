@@ -8,12 +8,19 @@ export {
   type SerializedError,
 } from './errors.js';
 
+/**
+ * CE FICHIER EST LE CONTRAT, ET IL S'EST RESSERRE (V2-12).
+ *
+ * Six symboles y figuraient sans aucun consommateur hors des tests :
+ * `measureCommandLineBudget`, `quotedArgumentCost`, `WINDOWS_COMMAND_LINE_LIMIT`,
+ * `COMMAND_LINE_SAFETY_MARGIN`, `HEALTH_TIMEOUT_MS` et `OPEN_TIMEOUT_MS`. Ce n'est pas une
+ * question de rangement : `packages/vscode/src/core.ts` fait `export *` de ce fichier, si bien
+ * que TOUT ce qui entre ici devient surface publique de l'extension aussi. Ils restent exportes
+ * de LEUR module — les tests les y prennent directement, ce qui dit d'ailleurs mieux ce qu'ils
+ * sont : des details internes eprouves, pas une promesse faite a un appelant.
+ */
 export {
   assertCommandLineFits,
-  COMMAND_LINE_SAFETY_MARGIN,
-  measureCommandLineBudget,
-  quotedArgumentCost,
-  WINDOWS_COMMAND_LINE_LIMIT,
   type CommandLineBudget,
   type CommandLineDraft,
 } from './commandLine.js';
@@ -69,8 +76,6 @@ export {
 export { createLoopbackTransport } from './client/loopback.node.js';
 export {
   assertSubmittablePrompt,
-  HEALTH_TIMEOUT_MS,
-  OPEN_TIMEOUT_MS,
   openConversationInWindow,
   type ChannelConfirmation,
   type ConversationOpening,

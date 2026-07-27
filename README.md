@@ -105,7 +105,16 @@ Une réserve, portée par le montage : VSCode refusant d'ouvrir un même dossier
 > les artefacts construits localement**, et c'est délibéré : voir la
 > [feuille de route](#feuille-de-route).
 
-**Prérequis** : Node ≥ 20, et le lanceur `code` sur le `PATH` (`code --version` doit répondre).
+**Prérequis** : Node ≥ 20, le lanceur `code` sur le `PATH` (`code --version` doit répondre), et
+**PowerShell 7 (`pwsh`) sur le `PATH`** (`pwsh --version` doit répondre).
+
+> **`pwsh` est un prérequis dur, pas un confort — et Windows ne le fournit pas.** Le système
+> livre `powershell.exe` 5.1 ; PowerShell 7 s'installe séparément. Le tour 1 est joué dans un
+> shell, jamais en lançant `claude.exe` directement : c'est le shell qui garde un canal ouvert
+> vers le processus, donc qui rend franchissables les deux portes du CLI. Aucun repli silencieux
+> sur un autre shell n'est fait — leurs règles de citation diffèrent, et la forme envoyée au pty
+> n'a été mesurée que sous PowerShell. Sans lui, `cmgr open` refuse en nommant
+> `SEED_SHELL_NOT_FOUND` ; `cmgr windows` et `cmgr whoami`, eux, n'en ont pas besoin.
 
 ### 1. Construire les deux paquets
 
@@ -228,6 +237,24 @@ npm uninstall -g @claudemanager/cli
 code --uninstall-extension claudemanager.claudemanager-vscode
 rm -rf ~/.claudemanager
 ```
+
+**Il reste un répertoire, et il peut porter un prompt en clair.** L'extension écrit le fichier
+transitoire du prompt dans son `globalStorage`, hors de `~/.claudemanager` — que la commande
+ci-dessus n'atteint donc pas. Ce fichier est effacé par la ligne du shell elle-même, l'extension
+a un filet, et un balayage reprend les résidus à chaque ouverture comme à chaque activation ;
+mais une extension désinstallée ne balaie plus rien. Supprimer aussi :
+
+```bash
+# Windows
+rm -rf "$APPDATA/Code/User/globalStorage/claudemanager.claudemanager-vscode"
+# macOS
+rm -rf ~/Library/Application\ Support/Code/User/globalStorage/claudemanager.claudemanager-vscode
+# Linux
+rm -rf ~/.config/Code/User/globalStorage/claudemanager.claudemanager-vscode
+```
+
+Un prompt d'orchestration porte tout le contexte d'un lot : ce n'est pas un fichier temporaire
+comme un autre.
 
 ## Utilisation
 

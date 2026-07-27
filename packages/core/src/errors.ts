@@ -27,6 +27,10 @@
  * est LE NOTRE — le serveur local de l'extension compagnon, arbitre a l'ADR-003 —, il n'est
  * emprunte a personne et aucune mise a jour de l'extension Claude ne peut le changer. Idem
  * pour `PROMPT_EMPTY` et `PROMPT_FILE_UNREADABLE`, qui portent sur ce que l'APPELANT fournit.
+ *
+ * `SEED_SESSION_ID_INVALID` N'Y FIGURE PAS, pour un motif encore plus etroit : il juge une
+ * valeur que NOUS produisons. Le CLI accepte l'uuid qu'on lui impose (D3) ; ce code ne dit rien
+ * de ce qu'il accepte, il dit que la valeur qu'on s'apprete a lui donner n'en est pas un.
  */
 
 export const ERROR_CODES = {
@@ -48,6 +52,17 @@ export const ERROR_CODES = {
   PROMPT_FILE_UNWRITABLE: 'PROMPT_FILE_UNWRITABLE',
   /** Le shell du terminal masque n'a jamais engendre le processus `claude` du tour 1. */
   SEED_PROCESS_NOT_STARTED: 'SEED_PROCESS_NOT_STARTED',
+  /**
+   * L'identifiant de session a amorcer n'a pas la forme d'un uuid.
+   *
+   * ATTEIGNABLE, ET C'EST CE QUI LE DISTINGUE DU CODE SUPPRIME AU VOLET 1 : l'identifiant est
+   * genere par `randomUUID()` en production, mais sa fabrique est INJECTEE — et le jour ou un
+   * increment acceptera un identifiant de l'appelant (reprise de session, lot D), c'est cette
+   * garde qui repondra. Elle se declenche AVANT que la valeur ne serve a deux choses qui ne
+   * pardonnent pas : nommer un fichier dans le repertoire de transit du prompt, et s'ecrire
+   * dans la ligne PowerShell du terminal d'amorcage.
+   */
+  SEED_SESSION_ID_INVALID: 'SEED_SESSION_ID_INVALID',
   /** Le processus a demarre, mais aucun transcript n'a ete ecrit : le tour 1 n'a pas eu lieu. */
   SEED_TRANSCRIPT_NOT_FOUND: 'SEED_TRANSCRIPT_NOT_FOUND',
   /** La fenetre cible n'a aucun dossier de travail : rien ne peut y servir de `cwd`. */
@@ -147,6 +162,8 @@ const REMEDIATIONS: Readonly<Record<ErrorCode, string>> = {
     "Le fichier transitoire portant le prompt n'a pas pu etre ecrit dans le repertoire de stockage de l'extension. Verifier les droits d'ecriture de ce repertoire et qu'aucun antivirus ne le verrouille.",
   [ERROR_CODES.SEED_PROCESS_NOT_STARTED]:
     "Le shell du terminal masque n'a engendre aucun processus : le tour 1 n'a pas demarre. Causes connues, dans cet ordre : une des deux portes du CLI attend une reponse (onboarding du CLI interactif, ou 'Quick safety check' du dossier), le binaire claude a refuse de demarrer, ou le shell n'a pas execute la ligne. LE GESTE QUI LEVE LES DEUX PORTES : lancer claude UNE FOIS A LA MAIN dans ce dossier, accorder l'autorisation et approuver le dossier — la confiance se pose PAR REPERTOIRE et ne s'herite jamais d'un dossier voisin. La verification automatique de ces presupposes viendra avec cmgr doctor (lot D) : elle n'est PAS ENCORE LIVREE, cette commande n'existe pas aujourd'hui.",
+  [ERROR_CODES.SEED_SESSION_ID_INVALID]:
+    "L'identifiant de session a amorcer n'a pas la forme d'un uuid. Aucun terminal n'a ete cree et aucun fichier n'a ete ecrit : le refus est ANTERIEUR a tout effet de bord. En production cet identifiant est genere par le produit lui-meme — le rencontrer signale que la fabrique d'identifiants a ete remplacee, ou qu'un identifiant venu de l'appelant a ete accepte quelque part en amont. Le detail porte la LONGUEUR de la valeur refusee, jamais la valeur elle-meme.",
   [ERROR_CODES.SEED_TRANSCRIPT_NOT_FOUND]:
     "Le processus du tour 1 a demarre, mais aucun transcript <sessionId>.jsonl n'est apparu sous les racines de projets du CLI : le tour n'a PAS eu lieu, et le terminal a ete supprime. L'IDENTIFIANT DE LA SESSION DEMANDEE EST DANS LES DETAILS (sessionId) : un claude a bien tourne sous ce nom, et s'il attendait derriere une porte, un transcript peut encore apparaitre sous ce meme nom apres coup. Le verifier AVANT de relancer — relancer a l'aveugle ouvrirait une seconde conversation. Trois causes, dans cet ordre de vraisemblance, toutes SILENCIEUSES cote CLI : (1) une porte du CLI attend une reponse dans ce repertoire — la confiance du dossier ('Quick safety check') se pose PAR REPERTOIRE et n'a jamais ete accordee pour celui-ci, cas MESURE le 2026-07-26 sur un dossier neuf ; (2) le CLI s'est cru agent enfant non interactif et a coupe la sauvegarde du transcript (contamination de l'environnement, voir docs/compatibilite.md) ; (3) la racine de configuration du CLI a change (CLAUDE_CONFIG_DIR, D17). LE GESTE QUI LEVE LA CAUSE (1), LA PLUS FREQUENTE : lancer claude UNE FOIS A LA MAIN dans ce dossier, accorder l'autorisation et approuver le dossier. La verification automatique de ces presupposes viendra avec cmgr doctor (lot D) : elle n'est PAS ENCORE LIVREE, cette commande n'existe pas aujourd'hui.",
   [ERROR_CODES.WORKSPACE_FOLDER_MISSING]:

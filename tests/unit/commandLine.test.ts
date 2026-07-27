@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { ERROR_CODES, isClaudeManagerError } from '../../packages/core/src/index.js';
+// PRIS A LEUR MODULE, ET PLUS AU CONTRAT (V2-12) : ces quatre-la n'avaient aucun consommateur
+// hors d'ici. Les exporter depuis `index.ts` en faisait la surface publique du coeur — et,
+// par le `export *` de `packages/vscode/src/core.ts`, celle de l'extension.
 import {
   assertCommandLineFits,
   COMMAND_LINE_SAFETY_MARGIN,
-  ERROR_CODES,
-  isClaudeManagerError,
   measureCommandLineBudget,
   quotedArgumentCost,
   WINDOWS_COMMAND_LINE_LIMIT,
   type CommandLineDraft,
-} from '../../packages/core/src/index.js';
+} from '../../packages/core/src/commandLine.js';
 
 /**
  * LA GARDE DE PLAFOND, DES DEUX COTES DE LA LIMITE.

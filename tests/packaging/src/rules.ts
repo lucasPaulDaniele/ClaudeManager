@@ -33,6 +33,33 @@ export interface ArchiveSpec {
   readonly root: string;
   /** Entrees tolerees hors du prefixe — les metadonnees que le format impose. */
   readonly metadata: readonly string[];
+  /**
+   * Prefixes sous lesquels TOUTE entree est legitime — les racines COMPILEES, et elles seules.
+   *
+   * Leur contenu est produit par `tsc` : l'enumerer entree par entree reviendrait a relever le
+   * decompte du jour, ce que ce fichier refuse deja par ailleurs (voir `populated`).
+   */
+  readonly compiled: readonly string[];
+  /**
+   * LA LISTE BLANCHE : l'ensemble EXHAUSTIF des entrees attendues hors des racines compilees.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * POURQUOI UNE LISTE BLANCHE PLUTOT QU'UN ONZIEME MOTIF INTERDIT (V2-6). `.vscodeignore` est
+   * une DENYLIST : elle est muette sur ce qui n'existe pas encore. Un fichier de mesure depose
+   * demain dans `packages/vscode/` — `debug.log`, un transcript capture, un `.env` — passe
+   * TOUS les motifs de `FORBIDDEN`, vit sous le bon prefixe, et part dans l'archive. Le
+   * controle croise par `vsce ls` ne le rattrape pas : il est TAUTOLOGIQUE pour ce cas, les
+   * deux cotes derivant du meme repertoire.
+   *
+   * Le tarball npm, lui, etait deja protege PAR CONSTRUCTION (`files: [...]`). L'asymetrie
+   * etait le defaut ; les deux artefacts du jour, eux, sont propres. C'est la garde de DEMAIN
+   * qui manquait.
+   *
+   * Un fichier legitime ajoute plus tard se declare ICI, en une ligne. Un illegitime est
+   * refuse par defaut — et c'est le sens de la bascule : le silence ne vaut plus accord.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  readonly declared: readonly string[];
   /** Chemins exacts sans lesquels l'artefact ne fonctionne pas. */
   readonly required: readonly string[];
   /** Repertoires devant porter au moins `min` entrees. */
@@ -129,6 +156,20 @@ export function inspectArchive(
       if (rule.hit(entry)) violations.push({ entry, why: rule.why });
     }
 
+    // LA LISTE BLANCHE, appliquee a tout ce qui ne vit pas sous une racine compilee. Ce que
+    // `FORBIDDEN` ne connait pas, elle le refuse quand meme : c'est exactement ce qu'une
+    // denylist ne sait pas faire.
+    if (
+      !spec.compiled.some((prefix) => entry.startsWith(prefix)) &&
+      !spec.declared.includes(entry) &&
+      !spec.metadata.includes(entry)
+    ) {
+      violations.push({
+        entry,
+        why: `entree NON DECLAREE hors des racines compilees — la declarer dans « ${spec.label} » si elle est legitime`,
+      });
+    }
+
     if (entry.endsWith(`/${FORMAT_MARKER}`)) {
       violations.push({
         entry,
@@ -174,6 +215,10 @@ export const VSIX_SPEC: ArchiveSpec = {
   root: 'extension/',
   // Imposees par le format VSIX lui-meme, et generees par `vsce` : elles ne sont pas a nous.
   metadata: ['extension.vsixmanifest', '[Content_Types].xml'],
+  compiled: ['extension/dist/'],
+  // `LICENSE.txt` et `readme.md` portent bien ces noms-la : `vsce` RENOMME les deux en
+  // empaquetant (`LICENSE` -> `LICENSE.txt`, `README.md` -> minuscules), mesure le 2026-07-26.
+  declared: ['extension/package.json', 'extension/LICENSE.txt', 'extension/readme.md'],
   required: [
     'extension/package.json',
     // `main` du manifeste. C'est le seul fichier dont l'absence est fatale AU CHARGEMENT.
@@ -199,6 +244,11 @@ export const CLI_TARBALL_SPEC: ArchiveSpec = {
   label: 'tarball npm de la CLI',
   root: 'package/',
   metadata: [],
+  compiled: ['package/dist/'],
+  // `files` d'npm protege deja ce tarball par construction ; la liste blanche est redite ici
+  // pour que la REGLE soit la meme des deux cotes — une garde qui depend du format d'archive
+  // se relacherait le jour ou l'un des deux formats change de mecanisme d'inclusion.
+  declared: ['package/package.json'],
   required: [
     'package/package.json',
     // `bin.cmgr` du manifeste.

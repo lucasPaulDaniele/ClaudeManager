@@ -10,6 +10,7 @@ import {
 import {
   openConversation,
   serializeOpenings,
+  sweepAbandonedPrompts,
   type ClaudeExtensionHandle,
   type EditorPort,
   type HiddenTerminal,
@@ -97,7 +98,7 @@ interface RecordedTerminal {
 }
 
 interface HarnessOptions {
-  readonly extension?: 'missing' | 'inactive' | 'activate-throws' | 'active';
+  readonly extension?: 'missing' | 'inactive' | 'activate-throws' | 'activate-hangs' | 'active';
   readonly commands?: readonly string[];
   /** Onglets rendus a chaque releve — le dernier element est repete quand la liste s epuise. */
   readonly tabs?: readonly (readonly PanelTabLike[])[];
@@ -107,8 +108,38 @@ interface HarnessOptions {
   /** N'ecrit AUCUN executable dans le PATH simule. */
   readonly withoutClaude?: boolean;
   readonly withoutShell?: boolean;
-  /** Le pty est deja mort : `processId` ne se resout JAMAIS (ecueil ADR-002 n.5). */
+  /**
+   * LE PTY EST DEJA MORT : `processId` NE SE RESOUT JAMAIS (ecueil ADR-002 n.5).
+   *
+   * `new Promise(() => {})`, ET RIEN D'AUTRE. Ce double se resolvait en `undefined` — ce qui
+   * eprouvait la branche `=== undefined` sous un nom qui annoncait l'ecueil, si bien que le cas
+   * REEL n'etait couvert par rien. Les deux ne decrivent pas le meme defaut : `undefined` est
+   * une reponse, l'absence de reponse n'en est pas une. Un `await` non borne ne distingue que
+   * la premiere.
+   */
   readonly deadPty?: boolean;
+  /**
+   * L'editeur REPOND, et sa reponse est `undefined` — il n'a pas de pid a donner.
+   *
+   * Distinct de `deadPty` a dessein : c'est l'autre moitie de ce que l'ancien double
+   * confondait, et elle merite son propre cas.
+   */
+  readonly unresolvedShellPid?: boolean;
+  /**
+   * `dispose()` JETTE. Ce n'est pas une bizarrerie de laboratoire : le port est implemente par
+   * `terminal.dispose()` de l'editeur, qui n'offre aucune garantie de ne pas lever.
+   */
+  readonly disposeThrows?: boolean;
+  /**
+   * Un TIERS remplace le fichier de prompt par un repertoire juste apres l'envoi de la ligne.
+   *
+   * C'est la forme reproductible de ce que la remediation de `PROMPT_FILE_UNWRITABLE` decrit
+   * deja — un antivirus qui tient le handle : le nettoyage du `finally` echoue sur un fichier
+   * qui existait pourtant a l'ecriture.
+   */
+  readonly sabotagePromptFileOnSend?: boolean;
+  /** L'identifiant que la fabrique injectee rend — pour eprouver la garde de forme. */
+  readonly sessionId?: string;
   /** Tables rendues successivement ; la derniere est repetee quand la liste s epuise. */
   readonly processTables?: readonly ProcessSnapshot[];
   /**
@@ -121,8 +152,10 @@ interface HarnessOptions {
    * patienterait pas — celui d'avant ce correctif — ne le verrait jamais.
    *
    * Le compte est GLOBAL : `awaitSeedProcess` et l'attachement consomment aussi des attentes.
-   * Au cas nominal ils n'en consomment aucune (le processus est trouve a la premiere lecture,
-   * l'onglet au premier sondage), d'ou les valeurs par defaut ; les tests qui font patienter
+   * Au cas nominal, la resolution du pid du shell en consomme UNE — la course qui la borne
+   * (V2-1) est ecrite avec l'attente injectee, et la promesse de l'editeur gagne des le premier
+   * echelon ; le reste n'en consomme aucune (le processus est trouve a la premiere lecture,
+   * l'onglet au premier sondage). D'ou les valeurs par defaut ; les tests qui font patienter
    * ces etapes passent leurs propres chiffres.
    * ─────────────────────────────────────────────────────────────────────────────────────────
    */
@@ -186,10 +219,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const wait = (): Promise<void> => {
     waits += 1;
     if (options.withoutTranscript !== true) {
-      if (waits === (options.transcriptAppearsAfterWaits ?? 1)) {
+      if (waits === (options.transcriptAppearsAfterWaits ?? 2)) {
         fs.writeFileSync(transcriptFile, TRANSCRIPT_AT_APPEARANCE, 'utf8');
       }
-      if (waits === (options.transcriptGrowsAfterWaits ?? 2)) {
+      if (waits === (options.transcriptGrowsAfterWaits ?? 3)) {
         fs.appendFileSync(transcriptFile, TURN_OUTPUT, 'utf8');
       }
     }
@@ -203,6 +236,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     activate: async (): Promise<void> => {
       trace.calls.push('activate');
       if (extensionState === 'activate-throws') throw Object.assign(new Error('boom'), { code: 'EBOOM' });
+      // NE REND JAMAIS LA MAIN : `activate()` est une promesse de l'EDITEUR, rien ne garantit
+      // qu'elle se regle. Non bornee, elle bloque la file d'ouverture de la fenetre pour
+      // toujours — meme defaut que le pid du shell, un etage plus haut.
+      if (extensionState === 'activate-hangs') await new Promise<void>(() => undefined);
       // `inactive` : `activate()` rend la main SANS activer — le cas qu'on doit constater.
     },
   };
@@ -229,14 +266,25 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         sendText: (line) => {
           trace.calls.push('sendText');
           trace.sent.push(line);
+          if (options.sabotagePromptFileOnSend === true) {
+            const file = path.join(promptDirectory, `${SESSION_ID}.prompt.txt`);
+            fs.rmSync(file, { force: true });
+            fs.mkdirSync(file, { recursive: true });
+          }
         },
         dispose: () => {
           trace.calls.push('dispose');
           // RELEVE ICI, ET NULLE PART AILLEURS : c'est cet instant qui tue le tour 1.
           trace.transcriptAtDispose = lookAtTranscript(transcriptFile);
           recorded.disposed = true;
+          if (options.disposeThrows === true) throw new Error('le pty ne repond plus');
         },
-        processId: () => Promise.resolve(options.deadPty === true ? undefined : SHELL_PID),
+        processId: () => {
+          // JAMAIS RESOLUE, jamais rejetee : l'ecueil ADR-002 n.5, tel quel. Un `await` sur
+          // cette promesse ne rend la main a personne.
+          if (options.deadPty === true) return new Promise<number | undefined>(() => undefined);
+          return Promise.resolve(options.unresolvedShellPid === true ? undefined : SHELL_PID);
+        },
       };
     },
     listPanelTabs: () => {
@@ -268,7 +316,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
           // patience du minuteur.
           wait,
           transcriptProjectRoots: [transcriptRoot],
-          newSessionId: () => SESSION_ID,
+          newSessionId: () => options.sessionId ?? SESSION_ID,
           readProcessTable: () => {
             const tables = options.processTables ?? [tableWithSeed()];
             const snapshot = tables[Math.min(tableReads, tables.length - 1)] ?? tableWithSeed();
@@ -334,6 +382,22 @@ describe('etape 2 — les TROIS causes, et pourquoi AUCUNE ne peut basculer en V
     expect(harness.trace.calls).toEqual(['activate']);
   });
 
+  it('activation qui NE REND JAMAIS LA MAIN — bornee, et nommee (V2-10)', async () => {
+    // Le meme defaut que le pid du shell, un etage plus haut : un `await` sur une promesse de
+    // l'editeur que rien n'oblige a se regler. Ici aucun terminal n'existe et aucun prompt
+    // n'est ecrit — rien ne fuit —, mais la file d'ouverture de la fenetre reste bloquee pour
+    // toujours, et l'appelant abandonne a 300 s sur un `WINDOW_UNREACHABLE` qui designe la
+    // mauvaise cause.
+    const harness = makeHarness({ extension: 'activate-hangs' });
+
+    const error = await refusal(harness);
+
+    expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.CLAUDE_EXTENSION_INACTIVE);
+    expect(isClaudeManagerError(error) && error.details).toMatchObject({ waitedMs: 10_000 });
+    // L'inventaire n'est jamais interroge : on n'est pas alle plus loin.
+    expect(harness.trace.calls).toEqual(['activate']);
+  });
+
   it('extension qui rend la main SANS s activer — constate, jamais suppose', async () => {
     const harness = makeHarness({ extension: 'inactive' });
 
@@ -378,9 +442,28 @@ describe('etapes 3 a 6 — la voie nominale', () => {
     expect(result).toMatchObject({ ok: true, mode: 'seeded', extHostPid: 11172, humanActionRequired: false });
     const spec = harness.trace.terminals[0]?.spec;
     expect(spec?.shellPath).toBe(path.join(harness.binDirectory, 'pwsh.exe'));
-    expect(spec?.shellArgs).toEqual(['-NoLogo']);
+    expect(spec?.shellArgs).toEqual(['-NoLogo', '-NoProfile']);
     // LE `cwd` EST LE WORKSPACE : c'est ce qui rend le piege n.3 impossible par construction.
     expect(spec?.cwd).toBe(harness.editor.readWorkspace().workspaceFolders[0]);
+  });
+
+  it('lance le shell SANS PROFIL — un profil defait la neutralisation qu on vient de faire', async () => {
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // LE PIEGE MAJEUR DU CHANTIER, PAR UNE VOIE QUE RIEN NE SURVEILLAIT (V2-3).
+    // `neutralizedTerminalEnvironment` supprime les variables heritees A LA CREATION du
+    // terminal ; un profil PowerShell, lui, s'execute APRES, avant la ligne d'amorcage. Un
+    // profil qui pose `$env:CLAUDE_*` les REINTRODUIT — et le `claude` lance se declare agent
+    // enfant non interactif, puis coupe la sauvegarde de son transcript, SILENCIEUSEMENT.
+    //
+    // Second effet, de diagnostic : `awaitSeedProcess` retient N'IMPORTE QUEL enfant du shell.
+    // Un profil qui lance `git` ou `oh-my-posh` satisfait la condition avant que `claude`
+    // n'existe.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    const harness = makeHarness();
+
+    await harness.open('x');
+
+    expect(harness.trace.terminals[0]?.spec.shellArgs).toContain('-NoProfile');
   });
 
   it('neutralise l environnement herite — `null`, jamais autre chose', async () => {
@@ -514,10 +597,11 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
   it('patiente tant que le shell n a rien engendre, puis repart des qu il l a fait', async () => {
     const harness = makeHarness({
       processTables: [tableWithoutSeed(), tableWithoutSeed(), tableWithSeed()],
-      // DEUX ATTENTES SONT CONSOMMEES ICI, avant meme que le transcript ne soit attendu : le
-      // compte des attentes est global, et le decaler est plus honnete que de le cacher.
-      transcriptAppearsAfterWaits: 3,
-      transcriptGrowsAfterWaits: 4,
+      // TROIS ATTENTES SONT CONSOMMEES ICI, avant meme que le transcript ne soit attendu — une
+      // pour le pid du shell, deux pour les tables sans enfant. Le compte des attentes est
+      // global, et le decaler est plus honnete que de le cacher.
+      transcriptAppearsAfterWaits: 4,
+      transcriptGrowsAfterWaits: 5,
     });
 
     const result = await harness.open('x');
@@ -542,13 +626,54 @@ describe('etape 5 bis — le tour 1 a REELLEMENT demarre (defaut mesure le 2026-
     expect(harness.trace.terminals[0]?.disposed).toBe(true);
   });
 
-  it('NOMME l echec quand le pty est deja mort — `processId` ne se resout jamais', async () => {
-    // Ecueil ADR-002 n.5 : l'attendre sans borne bloquerait indefiniment.
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LE GARDE-FOU DE V2-1, ET IL SE RECONNAIT A CE QU'IL PEND SUR LE CODE D'AVANT.
+   *
+   * CE QUI ETAIT CASSE : `const shellPid = await terminal.processId();` n'etait borne par RIEN.
+   * Le commentaire qui le precedait annoncait une course contre l'echelle des tentatives — cette
+   * course n'etait pas ecrite : la boucle `for` ne demarrait qu'APRES la resolution de cet
+   * `await`. Et l'adaptateur reel propage le thenable sans le borner (`extension.ts` :
+   * `Promise.resolve(terminal.processId)` ADOPTE un thenable qui ne se regle jamais).
+   *
+   * CE QUE CA PRODUISAIT : la route pend sans borne, donc le `finally` n'est JAMAIS atteint —
+   * terminal masque non supprime, fichier de prompt laisse en clair sur le disque —, et
+   * `serializeOpenings` etant une file d'un rang, plus aucune ouverture n'est possible dans
+   * cette fenetre. Cote client, l'abandon a 300 s sort en `WINDOW_UNREACHABLE`, qui designe la
+   * mauvaise cause.
+   *
+   * PREUVE DU FAILS-BEFORE : joue contre le `conversations.ts` d'avant le correctif, ce test ne
+   * FAILLE PAS — il PEND, et vitest l'interrompt au bout de son delai. C'est la forme meme du
+   * defaut : un test qui echoue par timeout est un test qui a observe une attente non bornee.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('BORNE l attente du pid du shell — un pty mort ne resout JAMAIS `processId`', async () => {
     const harness = makeHarness({ deadPty: true });
 
     const error = await refusal(harness);
 
     expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.SEED_PROCESS_NOT_STARTED);
+    // L'attente est bornee, et le detail le DIT : sans pid, la table n'est jamais interrogee.
+    expect(isClaudeManagerError(error) && error.details).toMatchObject({
+      shellPid: 'never-settled',
+      waitedMs: 2_000,
+    });
+    expect(harness.trace.calls).not.toContain('readProcessTable');
+    // Le terminal est supprime et le prompt efface : c'est precisement ce que l'attente non
+    // bornee empechait, le `finally` n'etant jamais atteint.
+    expect(harness.trace.terminals[0]?.disposed).toBe(true);
+    expect(fs.readdirSync(harness.promptDirectory)).toEqual([]);
+  });
+
+  it('NOMME l echec quand l editeur repond `undefined` — une reponse, pas une absence', async () => {
+    // L'AUTRE MOITIE, et elle est distincte : ici l'editeur a repondu. Le code de sortie est le
+    // meme, le detail ne l'est pas — c'est lui qui separe les deux diagnostics.
+    const harness = makeHarness({ unresolvedShellPid: true });
+
+    const error = await refusal(harness);
+
+    expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.SEED_PROCESS_NOT_STARTED);
+    expect(isClaudeManagerError(error) && error.details).toMatchObject({ shellPid: 'undefined' });
     expect(harness.trace.calls).not.toContain('readProcessTable');
   });
 
@@ -696,7 +821,7 @@ describe('etape 6 — LE TOUR 1 A EU LIEU (defaut de recette du 2026-07-26)', ()
     // NI ERREUR NI SILENCE : le tour est ENREGISTRE, seule sa sortie n'est pas retombee dans le
     // temps accorde. Refuser ici reviendrait a rejeter une conversation ouverte parce que le
     // service a ete lent.
-    const harness = makeHarness({ transcriptAppearsAfterWaits: 1, transcriptGrowsAfterWaits: 0 });
+    const harness = makeHarness({ transcriptAppearsAfterWaits: 2, transcriptGrowsAfterWaits: 0 });
 
     const result = await harness.open('x');
 
@@ -779,6 +904,45 @@ describe('etape 7 — le terminal disparait SUR TOUS LES CHEMINS', () => {
 
     // Une erreur qui n'est pas nommee remonte telle quelle — mais le terminal est supprime.
     expect(harness.trace.terminals[0]?.disposed).toBe(true);
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * ET LE NETTOYAGE NE PEUT PAS RENVERSER LE RESULTAT (V2-2).
+   *
+   * Une exception levee dans un `finally` REMPLACE la valeur de retour. Une ouverture
+   * parfaitement reussie — tour 1 joue, transcript sur le disque, panneau attache — ressortait
+   * alors en `500 UNEXPECTED_FAILURE` : le contraire exact de ce que C3-FIX venait de
+   * corriger, et pour un incident qui ne concerne QUE de l'hygiene.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('un `dispose()` qui JETTE ne transforme pas une ouverture reussie en echec', async () => {
+    const harness = makeHarness({ disposeThrows: true });
+
+    const result = await harness.open('x');
+
+    expect(result).toMatchObject({ ok: true, mode: 'seeded', firstTurnVerified: true });
+    expect(harness.trace.lines.some((line) => line.includes('could not dispose'))).toBe(true);
+    // ET LE FICHIER DE PROMPT EST EFFACE QUAND MEME : un jet de `dispose()` court-circuitait
+    // le `rmSync` qui le suit, laissant le prompt EN CLAIR sur le disque.
+    expect(fs.readdirSync(harness.promptDirectory)).toEqual([]);
+  });
+
+  it('un effacement de prompt qui JETTE ne renverse rien non plus, et se DIT', async () => {
+    // `force: true` couvre `ENOENT` — le cas nominal, la ligne du shell ayant deja efface le
+    // fichier — mais PAS `EPERM`/`EBUSY` : un antivirus qui tient encore le handle, c'est-a-dire
+    // le scenario que la remediation de `PROMPT_FILE_UNWRITABLE` cite deja. Ici, la meme
+    // defaillance est provoquee par un tiers qui REMPLACE le fichier par un repertoire entre
+    // l'ecriture et le nettoyage — `rmSync` sans `recursive` le refuse. Meme piege que celui
+    // qu'eprouve deja le balayage, pose au moment ou le fichier existe vraiment.
+    const harness = makeHarness({ sabotagePromptFileOnSend: true });
+
+    const result = await harness.open('x');
+
+    expect(result).toMatchObject({ ok: true, mode: 'seeded' });
+    expect(
+      harness.trace.lines.some((line) => line.includes('could not remove the transient prompt file'))
+    ).toBe(true);
   });
 });
 
@@ -966,6 +1130,63 @@ describe('ce que le mecanisme prend du PROCESSUS quand on ne lui dit rien', () =
   });
 });
 
+describe('etape 0 — l identifiant de session est CONFORME, avant tout effet de bord', () => {
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * V2-5. Le `sessionId` etait la SEULE interpolation non citee de la ligne PowerShell. Aucun
+   * chemin d'exploitation n'existait — la valeur vient de `randomUUID()` —, mais RIEN NE
+   * L'IMPOSAIT : ni type, ni assertion, ni test, et la fabrique est INJECTEE. La meme valeur
+   * nomme aussi un FICHIER dans le repertoire de transit du prompt.
+   *
+   * Ces tests sont ce qui rend la garde opposable : ils passent par la fabrique injectee,
+   * c'est-a-dire par la porte meme qu'un increment de reprise de session emprunterait.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  const refused: ReadonlyArray<readonly [string, string]> = [
+    ['une injection PowerShell', "x'; & calc.exe; '"],
+    ['une remontee de chemin', '../../../evade'],
+    ['un separateur de chemin', 'aaaaaaaa/bbbb/cccc'],
+    ['une chaine vide', ''],
+    ['un uuid tronque', 'aaaaaaaa-bbbb-cccc-dddd'],
+  ];
+
+  for (const [label, sessionId] of refused) {
+    it(`refuse ${label} — et AVANT le moindre acces a l editeur`, async () => {
+      const harness = makeHarness({ sessionId });
+
+      const error = await refusal(harness);
+
+      expect(isClaudeManagerError(error) && error.code).toBe(ERROR_CODES.SEED_SESSION_ID_INVALID);
+      // NI terminal, NI fichier, NI commande : le refus precede tout.
+      expect(harness.trace.calls).toEqual([]);
+      expect(harness.trace.terminals).toEqual([]);
+      expect(fs.existsSync(harness.promptDirectory)).toBe(false);
+    });
+  }
+
+  it('ne rend PAS la valeur refusee, seulement sa longueur', async () => {
+    // Une valeur dont on ne sait pas d'ou elle vient est exactement celle qu'il ne faut pas
+    // recopier dans une sortie qui part vers un journal et vers une PR d'un depot public.
+    const harness = makeHarness({ sessionId: "x'; & calc.exe; '" });
+
+    const error = await refusal(harness);
+
+    const serialized = JSON.stringify(isClaudeManagerError(error) ? error.toJSON() : {});
+    expect(serialized).not.toContain('calc.exe');
+    expect(isClaudeManagerError(error) && error.details).toMatchObject({ length: 17 });
+  });
+
+  it('accepte un uuid en MAJUSCULES — la casse n est pas un critere de surete', async () => {
+    const harness = makeHarness({ sessionId: SESSION_ID.toUpperCase() });
+
+    // Le transcript est ecrit sous le nom en minuscules par le harnais : ce qu'on eprouve ici
+    // est le passage de la garde, pas la suite du mecanisme.
+    const error = await refusal(harness);
+
+    expect(isClaudeManagerError(error) && error.code).not.toBe(ERROR_CODES.SEED_SESSION_ID_INVALID);
+  });
+});
+
 describe('hygiene et concurrence', () => {
   it('refuse par une erreur NOMMEE quand le prompt ne peut pas etre ecrit', async () => {
     const harness = makeHarness();
@@ -1018,6 +1239,68 @@ describe('hygiene et concurrence', () => {
     expect(fs.existsSync(recent)).toBe(true);
     // Un fichier hors convention n'a pas ete ecrit par nous : on n'y touche pas.
     expect(fs.existsSync(keptFile)).toBe(true);
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LE BALAYAGE, EPROUVE HORS D'UNE OUVERTURE — parce qu'il a desormais un SECOND APPELANT.
+   *
+   * V2-4 : il n'etait appele que depuis `openConversation`. Un prompt laisse en clair par un
+   * host tue entre l'ecriture du fichier et l'envoi de la ligne y restait donc indefiniment
+   * dans une fenetre qui n'ouvre plus rien. `activate()` l'appelle maintenant — un host qui
+   * demarre prouve que le precedent est mort —, et ce site d'appel-la n'est pas mesurable
+   * (`extension.ts` est exclu nommement de la couverture). C'est donc la FONCTION qu'on
+   * eprouve directement, telle que l'activation l'appelle.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  describe('le balayage des prompts abandonnes, appele tel que l activation l appelle', () => {
+    function promptDir(): string {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cmgr-sweep-'));
+      temporaries.push(root);
+      return path.join(root, 'prompts');
+    }
+
+    it('efface ce qui a passe l age, garde le reste, et DIT ce qu il a efface', () => {
+      const directory = promptDir();
+      fs.mkdirSync(directory, { recursive: true });
+      const abandoned = path.join(directory, 'ancienne.prompt.txt');
+      const inFlight = path.join(directory, 'en-cours.prompt.txt');
+      const foreign = path.join(directory, 'pas-a-nous.txt');
+      for (const file of [abandoned, inFlight, foreign]) fs.writeFileSync(file, 'prompt', 'utf8');
+      const ancient = Date.now() - 7_200_000;
+      fs.utimesSync(abandoned, ancient / 1000, ancient / 1000);
+      const lines: string[] = [];
+
+      sweepAbandonedPrompts(directory, Date.now(), (message) => lines.push(message));
+
+      expect(fs.existsSync(abandoned)).toBe(false);
+      // L'AGE RESTE EXIGE MEME A L'ACTIVATION : ce repertoire est le `globalStorage` de
+      // l'EXTENSION, partage par toutes les fenetres du poste. « Le host precedent est mort »
+      // ne dit rien de l'ouverture qu'une AUTRE fenetre joue peut-etre a cet instant.
+      expect(fs.existsSync(inFlight)).toBe(true);
+      expect(fs.existsSync(foreign)).toBe(true);
+      expect(lines).toContain('swept 1 abandoned prompt file(s)');
+    });
+
+    it('ne dit RIEN quand il n y a rien a effacer', () => {
+      const directory = promptDir();
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, 'en-cours.prompt.txt'), 'prompt', 'utf8');
+      const lines: string[] = [];
+
+      sweepAbandonedPrompts(directory, Date.now(), (message) => lines.push(message));
+
+      expect(lines).toEqual([]);
+    });
+
+    it('ne leve JAMAIS sur un repertoire absent — l etat nominal d une fenetre neuve', () => {
+      const lines: string[] = [];
+
+      expect(() =>
+        sweepAbandonedPrompts(promptDir(), Date.now(), (message) => lines.push(message))
+      ).not.toThrow();
+      expect(lines).toEqual([]);
+    });
   });
 
   it('serialise les ouvertures : deux diffs d onglets concurrents se voleraient leur panneau', async () => {

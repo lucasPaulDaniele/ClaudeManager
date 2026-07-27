@@ -115,6 +115,29 @@ export function quotePowerShellLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/**
+ * LA FORME D'UN IDENTIFIANT DE SESSION — la seule que le mecanisme accepte d'amorcer.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * POURQUOI UNE GARDE POUR UNE VALEUR QUE NOUS GENERONS (V2-5). Le `sessionId` etait la SEULE
+ * interpolation NON CITEE de la ligne PowerShell — le binaire et le fichier de prompt passent
+ * tous deux par `quotePowerShellLiteral`. Aucun chemin d'exploitation n'existait : la valeur
+ * vient de `randomUUID()`. Mais RIEN NE L'IMPOSAIT — ni type, ni assertion, ni test —, et la
+ * fabrique d'identifiants est INJECTEE. Le jour ou un increment accepterait un identifiant de
+ * l'appelant (reprise de session, lot D), cette ligne devenait une injection PowerShell
+ * complete et rien ne l'aurait signale.
+ *
+ * LA MEME VALEUR NOMME AUSSI UN FICHIER — `<sessionId>.prompt.txt`, dans le repertoire de
+ * transit. Un identifiant portant un separateur de chemin ecrirait donc le prompt EN CLAIR
+ * hors de ce repertoire. La garde vaut pour les deux usages, et c'est pourquoi elle est posee
+ * a la SOURCE de l'identifiant plutot qu'a l'entree de cette fonction.
+ *
+ * La citation, elle, est appliquee EN PLUS : deux gardes independantes valent mieux qu'une,
+ * quand la seconde tient a une regex.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+export const SESSION_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface SeedCommandLineDraft {
   /** Chemin absolu du binaire `claude` resolu. */
   readonly claudeBinary: string;
@@ -128,7 +151,7 @@ export interface SeedCommandLineDraft {
  *
  * ```
  * $p = [IO.File]::ReadAllText('<fichier>'); Remove-Item -LiteralPath '<fichier>' -Force;
- * if ($p) { & '<claude>' --session-id <uuid> $p }
+ * if ($p) { & '<claude>' --session-id '<uuid>' $p }
  * ```
  *
  * POURQUOI L2 PLUTOT QUE LE PROMPT ECRIT DANS LA LIGNE (L1), ET CE N'EST PAS LA TAILLE : les
@@ -163,7 +186,12 @@ export function buildSeedCommandLine(draft: SeedCommandLineDraft): string {
   return (
     `$p = [IO.File]::ReadAllText(${file}); ` +
     `Remove-Item -LiteralPath ${file} -Force; ` +
-    `if ($p) { & ${quotePowerShellLiteral(draft.claudeBinary)} --session-id ${draft.sessionId} $p }`
+    // `sessionId` EST CITE COMME LES DEUX AUTRES INTERPOLATIONS. Il ne l'etait pas, et c'etait
+    // la seule exception de cette ligne (V2-5). Un litteral simple ne change RIEN a la valeur
+    // transmise — le CLI recoit le meme uuid —, et il retire la seule voie par laquelle une
+    // valeur non conforme deviendrait du CODE. La garde de forme, elle, est posee a la source.
+    `if ($p) { & ${quotePowerShellLiteral(draft.claudeBinary)} ` +
+      `--session-id ${quotePowerShellLiteral(draft.sessionId)} $p }`
   );
 }
 
@@ -240,6 +268,34 @@ export function claudeBinaryNames(platform: NodeJS.Platform): readonly string[] 
 export function shellNames(platform: NodeJS.Platform): readonly string[] {
   return platform === 'win32' ? ['pwsh.exe'] : ['pwsh'];
 }
+
+/**
+ * LES ARGUMENTS DU SHELL D'AMORCAGE — et `-NoProfile` EN FAIT PARTIE DU MECANISME.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * `-NoProfile` REPARE UNE VOIE PAR LAQUELLE LE PIEGE MAJEUR DU CHANTIER REDEVENAIT
+ * ATTEIGNABLE (V2-3). `neutralizedTerminalEnvironment` supprime les variables heritees A LA
+ * CREATION DU TERMINAL ; un profil PowerShell de l'utilisateur, lui, s'execute APRES, avant
+ * la ligne d'amorcage. Un profil qui pose `$env:CLAUDE_*` — pour n'importe quelle raison :
+ * un alias, un wrapper, une variable de confort — REINTRODUIT donc exactement ce qu'on vient
+ * de neutraliser, et le `claude` lance se declare AGENT ENFANT NON INTERACTIF : il coupe la
+ * sauvegarde de son transcript, SILENCIEUSEMENT. Rien ne surveillait cette voie.
+ *
+ * SECOND EFFET, et il est de diagnostic : `awaitSeedProcess` retient N'IMPORTE QUEL enfant du
+ * shell. Un profil qui lance `git`, `oh-my-posh` ou un gestionnaire de version satisfait la
+ * condition AVANT que `claude` n'existe — l'etape passerait sur le mauvais processus, et
+ * l'erreur nommee qui suit designerait la mauvaise cause. Sans profil, le shell n'a qu'un
+ * enfant : le notre.
+ *
+ * RIEN N'EST NECESSAIRE DU PROFIL : le binaire `claude` et le shell lui-meme sont resolus en
+ * CHEMINS ABSOLUS (`resolveExecutable`), et la ligne n'appelle aucun alias, aucune fonction,
+ * aucun module. Le profil ne pouvait donc qu'ajouter des effets, jamais en fournir un requis.
+ *
+ * `-NoLogo` reste : il supprime la banniere, c'est-a-dire du bruit dans un terminal que
+ * personne ne voit — sans effet sur le mecanisme, mais sans cout non plus.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+export const SEED_SHELL_ARGUMENTS: readonly string[] = ['-NoLogo', '-NoProfile'];
 
 /**
  * Ou chercher le binaire `claude` dans le bundle de l'extension Claude — D16.
