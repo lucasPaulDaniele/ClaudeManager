@@ -39,7 +39,7 @@ Une nouvelle conversation apparaît dans la fenêtre, son premier tour déjà jo
 | Opération | État |
 |---|---|
 | Ouvrir une conversation avec un prompt d'amorçage | ✅ mécanisme **mesuré** — [voie V1](docs/adr/002-ouverture-interactive.md) |
-| Fermer une conversation | ✅ mécanisme **mesuré** — `tabGroups.close` sur l'onglet `claudeVSCodePanel` : c'est le point d'[ADR-001](docs/adr/001-pilotage-des-conversations.md) (§3) que le nouveau mécanisme **conserve** |
+| Fermer une conversation | ✅ **livré et mesuré** — `cmgr conversations` puis `cmgr close <id>`. La fermeture est un **contrat en deux temps** : lister, puis fermer l'onglet dont on peut **prouver** qu'il est celui qu'on a désigné |
 | Cibler la bonne fenêtre parmi plusieurs, même identiques | ✅ mécanisme **mesuré** en configuration adverse — [deux fenêtres, même répertoire physique, même `Code.exe` principal](docs/adr/002-ouverture-interactive.md) |
 | Lire une réponse / attendre la fin d'un tour | 🚧 **conçu, pas encore mesuré** — c'est la condition d'obtention de la réponse du tour 1, et elle relève du lot D |
 | Écrire dans une conversation déjà ouverte | ❌ hors périmètre — [pourquoi](docs/adr/002-ouverture-interactive.md) |
@@ -128,8 +128,8 @@ npm run package:all
 `artifacts/` contient alors exactement deux fichiers :
 
 ```
-artifacts/claudemanager-vscode-0.4.0.vsix    # l'extension compagnon
-artifacts/claudemanager-cli-0.3.0.tgz        # le binaire cmgr
+artifacts/claudemanager-vscode-0.5.0.vsix    # l'extension compagnon
+artifacts/claudemanager-cli-0.4.0.tgz        # le binaire cmgr
 ```
 
 Pour contrôler que ces archives portent bien ce qu'il faut — les **deux** racines compilées,
@@ -142,11 +142,11 @@ npm run verify:packaging
 ### 2. Installer l'extension compagnon
 
 ```bash
-code --install-extension artifacts/claudemanager-vscode-0.4.0.vsix
+code --install-extension artifacts/claudemanager-vscode-0.5.0.vsix
 code --list-extensions --show-versions | grep claudemanager
 ```
 
-La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.4.0`.
+La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.5.0`.
 
 > **⚠️ Une fenêtre DÉJÀ OUVERTE ne prend pas cette installation — ni une première, ni une mise à
 > jour. Il faut une fenêtre NEUVE.** Le seul `activationEvents` de l'extension est
@@ -201,7 +201,7 @@ VSCode l'ignore, il n'est ni chargé ni listé par `code --list-extensions`.
 la version installée est bien celle attendue, puis supprimez le vestige à la main :
 
 ```bash
-code --list-extensions --show-versions | grep claudemanager   # doit dire @0.4.0
+code --list-extensions --show-versions | grep claudemanager   # doit dire @0.5.0
 rm -rf ~/.vscode/extensions/claudemanager.claudemanager-vscode-0.1.0
 ```
 
@@ -211,8 +211,8 @@ discriminant dans le nom de ce répertoire.
 ### 3. Installer la CLI
 
 ```bash
-npm install -g ./artifacts/claudemanager-cli-0.3.0.tgz
-cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.3.0"}
+npm install -g ./artifacts/claudemanager-cli-0.4.0.tgz
+cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.4.0"}
 cmgr windows       # les fenêtres pilotables, jeton masqué
 ```
 
@@ -226,7 +226,8 @@ ce qu'il exécute est dedans.
 | | |
 |---|---|
 | **Précondition — le CLI `claude` doit avoir été autorisé, ET le dossier approuvé** | `cmgr open` joue le tour 1 dans un terminal masqué. Le CLI interactif franchit deux portes avant d'écrire quoi que ce soit : l'**autorisation OAuth**, que seul le propriétaire du compte peut accorder, et la **confiance du dossier** (`Quick safety check…`), posée **par répertoire** et **jamais héritée d'un dossier voisin**. **Mesuré le 2026-07-26** sur une machine dont l'OAuth était accordé : dans un dossier **neuf**, le CLI reste dans son écran d'accueil et n'écrit **aucun** transcript — observé 180 s durant ; dans un dossier déjà approuvé, le même prompt écrit son transcript en **2,5 s**. `cmgr open` ne se laisse plus abuser : il **refuse en nommant** `SEED_TRANSCRIPT_NOT_FOUND` au lieu d'ouvrir un panneau vide. Remède : lancer `claude` **une fois à la main dans ce dossier**, accorder l'autorisation et approuver le dossier. |
-| **Pas de fermeture** | `cmgr close` et `cmgr conversations` ne sont pas livrés (incrément C4). |
+| **Fermer une conversation TUE son processus** | **Mesuré le 2026-07-27** : le `claude.exe` de la conversation meurt avec son onglet. Ce n'est pas une perte de données — le **transcript survit intact**, et une réouverture sur le même `sessionId` retrouve la conversation *et son historique*. Mais c'est un **ordre d'opérations** : pour renouveler une conversation, **ouvrir la neuve d'abord, fermer l'ancienne ensuite**. Une conversation qui fermerait son propre onglet tuerait le processus même qui attend la réponse de `cmgr close`. |
+| **Une poignée de conversation périme** | `cmgr close` exige un `cmgr conversations` **préalable**, dans la même session de fenêtre : aucun onglet Claude ne porte d'identifiant stable, et la fermeture refuse plutôt que de fermer au plus probable. Si l'onglet a bougé ou si son libellé a changé, le refus est nommé (`CONVERSATION_HANDLE_STALE`) et **rien n'est fermé** — relister, puis vérifier que la conversation visée est bien encore là avant de retenter. |
 | **Pas de lecture de réponse** | Le tour 1 est **vérifié** — `firstTurnVerified: true` atteste que le transcript de la session **existe** —, mais son **contenu** n'est pas lu : la réponse elle-même n'est pas restituée. Il faudra le transcript ou le hook `Stop` (lot D, `cmgr open --wait`). |
 | **Pas de `cmgr doctor`** | Le diagnostic des présupposés ci-dessus relève du lot D. En attendant, ils se vérifient à la main.  |
 
@@ -260,29 +261,53 @@ comme un autre.
 
 ### En ligne de commande
 
-**Livré et exécutable aujourd'hui.** `cmgr windows` et `cmgr whoami` sont en **lecture seule** et
-ne font **aucun réseau** ; `cmgr open`, lui, **agit** — il demande à la fenêtre hôte, sur
-`127.0.0.1`, d'ouvrir une conversation. Aucune commande n'écrit dans le registre ni ne le purge.
+**Livré et exécutable aujourd'hui.** `cmgr windows` et `cmgr whoami` ne font **aucun réseau** ;
+`cmgr conversations` en fait, sans aucun effet de bord — les onglets d'une fenêtre ne se lisent que
+*dans* cette fenêtre ; `cmgr open` et `cmgr close`, eux, **agissent** — ils demandent à la fenêtre
+hôte, sur `127.0.0.1`, d'ouvrir ou de fermer une conversation. Aucune commande n'écrit dans le
+registre ni ne le purge.
 
 ```bash
 cmgr windows      # ✅ énumère les fenêtres pilotables, jeton masqué, et restitue tout ce
                   #    qui a été écarté du registre avec son motif
 cmgr whoami       # ✅ résout la fenêtre hôte du processus appelant, par sa chaîne d'ancêtres
+cmgr conversations
+                  # ✅ énumère les conversations ouvertes DANS la fenêtre hôte, chacune avec une
+                  #    **poignée** (`id`), son libellé, sa position. Lecture pure : aucun onglet
+                  #    n'est touché. Une liste vide n'est pas une erreur — code 0.
 cmgr open --prompt-file ./amorce.md
                   # ✅ ouvre une conversation dans la fenêtre hôte, avec un prompt d'amorçage.
                   #    Le canal est **confirmé** par `GET /health` — identité discordante,
                   #    aucune ouverture. La sortie porte `firstTurnVerified: true` quand le
                   #    **transcript de la session existe** — le tour a eu lieu ; la RÉPONSE,
                   #    elle, reste à lire (lot D). Pas de transcript = refus nommé.
+cmgr close <id>   # ✅ ferme UNE conversation — celle que la poignée désigne, et aucune autre.
+                  #    Le succès n'est rendu qu'après avoir **constaté** que l'onglet a quitté
+                  #    `tabGroups`. Le focus n'est jamais emprunté.
 cmgr --help       # ✅ (-h) la description complète, en JSON
 cmgr --version    # ✅ (-v) le nom et la version du binaire, en JSON
 ```
 
+**Fermer se fait en deux temps, et ce n'est pas une commodité.** L'API `vscode.Tab` **ne porte
+aucun identifiant**, et aucun de ses champs n'est stable : le `viewType` est le même pour tous les
+panneaux Claude, le libellé est dérivé du **contenu** de la conversation et change en cours de
+route ([mesuré](docs/compatibilite.md), D24), la position bouge au premier déplacement. La fenêtre
+**synthétise** donc une poignée opaque au moment de lister, retient ce qu'elle a relevé, et
+**refuse** de fermer si l'onglet désigné ne correspond plus.
+
+```bash
+cmgr conversations                    # 1. lister — la sortie porte les poignées
+cmgr close 8d1f4f0e-6d2f-4a63-…       # 2. fermer celle qu'on a choisie
+```
+
+Le prix est un refus (`CONVERSATION_HANDLE_STALE`) quand la conversation a bougé entre les deux ;
+le gain est qu'**aucun onglet n'est jamais fermé sans preuve**. Après un refus : relister, et
+**vérifier que la conversation visée y figure encore** — si elle n'y est plus, elle est déjà
+fermée, et il ne faut surtout pas fermer celle qui a pris sa place.
+
 **Cible, pas encore livré** — chaque ligne renvoie au lot qui la porte :
 
 ```bash
-cmgr close <id>                          # 🚧 lot C — fermer une conversation
-cmgr conversations                       # 🚧 lot C — les conversations ouvertes ici
 cmgr read <sessionId>                    # 🚧 lot D — relire la dernière réponse
 cmgr open --prompt-file ./a.md --wait    # 🚧 lot D — ouvrir, puis attendre la réponse
 cmgr doctor                              # 🚧 lot D — diagnostiquer l'environnement
@@ -344,8 +369,8 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 ```
 packages/core      logique pure — identité, registre, sessions, transcripts
                    (n'importe jamais `vscode` : c'est ce qui la rend testable)
-packages/vscode    extension compagnon — attache et ferme, rien de plus
-packages/cli       binaire `cmgr` — `windows`, `whoami` et `open`
+packages/vscode    extension compagnon — attache, énumère et ferme, rien de plus
+packages/cli       binaire `cmgr` — `windows`, `whoami`, `conversations`, `open`, `close`
 packages/mcp       serveur MCP                             (lot E, pas encore livré)
 ```
 
@@ -358,7 +383,7 @@ Deux règles gouvernent ce découpage : **le cœur ne connaît pas VSCode**, et 
 | **0** | Socle : spike de faisabilité, conventions, CI | ✅ |
 | **A** | Trancher le mécanisme d'ouverture interactive ([ADR-002](docs/adr/002-ouverture-interactive.md)) | ✅ |
 | **B** | Noyau : identité, registre, extension compagnon, CLI de lecture | ⏳ |
-| **C** | Ouverture, **installabilité**, fermeture : mécanisme V1, `cmgr open`, empaquetage VSIX, `cmgr close` | ⏳ |
+| **C** | Ouverture, **installabilité**, fermeture : mécanisme V1, `cmgr open`, empaquetage VSIX, `cmgr conversations` et `cmgr close` | ⏳ |
 | **D** | Observabilité : transcript, hook `Stop`, `cmgr read` / `wait` / `doctor` | ⏳ |
 | **E** | Diffusion : serveur MCP, **E2E multi-fenêtres**, release | ⏳ |
 | **F** | Audits finaux | ⏳ |
