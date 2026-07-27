@@ -45,7 +45,9 @@ import {
 } from './registry.js';
 import {
   startServer,
+  type CloseConversationRoute,
   type HealthPayload,
+  type ListConversationsRoute,
   type OpenConversationRoute,
   type ServerHandle,
 } from './server.js';
@@ -100,13 +102,15 @@ export interface PublisherOptions {
    */
   readonly readWorkspace: () => WorkspaceState;
   /**
-   * Le mecanisme d'ouverture, traverse tel quel jusqu'au serveur.
+   * Les trois routes de conversation, traversees telles quelles jusqu'au serveur.
    *
-   * Il n'est PAS appele ici : ce module porte le cycle de vie de la publication, pas les
-   * effets de bord du produit. Il ne fait que le transmettre a chaque serveur qu'il ouvre —
+   * Elles ne sont PAS appelees ici : ce module porte le cycle de vie de la publication, pas les
+   * effets de bord du produit. Il ne fait que les transmettre a chaque serveur qu'il ouvre —
    * y compris a celui d'une reouverture apres une mort d'ecoute.
    */
   readonly openConversation: OpenConversationRoute;
+  readonly listConversations: ListConversationsRoute;
+  readonly closeConversation: CloseConversationRoute;
   readonly log: (message: string) => void;
   /** Registre par defaut du poste sauf mention contraire — surcharge par les tests. */
   readonly registryDir?: string;
@@ -255,6 +259,8 @@ export class WindowPublisher {
           token: this.options.token,
           health: () => this.health(),
           openConversation: this.options.openConversation,
+          listConversations: this.options.listConversations,
+          closeConversation: this.options.closeConversation,
           onError: (error) => this.options.log(`local server error — ${describe(error)}`),
           onClosed: () => this.handleServerLoss(),
         });

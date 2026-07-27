@@ -87,5 +87,42 @@
         }
       }
     }
+  },
+  "listConversations": {
+    "route": "GET /conversations",
+    "status": 200,
+    "capturedOn": "2026-07-27",
+    "companionVersion": "0.5.0",
+    "note": "Capture C4, vraie fenetre, scenario close-conversation. Les LIBELLES sont ceux des panneaux que LE HARNAIS a crees ('Conversation A', 'Conversation B') : un libelle de vraie conversation est derive de son CONTENU (D24) et n'a rien a faire dans un depot public. Le viewType, lui, est celui que VSCode a REELLEMENT rendu — prefixe, comme sur un vrai panneau Claude.",
+    "body": "{\"ok\":true,\"extHostPid\":22376,\"conversations\":[{\"id\":\"f1c29ec4-6098-4077-a8f9-083ade4df927\",\"label\":\"Conversation A\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbeA\",\"viewColumn\":1,\"indexInGroup\":1,\"isActive\":false},{\"id\":\"b5511483-ea7a-4c72-8abf-d60c6e8fb7ac\",\"label\":\"Conversation B\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbeB\",\"viewColumn\":1,\"indexInGroup\":2,\"isActive\":false}]}"
+  },
+  "listConversationsEmpty": {
+    "route": "GET /conversations",
+    "status": 200,
+    "capturedOn": "2026-07-27",
+    "companionVersion": "0.5.0",
+    "note": "La MEME route apres la fermeture des deux onglets : une liste VIDE, en 200. Elle est conservee parce que ce n'est PAS une erreur, et qu'un client qui la refuserait casserait sur l'etat le plus ordinaire d'une fenetre.",
+    "body": "{\"ok\":true,\"extHostPid\":22376,\"conversations\":[]}"
+  },
+  "closeConversation": {
+    "route": "POST /conversations/close",
+    "status": 200,
+    "capturedOn": "2026-07-27",
+    "companionVersion": "0.5.0",
+    "note": "`editorReportedClosed` est un RELEVE de ce que tabGroups.close a resolu ; la fenetre n'a rendu ce succes qu'apres avoir CONSTATE par re-enumeration que l'onglet avait quitte tabGroups. L'onglet actif etait identique avant et apres (preserveFocus: true).",
+    "body": "{\"ok\":true,\"extHostPid\":22376,\"closed\":{\"id\":\"b5511483-ea7a-4c72-8abf-d60c6e8fb7ac\",\"label\":\"Conversation B\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbeB\",\"viewColumn\":1,\"indexInGroup\":2,\"isActive\":false},\"remaining\":1,\"editorReportedClosed\":true}"
+  },
+  "closeRefusals": {
+    "capturedOn": "2026-07-27",
+    "companionVersion": "0.5.0",
+    "note": "Les corps sont recopies SANS leur champ `remediation`, qui est du texte de plusieurs lignes que le client NE LIT JAMAIS : il relit la remediation dans sa propre table (ClaudeManagerError). Ce qui fait contrat ici est `error` et `details` — et `details` ne porte que des NOMBRES, jamais un libelle.",
+    "alreadyClosed": {
+      "status": 500,
+      "body": "{\"ok\":false,\"error\":\"CONVERSATION_ALREADY_CLOSED\",\"message\":\"No conversation tab matches that handle any more\",\"details\":{\"conversations\":1}}"
+    },
+    "handleStale": {
+      "status": 500,
+      "body": "{\"ok\":false,\"error\":\"CONVERSATION_HANDLE_STALE\",\"message\":\"The tab at that position is no longer the one that was listed\",\"details\":{\"conversations\":1}}"
+    }
   }
 }

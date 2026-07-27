@@ -115,11 +115,19 @@ const UNEXPECTED_REMEDIATION =
  * forme d'un appel est pire qu'une remediation absente — c'est la seule phrase que l'appelant
  * lit quand il cherche a corriger son invocation.
  *
- * Ce qui n'a PAS change, et qui est le fond de la garde : aucune option ne decrit une fenetre.
- * `--prompt-file` designe un fichier de prompt, rien de plus — ni pid, ni port, ni jeton, ni hote.
+ * ELLE A CHANGE A NOUVEAU A L'INCREMENT C4, POUR LA MEME RAISON : elle affirmait « le prompt ne
+ * passe JAMAIS par un argument » comme s'il s'agissait d'une regle sur la POSITION, et
+ * `cmgr close <id>` prend bel et bien un argument positionnel. La regle porte sur
+ * l'ECHAPPEMENT — un prompt long se fait tronquer en silence, un uuid de longueur fixe ne le
+ * peut pas —, et la dire autrement enverrait l'appelant chercher une option qui n'existe pas.
+ *
+ * Ce qui n'a PAS change, et qui est le fond de la garde : rien, ni option ni argument, ne decrit
+ * une fenetre. `--prompt-file` designe un fichier de prompt ; l'argument de `close` est une
+ * poignee que la fenetre a elle-meme emise et que personne d'autre ne connait. Ni pid, ni port,
+ * ni jeton, ni hote.
  */
 const USAGE_REMEDIATION =
-  "Appel invalide. `cmgr --help` enumere les commandes reconnues, leurs options et leurs codes de sortie. Seule `open` accepte une option, `--prompt-file <chemin>` ; le prompt ne passe JAMAIS par un argument. Aucune option ne permet de decrire une fenetre, un port, un jeton ou un hote : les fenetres viennent du registre, ou leur identite est verifiee, jamais de la ligne de commande.";
+  "Appel invalide. `cmgr --help` enumere les commandes reconnues, leurs arguments et leurs codes de sortie. Deux commandes seulement prennent quelque chose : `open --prompt-file <chemin>` et `close <id>`, ou <id> est la poignee que `cmgr conversations` a rendue. Le PROMPT, lui, ne passe jamais par un argument — l echappement d un texte long en shell le tronquerait en silence. Rien ne permet de decrire une fenetre, un port, un jeton ou un hote : les fenetres viennent du registre, ou leur identite est verifiee, jamais de la ligne de commande.";
 
 /**
  * Erreur d'usage.

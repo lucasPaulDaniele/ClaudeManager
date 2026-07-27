@@ -72,32 +72,37 @@ export default defineConfig({
          * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
          * que rien ne configurait.
          *
-         * MESURE DU 2026-07-27 (correction du gate C, volet 2), les QUATRE metriques, SUR LES
-         * DEUX PLATEFORMES :
+         * MESURE DU 2026-07-27 (increment C4), les QUATRE metriques, SUR LES DEUX PLATEFORMES :
          *
-         *   Windows, poste de reference : 99,53 instructions · 99,04 branches · 98,75 fonctions · 99,53 lignes
-         *   Linux, CI GitHub (execution 30244910972) : 99,53 · 99,04 · 98,75 · 99,53 — IDENTIQUES
+         *   Windows, poste de reference : 99,61 instructions · 99,18 branches · 98,98 fonctions · 99,61 lignes
+         *   Linux, CI GitHub (execution 30264426122) : 99,61 · 99,18 · 98,98 · 99,61 — IDENTIQUES
          *
-         * Plancher retenu : 99 / 98 / 98 / 99 — INCHANGE. Marges : 0,53 · 1,04 · 0,75 · 0,53 point.
+         * Plancher retenu : 99 / 98 / 98 / 99 — INCHANGE. Marges : 0,61 · 1,18 · 0,98 · 0,61 point.
          *
          * ─────────────────────────────────────────────────────────────────────────────────
-         * POURQUOI LES BRANCHES NE PASSENT PAS A 99, ALORS QUE LA REGLE LE DEMANDERAIT.
+         * POURQUOI LES BRANCHES NE PASSENT TOUJOURS PAS A 99, ALORS QUE LA REGLE LE DEMANDERAIT.
          *
-         * La regle dit « au plancher entier de ce qui est reellement atteint », et 99,04
-         * appellerait donc 99. LE COMPTE ABSOLU DIT AUTRE CHOSE : 832 branches couvertes sur
-         * 840, quand `ceil(0,99 x 840) = 832`. LA MARGE EST DE ZERO BRANCHE. Une seule
-         * branche non couverte ajoutee n'importe ou dans le depot ferait tomber la CI — une
-         * branche pese 0,119 point, soit TROIS FOIS l'ecart au seuil.
+         * La regle dit « au plancher entier de ce qui est reellement atteint », et 99,18
+         * appellerait donc 99. LE COMPTE ABSOLU DIT AUTRE CHOSE, et c'est le meme raisonnement
+         * qu'au 2026-07-27 (volet 2), refait sur les nouveaux chiffres : **972 branches couvertes
+         * sur 980**, quand `ceil(0,99 x 980) = 971`. LA MARGE SERAIT D'UNE BRANCHE — elle etait
+         * de ZERO au volet precedent (832/840 pour 832 exigees), elle a donc gagne exactement une
+         * unite. Une branche pese 0,102 point, soit l'ecart entier au seuil : deux branches non
+         * couvertes ajoutees n'importe ou dans le depot feraient tomber la CI.
          *
          * C'est exactement le « seuil qu'on n'atteint pas est un seuil qu'on desactivera »
          * que cette regle existe pour empecher, atteint par l'autre bout : un plancher exact
          * mais intenable se contourne au premier incident, et c'est alors la regle entiere
          * qui perd son autorite. Un plancher tenable vaut mieux qu'un plancher exact.
          *
-         * CE QU'IL FAUDRAIT POUR LE RELEVER : couvrir les 8 branches restantes, ou en gagner
-         * assez pour que 99 % laisse plusieurs branches de marge. Les trois autres metriques
-         * sont deja a leur plancher entier — lignes et instructions a 12 lignes de marge,
-         * fonctions a 1 fonction pres.
+         * LES FONCTIONS SONT DANS LE MEME CAS, ET IL FAUT LE DIRE : 195 sur 197, soit 98,98 %.
+         * Un seuil a 99 exigerait 196 — il n'est donc PAS atteint, la question ne se pose meme
+         * pas. Au seuil de 98, il en faut 194 : la marge est d'UNE fonction.
+         *
+         * CE QU'IL FAUDRAIT POUR RELEVER L'UN OU L'AUTRE : couvrir les branches et les fonctions
+         * restantes, qui sont toutes des chemins de defaillance QU'UNE VRAIE SOCKET NE PRODUIT
+         * PAS (voir la localisation ci-dessous). Les deux autres metriques sont deja a leur
+         * plancher entier, avec 17 lignes de marge.
          * ─────────────────────────────────────────────────────────────────────────────────
          *
          * LES DEUX MESURES SONT CITEES, ET C'EST LE POINT : un plancher releve sur la seule
@@ -114,7 +119,12 @@ export default defineConfig({
          * l'un ni l'autre — et la MESURE aussi s'y met a jour ensemble, y compris quand elle
          * ne fait pas bouger le seuil, comme le 2026-07-27.
          *
-         * Mesure precedente (2026-07-26, increment C1) :
+         * Mesure precedente (2026-07-27, correction du gate C volet 2) :
+         *   99,53 instructions · 99,04 branches · 98,75 fonctions · 99,53 lignes
+         *   (Linux, CI GitHub, execution 30244910972 : identiques). Plancher : 99 / 98 / 98 / 99.
+         *   Comptes absolus d'alors : 832 branches sur 840, marge de ZERO au seuil de 99.
+         *
+         * Mesure encore precedente (2026-07-26, increment C1) :
          *   99,31 instructions · 98,61 branches · 98,30 fonctions · 99,31 lignes
          *   (Linux, execution 30202106398 : identiques). Plancher alors retenu : 99 / 98 / 98 / 99,
          *   releve depuis 98 / 98 / 97 / 98 par ce meme increment.
@@ -128,7 +138,7 @@ export default defineConfig({
          * desormais citees — un chiffre configure sans mesure en regard est la divergence
          * meme que ce commentaire existe pour empecher.
          *
-         * OU SONT LES 8 BRANCHES ET LES 2 FONCTIONS QUI MANQUENT, RELEVE LE 2026-07-27 :
+         * OU SONT LES 8 BRANCHES ET LES 2 FONCTIONS QUI MANQUENT, RELEVE LE 2026-07-27 (C4) :
          *   - `server.ts` (4 branches, 1 fonction) : « la socket ecoute sans port TCP
          *     resoluble » — `listen(0, host)` rend toujours une adresse TCP — et le rejet au
          *     demarrage — un port ephemere n'entre jamais en conflit ;
@@ -142,6 +152,12 @@ export default defineConfig({
          * PAS, et qu'on refuse de forcer avec un faux `http` (principe fondateur n.5). Elles
          * sont conservees — un port devine ne serait jamais joignable — et laissees NON
          * COUVERTES plutot que masquees par une exclusion.
+         *
+         * `tabs.ts`, ARRIVE A L'INCREMENT C4, EST A 100 % DES QUATRE METRIQUES — et deux de ses
+         * branches ont ete SUPPRIMEES plutot que couvertes : une seconde recherche de poignee et
+         * un `iterator.done` qu'aucun chemin ne pouvait atteindre. Un repli inatteignable laisse
+         * croire qu'un cas a ete prevu et ne se verifie jamais ; le retirer valait mieux que de
+         * fabriquer un test pour l'atteindre.
          *
          * Le seuil se releve quand la couverture monte, jamais l'inverse sans justification.
          */

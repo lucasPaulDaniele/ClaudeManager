@@ -113,6 +113,8 @@ function makeWindow(label: string, extHostPid: number, dir: string): Window {
     // est jamais sollicitee. Elle leve donc plutot que de rendre un succes de complaisance —
     // un appel qu'on n'attend pas doit se voir.
     openConversation: () => Promise.reject(new Error('not exercised by this suite')),
+    listConversations: () => Promise.reject(new Error('not exercised by this suite')),
+    closeConversation: () => Promise.reject(new Error('not exercised by this suite')),
     log: (message) => lines.push(message),
     registryDir: dir,
   });

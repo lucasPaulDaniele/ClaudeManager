@@ -69,9 +69,49 @@ export type WindowTransport = (request: WindowRequest) => Promise<WindowResponse
 
 export const HEALTH_ROUTE = 'GET /health';
 export const OPEN_ROUTE = 'POST /conversations';
+/** Lecture pure : les onglets de conversation de CETTE fenetre. Aucun effet de bord. */
+export const LIST_ROUTE = 'GET /conversations';
+/**
+ * LA FERMETURE, ET L'IDENTIFIANT RESTE HORS DU CHEMIN.
+ *
+ * Un `DELETE /conversations/<id>` aurait paru plus canonique. Deux motifs l'ecartent, et le
+ * second est le vrai : le routeur compare `${method} ${path}` EXACTEMENT et ne sait pas
+ * extraire de parametre de chemin — l'y ajouter serait une machinerie d'analyse d'URL pour un
+ * champ unique —, et un identifiant venu du RESEAU n'a rien a faire dans une URL, qui se
+ * journalise, se reflete dans les messages d'erreur et traverse les intermediaires. Le corps
+ * JSON passe par `readBoundedBody`, qui est deja borne et deja eprouve.
+ */
+export const CLOSE_ROUTE = 'POST /conversations/close';
 
 export const HEALTH_PATH = '/health';
 export const CONVERSATIONS_PATH = '/conversations';
+export const CONVERSATION_CLOSE_PATH = '/conversations/close';
+
+/**
+ * LA FORME D'UNE POIGNEE DE CONVERSATION — un uuid, et rien d'autre.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * POURQUOI UNE POIGNEE OPAQUE, ET NON UN IDENTIFIANT DERIVE DE L'ONGLET. L'API `vscode.Tab`
+ * NE PORTE AUCUN IDENTIFIANT — releve dans les typings de ce depot, l'integralite de ses
+ * champs est `label`, `group`, `input`, `isActive`, `isDirty`, `isPinned`, `isPreview` —, et
+ * aucun d'eux n'est stable : le `viewType` est le MEME pour tous les panneaux Claude (D2), le
+ * `label` est derive du CONTENU de la conversation (D24), et la position change des qu'un
+ * onglet est deplace.
+ *
+ * Un identifiant DERIVE du libelle aurait donc deux defauts, et le second est le pire : il
+ * ferait transiter du contenu de conversation par des journaux et des sorties d'agent, et il
+ * donnerait l'ILLUSION de survivre a un deplacement d'onglet — exactement le mensonge que
+ * cette conception existe pour eviter. La fenetre SYNTHETISE donc la poignee et VERIFIE, au
+ * moment de fermer, que l'onglet designe correspond encore a ce qu'elle avait releve.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * La forme est exigee DES DEUX COTES pour deux raisons differentes : cote appelant, elle
+ * refuse en 2 ms une valeur qui n'a jamais pu etre emise ; cote lecture de reponse, elle
+ * empeche qu'un texte quelconque venu d'une socket ressorte dans une sortie d'agent sous un
+ * nom de champ familier — c'est la meme discipline que `DETAIL_UUID` ci-dessous.
+ */
+export const CONVERSATION_HANDLE_SHAPE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Ce que la fenetre dit d'elle-meme. Elle ne porte JAMAIS le jeton. */
 export interface WindowHealth {
@@ -235,6 +275,15 @@ function relayedDetails(raw: unknown): Readonly<Record<string, unknown>> | undef
  * La route etait deja dans les `details` ; elle ne servait a rien la ou l'appelant decide sans
  * lire la sortie. La remediation, elle, ne peut varier qu'avec le CODE — elle est relue dans la
  * table de `ClaudeManagerError`.
+ *
+ * `CLOSE_ROUTE` TOMBE DU COTE SUR, ET C'EST UNE DECISION, PAS UN OUBLI. Elle a bel et bien un
+ * effet de bord, et la validation lui est POSTERIEURE : on pouvait donc croire qu'il fallait un
+ * troisieme code. Ce qui tranche n'est pas « y a-t-il eu un effet de bord » mais « que doit
+ * faire l'appelant » — le critere de ce depot. Or une seconde fermeture sur la MEME poignee ne
+ * peut pas produire un second effet : au pire l'onglet est deja parti, et la fenetre repond
+ * `CONVERSATION_ALREADY_CLOSED`. La conduite est donc identique a celle d'une route de lecture,
+ * et un troisieme code aurait fait porter au canal de decision une nuance qui n'en change
+ * aucune. C'est l'inverse exact de l'ouverture, ou une relance ouvre une SECONDE conversation.
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 function unreadable(route: string, missing: string): ClaudeManagerError {
@@ -546,5 +595,133 @@ export function readOpenedConversation(response: WindowResponse): OpenedConversa
     firstTurnVerified,
     panelViewType: requirePanelViewType(raw, mode),
     degradedFrom: requireDegradedFrom(raw, mode),
+  };
+}
+
+/**
+ * Un onglet de conversation, tel que la fenetre l'enumere.
+ *
+ * `label` EST DU CONTENU DE CONVERSATION (D24), et il est rendu ICI — dans le corps de SUCCES —
+ * parce qu'un agent ne peut pas choisir quelle conversation fermer sans lui. Il n'entre en
+ * revanche JAMAIS dans les `details` d'une erreur : `relayedDetails` ne laisse passer que des
+ * nombres, des booleens et un `sessionId` en forme d'uuid, et les refus de la fermeture ne
+ * portent que des nombres.
+ */
+export interface ListedConversation {
+  /** Poignee OPAQUE emise par la fenetre — voir `CONVERSATION_HANDLE_SHAPE`. */
+  readonly id: string;
+  readonly label: string;
+  /** Releve TEL QUEL : VSCode le prefixe, on ne le devine pas (D2). */
+  readonly viewType: string;
+  readonly viewColumn: number;
+  readonly indexInGroup: number;
+  readonly isActive: boolean;
+}
+
+export interface WindowConversations {
+  /** La fenetre qui a repondu, telle qu'elle se nomme — le client la confronte. */
+  readonly extHostPid: number;
+  /** UNE LISTE VIDE N'EST PAS UNE ERREUR : c'est l'etat d'une fenetre sans conversation. */
+  readonly conversations: readonly ListedConversation[];
+}
+
+export interface ClosedConversation {
+  readonly extHostPid: number;
+  /** L'onglet tel qu'il etait AVANT la fermeture — releve avant l'effet de bord. */
+  readonly closed: ListedConversation;
+  /** Combien d'onglets de conversation restent dans cette fenetre, APRES la fermeture. */
+  readonly remaining: number;
+  /**
+   * Ce que `tabGroups.close` a RESOLU — un releve, jamais la preuve.
+   *
+   * La preuve est l'ENUMERATION : la fenetre re-enumere ses onglets et n'annonce un succes que
+   * si l'onglet a REELLEMENT quitte `tabGroups`. C'est la meme discipline que « l'absence
+   * d'erreur ne prouve jamais l'attachement » (D10, D19), appliquee a l'autre bout.
+   */
+  readonly editorReportedClosed: boolean;
+}
+
+/** Un texte, de longueur quelconque — un libelle d'onglet peut etre vide. */
+function requireText(route: string, raw: Readonly<Record<string, unknown>>, field: string): string {
+  const value = raw[field];
+  if (typeof value !== 'string') throw unreadable(route, field);
+  return value;
+}
+
+/**
+ * Une poignee, DONT LA FORME EST EXIGEE.
+ *
+ * Cette valeur ressort telle quelle dans la sortie d'un agent, et redevient l'argument d'une
+ * commande suivante. Accepter n'importe quel texte reviendrait a laisser ce qui occupe le port
+ * ecrire dans l'entree de l'appelant — le defaut que `relayedDetails` documente, a un autre
+ * endroit du meme flux.
+ */
+function requireHandle(route: string, raw: Readonly<Record<string, unknown>>, field: string): string {
+  const value = raw[field];
+  if (typeof value !== 'string' || !CONVERSATION_HANDLE_SHAPE.test(value)) {
+    throw unreadable(route, field);
+  }
+  return value;
+}
+
+function readListedConversation(
+  route: string,
+  raw: Readonly<Record<string, unknown>>
+): ListedConversation {
+  return {
+    id: requireHandle(route, raw, 'id'),
+    label: requireText(route, raw, 'label'),
+    viewType: requireString(route, raw, 'viewType'),
+    viewColumn: requireInteger(route, raw, 'viewColumn'),
+    indexInGroup: requireInteger(route, raw, 'indexInGroup'),
+    isActive: requireBoolean(route, raw, 'isActive'),
+  };
+}
+
+function requireRecord(
+  route: string,
+  raw: Readonly<Record<string, unknown>>,
+  field: string
+): Readonly<Record<string, unknown>> {
+  const value = raw[field];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw unreadable(route, field);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+/** @throws {ClaudeManagerError} tout refus, ou une reponse illisible. */
+export function readWindowConversations(response: WindowResponse): WindowConversations {
+  if (response.status !== 200) throw refusalOf(LIST_ROUTE, response);
+
+  const raw = asRecord(LIST_ROUTE, response.body);
+  if (raw['ok'] !== true) throw unreadable(LIST_ROUTE, 'ok');
+
+  const listed = raw['conversations'];
+  if (!Array.isArray(listed)) throw unreadable(LIST_ROUTE, 'conversations');
+
+  return {
+    extHostPid: requireInteger(LIST_ROUTE, raw, 'extHostPid'),
+    conversations: (listed as readonly unknown[]).map((item) => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        throw unreadable(LIST_ROUTE, 'conversations[]');
+      }
+      return readListedConversation(LIST_ROUTE, item as Readonly<Record<string, unknown>>);
+    }),
+  };
+}
+
+/** @throws {ClaudeManagerError} tout refus, ou une reponse illisible. */
+export function readClosedConversation(response: WindowResponse): ClosedConversation {
+  if (response.status !== 200) throw refusalOf(CLOSE_ROUTE, response);
+
+  const raw = asRecord(CLOSE_ROUTE, response.body);
+  if (raw['ok'] !== true) throw unreadable(CLOSE_ROUTE, 'ok');
+
+  return {
+    extHostPid: requireInteger(CLOSE_ROUTE, raw, 'extHostPid'),
+    closed: readListedConversation(CLOSE_ROUTE, requireRecord(CLOSE_ROUTE, raw, 'closed')),
+    remaining: requireInteger(CLOSE_ROUTE, raw, 'remaining'),
+    editorReportedClosed: requireBoolean(CLOSE_ROUTE, raw, 'editorReportedClosed'),
   };
 }

@@ -59,30 +59,57 @@ export {
   type RedactedWindowEntry,
 } from './registry/redaction.node.js';
 export {
+  CLOSE_ROUTE,
+  CONVERSATION_CLOSE_PATH,
+  CONVERSATION_HANDLE_SHAPE,
   CONVERSATIONS_PATH,
   HEALTH_PATH,
   HEALTH_ROUTE,
+  LIST_ROUTE,
   OPEN_ROUTE,
+  readClosedConversation,
   readHealth,
   readOpenedConversation,
+  readWindowConversations,
+  type ClosedConversation,
   type FirstTurnOutcome,
+  type ListedConversation,
   type OpenedConversation,
   type OpenMode,
+  type WindowConversations,
   type WindowHealth,
   type WindowRequest,
   type WindowResponse,
   type WindowTransport,
 } from './client/protocol.js';
 export { createLoopbackTransport } from './client/loopback.node.js';
+/**
+ * Les types du CANAL viennent de leur propre module depuis C4 — trois commandes les partagent.
+ * `HEALTH_TIMEOUT_MS`, lui, reste hors du contrat : c'est un detail interne eprouve, que les
+ * tests prennent a son module (V2-12).
+ */
+export {
+  type ChannelConfirmation,
+  type RegistryReport,
+  type WindowChannelOptions,
+} from './client/channel.node.js';
 export {
   assertSubmittablePrompt,
   openConversationInWindow,
-  type ChannelConfirmation,
   type ConversationOpening,
   type OpenConversationInWindowOptions,
   type OpenConversationRequest,
-  type RegistryReport,
 } from './client/openConversation.node.js';
+export {
+  assertConversationHandle,
+  closeConversationInWindow,
+  listConversationsInWindow,
+  type CloseConversationOptions,
+  type CloseConversationRequest,
+  type ConversationClosing,
+  type ConversationsListing,
+  type ListConversationsOptions,
+} from './client/conversations.node.js';
 
 export {
   purgeStaleEntries,

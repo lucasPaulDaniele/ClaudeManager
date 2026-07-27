@@ -272,6 +272,19 @@ const SCENARIOS: readonly Scenario[] = [
       return `jonction(s) retiree(s) AVANT tout menage recursif : ${dismantled.removedLinks.join(', ') || 'aucune'}`;
     },
   },
+  {
+    key: 'close-conversation',
+    title:
+      'fermeture — enumeration en lecture, tabGroups.close sur UN onglet, poignee perimee refusee',
+    prepare(workspace) {
+      // UN DOSSIER SIMPLE : il faut un dossier de travail pour que la fenetre publie, et rien
+      // de plus. Ce scenario ne lance aucun `claude` et ne facture aucun tour — il cree ses
+      // propres onglets de webview.
+      return makeFolder(workspace, 'projet');
+    },
+    // Aucun `launchArgs` : ce scenario garde `--disable-extensions`, comme ceux du lot B.
+    // L'extension Claude n'y a rien a faire, et l'y charger couterait un demarrage pour rien.
+  },
 ];
 
 /** Les montages en cours, par workspace : `launchArgs` les pose, `teardown` les retire. */

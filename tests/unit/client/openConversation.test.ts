@@ -9,11 +9,10 @@ import {
   type WindowTransport,
 } from '../../../packages/core/src/index.js';
 // PRIS A LEUR MODULE, ET PLUS AU CONTRAT (V2-12) : deux delais internes, sans consommateur
-// hors d'ici. Ce qu'ils sont — des details eprouves — se lit mieux ainsi.
-import {
-  HEALTH_TIMEOUT_MS,
-  OPEN_TIMEOUT_MS,
-} from '../../../packages/core/src/client/openConversation.node.js';
+// hors d'ici. Ce qu'ils sont — des details eprouves — se lit mieux ainsi. Depuis C4, celui de
+// la confirmation de canal vit avec le canal, que trois commandes partagent.
+import { HEALTH_TIMEOUT_MS } from '../../../packages/core/src/client/channel.node.js';
+import { OPEN_TIMEOUT_MS } from '../../../packages/core/src/client/openConversation.node.js';
 import {
   CALLER_PID,
   CAPTURED,

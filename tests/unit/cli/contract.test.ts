@@ -129,9 +129,13 @@ describe('usage', () => {
     const help = expectSuccess(await runCli(['--help'], contextFor(undefined, CALLER)));
     const usage = help['usage'] as Record<string, unknown>;
     expect((usage['commands'] as readonly Record<string, unknown>[]).map((c) => c['name'])).toEqual([
+      // LES LECTURES D'ABORD, LES ROUTES AGISSANTES ENSUITE — c'est l'ordre du synopsis, et
+      // celui dans lequel un appelant les emploie : lister, puis fermer.
       'windows',
       'whoami',
+      'conversations',
       'open',
+      'close <id>',
     ]);
     // Le cinquieme code est celui du repli V5 : ni un succes nominal, ni un echec.
     expect(Object.keys(usage['exitCodes'] as Record<string, string>)).toEqual([
@@ -183,7 +187,8 @@ describe('usage', () => {
     });
 
     it("enonce les TROIS etats de firstTurnVerified, et lequel sort en 0", async () => {
-      const summary = USAGE.commands.find((command) => command.name === 'open')?.summary ?? '';
+      const summary =
+        USAGE.commands.find((command) => command.name.startsWith('open'))?.summary ?? '';
 
       expect(summary).toContain('firstTurnVerified');
       // Les trois etats, et le code de sortie de chacun : c'est ce que `openingNote` dit deja a
@@ -238,7 +243,9 @@ describe('la surface annoncee par les remediations est celle qui est livree', ()
     // La reference est `USAGE` lui-meme, pas une liste recopiee : le jour ou `cmgr close`
     // arrive, ce test cesse de l'exiger sans qu'on ait a y toucher.
     const delivered = new Set<string>([
-      ...USAGE.commands.map((command) => command.name),
+      // « close <id> » -> « close » : le premier jeton est le nom, l'argument n'en fait pas
+      // partie. C'est la meme reduction que celle appliquee aux options juste apres.
+      ...USAGE.commands.map((command) => command.name.split(' ')[0] as string),
       // « --help, -h » -> « --help » : le premier jeton est le nom.
       ...USAGE.options.map((option) => option.name.split(/[ ,]/)[0] as string),
     ]);

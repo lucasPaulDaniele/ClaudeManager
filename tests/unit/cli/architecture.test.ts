@@ -46,17 +46,31 @@ describe('garde-fou d architecture de la CLI', () => {
     }
   });
 
-  it('les commandes de LECTURE ne touchent pas au transport', () => {
-    // `cmgr windows` et `cmgr whoami` restent en lecture seule et hors reseau : faire dependre
-    // l'inventaire des fenetres de leur joignabilite melangerait deux questions distinctes.
-    // « Laquelle repond ? » appartient a `cmgr doctor` (lot D).
+  it('les commandes SANS RESEAU ne touchent pas au transport', () => {
+    /**
+     * `cmgr windows` et `cmgr whoami` restent hors reseau : faire dependre l'inventaire des
+     * fenetres de leur joignabilite melangerait deux questions distinctes. « Laquelle repond ? »
+     * appartient a `cmgr doctor` (lot D).
+     *
+     * LE DECOUPAGE A CHANGE DE NOM A L'INCREMENT C4, PAS DE NATURE : `cmgr conversations` est une
+     * LECTURE qui fait du reseau — les onglets d'une fenetre ne se lisent que dans cette fenetre.
+     * La ligne de partage n'est donc plus « lecture / ecriture » mais « avant `open` / apres », et
+     * les trois commandes qui parlent au reseau sont declarees APRES elle. C'est ce que ce test
+     * verifie, et c'est aussi pourquoi l'ordre de ce module n'est pas cosmetique.
+     */
     const commands = readFileSync(path.join(CLI_SRC, 'commands.ts'), 'utf8');
     const [beforeOpen] = commands.split('export async function openCommand');
     expect(beforeOpen, 'la partie du module anterieure a `open`').not.toMatch(
-      /context\s*\.\s*transport|openConversationInWindow\s*\(/
+      /context\s*\.\s*transport|(?:open|list|close)Conversations?InWindow\s*\(/
     );
-    // L'assertion serait vide si le decoupage avait rate : `open` existe bien apres.
-    expect(commands).toContain('export async function openCommand');
+    // L'assertion serait vide si le decoupage avait rate : les trois existent bien apres.
+    for (const declaration of [
+      'export async function openCommand',
+      'export async function conversationsCommand',
+      'export async function closeCommand',
+    ]) {
+      expect(commands).toContain(declaration);
+    }
     expect(commands).toContain('context.transport');
   });
 
