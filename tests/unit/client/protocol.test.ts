@@ -491,6 +491,101 @@ describe('POST /conversations, tel qu une vraie fenetre le rend', () => {
     ).toEqual({ route: 'POST /conversations', missing: 'panelViewType' });
   });
 
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LES CROISEMENTS QUI MANQUAIENT : `mode` x `firstTurn` x `firstTurnVerified`.
+   *
+   * Trois champs decrivent le meme fait, et ils n'etaient confrontes qu'un a un — chacun a
+   * `mode`, jamais entre eux. Une reponse pouvait donc se contredire sans que rien ne bronche :
+   * « aucun tour tente » sur une voie amorcee, ou « j'ai vu le transcript » avec un tour non
+   * verifie. Deux equivalences suffisent a fermer la porte, et les trois captures reelles les
+   * respectent — c'est ce qui prouve qu'elles ne rejettent aucun etat legitime.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  describe('mode, firstTurn et firstTurnVerified ne peuvent plus se contredire', () => {
+    const contradictions: readonly (readonly [string, 'openSeeded' | 'openFallback', Record<string, unknown>])[] = [
+      // `'not-attempted'` <=> repli. Une session amorcee sans tour tente n'existe pas.
+      ['amorce mais aucun tour tente', 'openSeeded', { firstTurn: 'not-attempted' }],
+      ['repli qui aurait observe un transcript', 'openFallback', { firstTurn: 'transcript-observed' }],
+      ['repli qui aurait demarre un processus', 'openFallback', { firstTurn: 'process-started' }],
+      // `'transcript-observed'` <=> tour verifie. La meme phrase qui se contredit.
+      ['transcript observe mais tour NON verifie', 'openSeeded', { firstTurnVerified: false }],
+      [
+        'processus demarre mais tour VERIFIE',
+        'openSeeded',
+        { firstTurn: 'process-started', firstTurnVerified: true },
+      ],
+    ];
+
+    for (const [label, base, patch] of contradictions) {
+      it(`refuse ${label}`, () => {
+        const error = caught(() => readOpenedConversation(openBodyWith(base, patch)));
+
+        expect(error.code).toBe('WINDOW_OPEN_RESPONSE_UNREADABLE');
+        expect(error.details).toEqual({ route: 'POST /conversations', missing: 'firstTurn' });
+      });
+    }
+
+    it('accepte les TROIS combinaisons reellement capturees, et elles seules', () => {
+      // Le controle positif : sans lui, un validateur qui refuserait tout passerait ci-dessus.
+      for (const base of ['openSeeded', 'openSeededLegacy', 'openFallback'] as const) {
+        const conversation = readOpenedConversation({
+          status: 200,
+          body: JSON.stringify(CAPTURED[base].result),
+        });
+        expect((conversation.firstTurn === 'not-attempted') === (conversation.mode === 'fallback'), base).toBe(true);
+        expect(
+          (conversation.firstTurn === 'transcript-observed') === conversation.firstTurnVerified,
+          base
+        ).toBe(true);
+      }
+    });
+
+    it('EXIGE humanActionRequired en repli — un false y ferait attendre une reponse de personne', () => {
+      const error = caught(() =>
+        readOpenedConversation(openBodyWith('openFallback', { humanActionRequired: false }))
+      );
+
+      expect(error.details).toEqual({
+        route: 'POST /conversations',
+        missing: 'humanActionRequired',
+      });
+    });
+
+    it("N'EXIGE PAS l'inverse : une voie amorcee peut signaler un geste humain", () => {
+      // LE COUPLE NE VAUT QUE DANS UN SENS, et c'est raisonne : refuser ce cas ferait echouer une
+      // ouverture parfaitement reussie le jour ou une fenetre plus recente aurait un geste a
+      // signaler. C'est le piege du litteral `false` de `firstTurnVerified`, deja paye une fois.
+      const conversation = readOpenedConversation(
+        openBodyWith('openSeeded', { humanActionRequired: true })
+      );
+
+      expect(conversation.humanActionRequired).toBe(true);
+      expect(conversation.mode).toBe('seeded');
+    });
+
+    it('RELAIE un panelViewType envoye en repli, au lieu de le jeter en silence', () => {
+      // IL ETAIT JETE SANS TRACE. Il n'est pas couple au `mode` pour autant : le repli ouvre BEL
+      // ET BIEN un panneau (`editor.open(null, <prompt>)`), il ne le diffe simplement pas
+      // aujourd'hui. Un `viewType` n'y designerait donc rien d'inexistant — a la difference d'un
+      // `sessionId`, dont le couple tient parce qu'aucune session n'est amorcee.
+      const conversation = readOpenedConversation(
+        openBodyWith('openFallback', { panelViewType: 'mainThreadWebview-claudeVSCodePanel' })
+      );
+
+      expect(conversation.panelViewType).toBe('mainThreadWebview-claudeVSCodePanel');
+    });
+
+    it('refuse un panelViewType qui n est pas une chaine, meme en repli', () => {
+      for (const value of [7, null, '']) {
+        expect(
+          caught(() => readOpenedConversation(openBodyWith('openFallback', { panelViewType: value })))
+            .details
+        ).toEqual({ route: 'POST /conversations', missing: 'panelViewType' });
+      }
+    });
+  });
+
   const shapes: readonly (readonly [string, Record<string, unknown>])[] = [
     ['ok', { ok: false }],
     ['mode', { mode: 'nominal' }],

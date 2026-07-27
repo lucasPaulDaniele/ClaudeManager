@@ -109,7 +109,9 @@ export interface OpenedConversation {
   readonly sessionId: string | null;
   /** La fenetre qui a REELLEMENT agi, telle qu'elle se nomme elle-meme. */
   readonly extHostPid: number;
+  /** `true` OBLIGATOIRE en repli : le prompt n'y est que pre-rempli. Libre ailleurs. */
   readonly humanActionRequired: boolean;
+  /** COHERENT avec `mode` et `firstTurnVerified` — deux equivalences, voir `requireFirstTurn`. */
   readonly firstTurn: FirstTurnOutcome;
   /**
    * LE TOUR 1 A-T-IL EU LIEU ? RENDU TEL QUE LA FENETRE LE DIT — et il peut valoir `true`.
@@ -134,7 +136,13 @@ export interface OpenedConversation {
    * anterieure de l'extension rend, et le client ne doit pas casser sur un ecart de version.
    */
   readonly firstTurnVerified: boolean;
-  /** `viewType` de l'onglet apparu, releve tel quel. Absent en repli. */
+  /**
+   * `viewType` de l'onglet apparu, releve tel quel — EXIGE en voie amorcee.
+   *
+   * En repli, il est absent aujourd'hui (le repli ne diffe pas les onglets) mais il est RELAYE
+   * s'il est la : le repli ouvre un vrai panneau, un `viewType` n'y designerait rien
+   * d'inexistant. Voir `requirePanelViewType` pour pourquoi il n'est pas couple au `mode`.
+   */
   readonly panelViewType: string | undefined;
   /**
    * L'ERREUR QUI A CAUSE LE REPLI, RENDUE VERBATIM — jamais relue, jamais reinterpretee.
@@ -362,7 +370,32 @@ function requireMode(raw: Readonly<Record<string, unknown>>): OpenMode {
   return mode;
 }
 
-function requireFirstTurn(raw: Readonly<Record<string, unknown>>): FirstTurnOutcome {
+/**
+ * `firstTurn` : la valeur, ET SA COHERENCE AVEC LES DEUX AUTRES CHAMPS QUI EN PARLENT.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * TROIS CHAMPS DECRIVENT LE MEME FAIT — `mode`, `firstTurn`, `firstTurnVerified` —, et jusqu'a
+ * la correction du gate C ils n'etaient confrontes qu'un a un. L'en-tete de ce module promet
+ * pourtant que rien n'est devine et rien n'est tolere en silence.
+ *
+ * DEUX EQUIVALENCES SUFFISENT A TOUT DETERMINER, et chacune se lit comme une contradiction
+ * quand elle est rompue :
+ *
+ *   - `'not-attempted'` <=> `mode === 'fallback'`. Un « aucun tour tente » sur une voie amorcee
+ *     dirait qu'une session a ete ouverte sans qu'on ait rien tente d'y jouer.
+ *   - `'transcript-observed'` <=> `firstTurnVerified`. « J'ai vu le transcript » avec un tour
+ *     non verifie, ou l'inverse, sont la meme phrase qui se contredit.
+ *
+ * Il en decoule que `'process-started'` designe exactement l'etat d'une fenetre anterieure :
+ * amorcee, non verifiee. Les trois captures reelles le confirment, et aucune quatrieme
+ * combinaison n'existe.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+function requireFirstTurn(
+  raw: Readonly<Record<string, unknown>>,
+  mode: OpenMode,
+  verified: boolean
+): FirstTurnOutcome {
   const outcome = raw['firstTurn'];
   if (
     outcome !== 'transcript-observed' &&
@@ -371,7 +404,35 @@ function requireFirstTurn(raw: Readonly<Record<string, unknown>>): FirstTurnOutc
   ) {
     throw unreadable(OPEN_ROUTE, 'firstTurn');
   }
+  if ((outcome === 'not-attempted') !== (mode === 'fallback')) {
+    throw unreadable(OPEN_ROUTE, 'firstTurn');
+  }
+  if ((outcome === 'transcript-observed') !== verified) {
+    throw unreadable(OPEN_ROUTE, 'firstTurn');
+  }
   return outcome;
+}
+
+/**
+ * `humanActionRequired` : un booleen, et `true` OBLIGATOIRE en repli.
+ *
+ * LE COUPLE NE VAUT QUE DANS CE SENS, ET C'EST DELIBERE. En repli V5, la valeur est
+ * DETERMINEE : le prompt est seulement pre-rempli dans le champ de saisie, jamais soumis —
+ * prouve au source et par mesure (ADR-002). Un `false` y ferait attendre a un agent une reponse
+ * que personne n'a demandee.
+ *
+ * L'INVERSE N'EST PAS EXIGE : rien ne dit qu'une voie amorcee n'aura jamais de geste humain a
+ * signaler, et refuser ce cas ferait echouer une ouverture PARFAITEMENT REUSSIE le jour ou une
+ * fenetre plus recente aurait quelque chose de plus a dire. C'est exactement le piege du
+ * litteral `false` de `firstTurnVerified`, que ce module documente pour ne pas le reintroduire.
+ */
+function requireHumanActionRequired(
+  raw: Readonly<Record<string, unknown>>,
+  mode: OpenMode
+): boolean {
+  const required = requireBoolean(OPEN_ROUTE, raw, 'humanActionRequired');
+  if (mode === 'fallback' && !required) throw unreadable(OPEN_ROUTE, 'humanActionRequired');
+  return required;
 }
 
 /**
@@ -429,13 +490,34 @@ function requireDegradedFrom(
   return undefined;
 }
 
-/** `panelViewType` : releve tel quel en mode amorce, absent en repli — aucun diff n'y est fait. */
+/**
+ * `panelViewType` : EXIGE en mode amorce, RELAYE s'il est la en repli — jamais jete en silence.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * IL ETAIT SILENCIEUSEMENT JETE EN REPLI, et c'etait le defaut : la fonction rendait `undefined`
+ * sans meme regarder le champ. Une fenetre qui l'aurait envoye voyait son renseignement
+ * disparaitre sans trace — exactement ce que l'en-tete de ce module interdit.
+ *
+ * IL N'EST PAS POUR AUTANT COUPLE AU `mode`, et le refuser en repli serait un CONTRESENS : le
+ * repli V5 ouvre BEL ET BIEN un panneau — `editor.open(null, <prompt>)` —, il ne le diffe
+ * simplement pas aujourd'hui. Un `panelViewType` en repli ne designerait donc rien
+ * d'inexistant, a la difference d'un `sessionId` ou d'un `firstTurnVerified: true`, dont le
+ * couple tient parce qu'aucune session n'y est amorcee. Exiger son absence ferait echouer une
+ * ouverture parfaitement reussie le jour ou le repli releverait son onglet — c'est le motif meme
+ * pour lequel `degradedFrom` n'est pas relu champ a champ.
+ *
+ * CE QUI EST VERIFIE, DONC : sa presence en voie amorcee — c'est la trace du relevé
+ * d'attachement — et son TYPE partout ou il figure. Rien de plus, rien de moins.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
 function requirePanelViewType(
   raw: Readonly<Record<string, unknown>>,
   mode: OpenMode
 ): string | undefined {
-  if (mode === 'fallback') return undefined;
-  return requireString(OPEN_ROUTE, raw, 'panelViewType');
+  if (mode !== 'fallback') return requireString(OPEN_ROUTE, raw, 'panelViewType');
+  return raw['panelViewType'] === undefined
+    ? undefined
+    : requireString(OPEN_ROUTE, raw, 'panelViewType');
 }
 
 /** @throws {ClaudeManagerError} tout refus, ou une reponse illisible. */
@@ -446,15 +528,18 @@ export function readOpenedConversation(response: WindowResponse): OpenedConversa
   if (raw['ok'] !== true) throw unreadable(OPEN_ROUTE, 'ok');
 
   const mode = requireMode(raw);
+  // RELU AVANT `firstTurn`, qui le CONFRONTE : les deux champs decrivent le meme fait, et une
+  // reponse qui les contredit n'est pas une reponse qu'on comprend a moitie.
+  const firstTurnVerified = requireFirstTurnVerified(raw, mode);
   return {
     mode,
     sessionId: requireSessionId(raw, mode),
     extHostPid: requireInteger(OPEN_ROUTE, raw, 'extHostPid'),
-    humanActionRequired: requireBoolean(OPEN_ROUTE, raw, 'humanActionRequired'),
-    firstTurn: requireFirstTurn(raw),
+    humanActionRequired: requireHumanActionRequired(raw, mode),
+    firstTurn: requireFirstTurn(raw, mode, firstTurnVerified),
     // RENDU TEL QUEL, et plus jamais code en dur : c'est la fenetre qui sait si elle a
     // constate le transcript de la session.
-    firstTurnVerified: requireFirstTurnVerified(raw, mode),
+    firstTurnVerified,
     panelViewType: requirePanelViewType(raw, mode),
     degradedFrom: requireDegradedFrom(raw, mode),
   };
