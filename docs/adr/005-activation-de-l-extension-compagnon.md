@@ -94,8 +94,15 @@ et il ne l'est pas — dans les deux sens :
   plutôt qu'en `0`, et renvoie à `cmgr windows` pour comparer les versions ;
 - une fenêtre restée en arrière refuse les routes nouvelles par `404` → `WINDOW_REQUEST_REFUSED`,
   dont la remédiation nomme la cause. **Vérifié le 2026-07-27** ;
-- une CLI restée en arrière refuse la réponse d'une fenêtre à jour par
-  `WINDOW_OPEN_RESPONSE_UNREADABLE`, avec l'avertissement de ne pas relancer à l'aveugle.
+- une CLI restée en arrière refuse la réponse d'une fenêtre à jour — **mais le code qu'elle rend
+  dépend de son âge, et c'est le point faible du dispositif**. Une CLI d'aujourd'hui rend
+  `WINDOW_OPEN_RESPONSE_UNREADABLE`, qui porte l'avertissement de ne pas relancer à l'aveugle.
+  Une CLI **0.2.0 ou 0.3.0 ne connaît pas ce code** — il n'a été introduit qu'à la correction du
+  gate de mi-lot C, et il y a **zéro occurrence** dans ces deux versions — et rend
+  `WINDOW_RESPONSE_UNREADABLE`, `missing: "firstTurnVerified"` : le code des **routes de lecture**,
+  dont la remédiation d'époque dit de **recharger la fenêtre**. **Vérifié le 2026-07-27** en
+  rejouant le client 0.2.0 sur la réponse réelle d'une fenêtre à jour (`openSeeded`), contrôle
+  positif à l'appui — le même client lit sans broncher la capture de sa propre version.
 
 ## Décision
 
@@ -110,6 +117,14 @@ et il ne l'est pas — dans les deux sens :
    d'un artefact met à jour les fenêtres existantes. Elle doit **ouvrir une fenêtre neuve** entre
    l'installation et la vérification, et la publication des deux artefacts (VSIX et npm) doit être
    **simultanée** — un décalage entre eux se paie en refus côté utilisateur.
+5. **Une version monte dès que le protocole change de façon observable**, dans l'incrément qui le
+   change. Ajouté au gate final du lot C, et ce n'est pas une règle de confort : les deux
+   remédiations de désaccord de protocole envoient l'utilisateur **comparer des numéros**, et un
+   numéro qui ne bouge pas quand le protocole bouge rend ce geste inapplicable. La dette est
+   nommée : l'extension **0.2.0** désigne la surface du lot B — sans aucune route
+   `/conversations` — *et* celle de C1/C2 qui la porte ; la CLI **0.3.0** désigne les deux états
+   séparés par la correction du gate de mi-lot. `tests/unit/packaging/versions.test.ts` tient
+   désormais un plancher pour chacun des deux artefacts.
 
 ## Conséquences
 
@@ -118,6 +133,14 @@ et il ne l'est pas — dans les deux sens :
   première ce que chaque fenêtre **exécute**. `cmgr windows` rend la première.
 - **Aucun rechargement n'est jamais déclenché par l'outil.** C'est l'humain qui choisit quand
   renouveler une fenêtre — un `Developer: Reload Window` tue les conversations en cours.
+- **Un trou subsiste, et il ne se referme pas rétroactivement.** Une CLI 0.2.0 ou 0.3.0 déjà
+  installée quelque part rend, pour le cas « CLI en retard, fenêtre à jour », une remédiation qui
+  prescrit de **recharger la fenêtre** — exactement le geste que cet ADR interdit, et sur une
+  conversation qui vient de s'ouvrir. Ces artefacts sont livrés : leur texte ne se corrige plus.
+  Ce qui est en notre pouvoir a été fait — la procédure d'installation du README **nomme le
+  piège** et donne le geste sûr, et les deux remédiations d'aujourd'hui prescrivent la **fenêtre
+  neuve**, jamais le rechargement. C'est aussi ce qui rend la décision n°5 non négociable : la
+  seule protection durable est que les numéros disent la vérité.
 - Cet ADR est le propriétaire de la question. Y revenir suppose une mesure nouvelle : par exemple
   qu'une version de VSCode se mette à remplacer à chaud le code d'une extension mise à jour, ce qui
   n'est le cas d'aucune version connue à ce jour (1.122.1 mesurée).

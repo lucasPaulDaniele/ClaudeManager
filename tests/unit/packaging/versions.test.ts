@@ -86,6 +86,26 @@ describe('versions des deux artefacts', () => {
     const [major, minor] = EXTENSION_VERSION.split('.').map((n) => Number.parseInt(n, 10));
     expect(major === 0 ? (minor as number) : major).toBeGreaterThanOrEqual(3);
   });
+
+  it('la CLI a depasse 0.3.0, pour EXACTEMENT la meme raison', () => {
+    /**
+     * LA MOITIE MANQUANTE DE LA GARDE CI-DESSUS, relevee au gate final du lot C.
+     *
+     * Le meme defaut a joue cote CLI, et il a coute une phrase FAUSSE dans le README. `0.3.0`
+     * a ete pose a la correction « prouver le tour 1 » (5a4e104), puis la correction du gate
+     * de mi-lot (2431ec1) a ajoute `WINDOW_OPEN_RESPONSE_UNREADABLE` et change la lecture de
+     * `firstTurnVerified` — SANS toucher au manifeste. Deux CLI incompatibles ont donc porte
+     * `0.3.0`, et la documentation a attribue a la premiere un code que seule la seconde porte.
+     *
+     * Verifie : zero occurrence de ce code en 0.2.0 (f097537) comme en 0.3.0 (5a4e104), quinze
+     * a partir de 2431ec1. Rejoue sur la capture reelle `openSeeded`, le client 0.2.0 rend
+     * `WINDOW_RESPONSE_UNREADABLE` — le code des routes de lecture, dont la remediation d'epoque
+     * prescrit de RECHARGER LA FENETRE, c'est-a-dire de tuer la conversation qui vient de
+     * s'ouvrir. C'est ce que ce plancher existe pour ne plus jamais rendre possible.
+     */
+    const [major, minor] = (cli['version'] as string).split('.').map((n) => Number.parseInt(n, 10));
+    expect(major === 0 ? (minor as number) : major).toBeGreaterThanOrEqual(4);
+  });
 });
 
 describe('decisions d empaquetage que rien d autre ne tiendrait', () => {

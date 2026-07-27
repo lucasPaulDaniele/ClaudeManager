@@ -169,14 +169,42 @@ La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.6.0`.
 
 **Conséquence, tant qu'une fenêtre n'a pas été renouvelée** : elle sert **l'ancienne version** de
 l'extension à une CLI déjà à jour. Ce décalage n'est **jamais silencieux**, dans les deux sens —
-une fenêtre restée en 0.3.0 fait dire à `cmgr open` que le tour 1 **n'est pas vérifié** — et le
-fait sortir en **code 4**, jamais en `0` —, en vous renvoyant à `cmgr windows` pour comparer les
-versions ; une CLI restée en 0.2.0, elle, **refuse** la réponse d'une fenêtre à jour par
-`WINDOW_OPEN_RESPONSE_UNREADABLE`. **Ce second cas mérite un mot** : ce refus est **postérieur à
-l'ouverture** — la conversation est ouverte et le tour 1 joué, alors que la CLI sort en erreur.
-C'est pourquoi il porte un code distinct de `WINDOW_RESPONSE_UNREADABLE`, qui ne tombe que sur des
-routes de lecture : sa remédiation dit de **ne pas relancer à l'aveugle**, sous peine d'ouvrir une
-seconde conversation. **Installez donc les deux artefacts ensemble**, puis renouvelez les fenêtres.
+mais les deux sens ne se valent pas, et le second demande d'avoir lu ce qui suit **avant** de le
+rencontrer.
+
+**Fenêtre en retard, CLI à jour** — le cas bénin. `cmgr open` dit que le tour 1 **n'est pas
+vérifié** et sort en **code 4**, jamais en `0`, en vous renvoyant à `cmgr windows` pour comparer
+les versions. Les routes que l'ancienne extension ne connaît pas, elle les refuse en `404` →
+`WINDOW_REQUEST_REFUSED`, dont la remédiation nomme la cause.
+
+**CLI en retard, fenêtre à jour** — le cas qui peut vous coûter une conversation. Une CLI 0.2.0
+**refuse** la réponse d'une fenêtre à jour par **`WINDOW_RESPONSE_UNREADABLE`**, avec
+`missing: "firstTurnVerified"` — vérifié le 2026-07-27 en rejouant ce client d'époque sur une
+réponse réelle de fenêtre à jour. Et ce refus est **postérieur à l'ouverture** : la conversation
+**est ouverte** et le tour 1 **joué**, pendant que la CLI sort en erreur.
+
+> **Le piège tient à ce qu'une vieille CLI ne peut pas savoir.** Le code qui distingue ce cas —
+> `WINDOW_OPEN_RESPONSE_UNREADABLE`, dont la remédiation dit « la validation est postérieure à
+> l'effet de bord, ne relancez pas à l'aveugle » — **n'existe pas** dans les CLI 0.2.0 et 0.3.0 :
+> il n'a été introduit qu'après elles. Une CLI d'époque range donc ce refus avec ceux des **routes
+> de lecture**, et vous rend la remédiation qui va avec — laquelle dit de **recharger la fenêtre**
+> après mise à jour. **C'est le geste interdit ci-dessus**, et il tuerait la conversation qui vient
+> précisément de s'ouvrir.
+>
+> **Le geste, si vous y êtes** : ne rechargez rien, et ne relancez pas `cmgr open` à l'aveugle — ce
+> serait ouvrir une **seconde** conversation par-dessus la première. Regardez la fenêtre :
+> l'onglet est là. Mettez les **deux** artefacts à jour, puis ouvrez une fenêtre **neuve**.
+
+**Installez donc les deux artefacts ensemble**, puis renouvelez les fenêtres.
+
+> **Un numéro de version ne discrimine pas toujours un protocole, et c'est vrai du passé de ce
+> dépôt.** Pendant le lot C, le protocole a changé **sans** que le numéro monte : l'extension
+> **0.2.0** désigne à la fois la surface du lot B — qui n'a **aucune** route `/conversations` — et
+> celle des incréments C1 et C2, qui la porte ; la CLI **0.3.0** désigne deux états séparés par la
+> correction du gate de mi-lot. Comparer les deux numéros peut donc rendre un verdict **faux** sur
+> ces versions-là. **La règle qui vaut désormais** : toute évolution observable du protocole monte
+> le numéro, dans l'incrément qui la produit — c'est ce que le lot C a fait à partir de là
+> (extension **0.6.0**, CLI **0.5.0**). L'historique, lui, ne se réécrit pas.
 
 Constater l'activation, sans rien solliciter :
 
@@ -378,7 +406,7 @@ Ce projet repose sur des **API internes non documentées** de l'extension Claude
 - **La réponse du premier tour n'est pas rendue directement.** La sortie du terminal n'étant pas capturée par l'appelant, cette réponse se lit dans le transcript de la session ou via le hook `Stop` : c'est ce que fait `--wait`, et cela dépend du lot D.
 - **Le Workspace Trust désactive tout.** Dans une fenêtre en Restricted Mode, les commandes de l'extension Claude *n'existent pas*, sans le moindre message d'explication. `cmgr open` le détecte et le nomme (`WORKSPACE_NOT_TRUSTED`), avant toute autre tentative.
 - **Deux portes peuvent bloquer le premier tour**, une fois par machine et par dossier : l'onboarding du CLI interactif (sélecteur de thème au premier lancement, qu'aucune variable d'environnement ne court-circuite) puis la confiance du dossier (`Quick safety check…`). Les deux se franchissent sans focus, mais leur libellé n'est pas contractuel : ClaudeManager ne les franchit **jamais** à l'aveugle — il refuse en nommant (`SEED_TRANSCRIPT_NOT_FOUND`, `SEED_PROCESS_NOT_STARTED`) et renvoie au geste qui marche : lancer `claude` **une fois à la main dans ce dossier**. Les *vérifier* et les nommer d'avance relèvera de `cmgr doctor` : **lot D, pas encore livré**.
-- **L'extension compagnon écrit dans votre répertoire personnel et ouvre une écoute locale.** Chaque fenêtre publie un fichier `~/.claudemanager/windows/<pid>.json` décrivant ce qu'elle est, et ouvre un serveur HTTP sur `127.0.0.1`, port éphémère, protégé par un **jeton porteur** que ce fichier porte en clair. Le répertoire est en `0700`, l'entrée en `0600`, le jeton n'est jamais journalisé ni rendu par `/health`, et il ne survit pas à un rechargement de fenêtre. Rien n'est joignable depuis le réseau. Le détail, et les raisons de chaque choix, sont dans [l'ADR-003](docs/adr/003-registre-et-serveur-local.md).
+- **L'extension compagnon écrit dans votre répertoire personnel et ouvre une écoute locale.** Chaque fenêtre publie un fichier `~/.claudemanager/windows/<pid>.json` décrivant ce qu'elle est, et ouvre un serveur HTTP sur `127.0.0.1`, port éphémère, protégé par un **jeton porteur** que ce fichier porte en clair. Le cœur pose `0700` sur le répertoire et `0600` sur l'entrée — **ce qui protège sur un poste POSIX multi-utilisateurs, et ne protège rien sous Windows** : `chmod` n'y pilote que l'attribut « lecture seule », et un relevé y rend `666` sur les deux. Sous Windows — la **cible première** — c'est l'**ACL héritée de votre répertoire personnel** qui protège, et elle le fait : relevé à `icacls` le 2026-07-27, `SYSTEM`, `Administrators` et votre compte, personne d'autre. Vérifier la protection du jeton sur ce système se fait donc à `icacls`, jamais sur des bits POSIX qui n'y veulent rien dire. Le jeton n'est jamais journalisé ni rendu par `/health`, et il ne survit pas à un rechargement de fenêtre. Rien n'est joignable depuis le réseau. Le détail, et les raisons de chaque choix, sont dans [l'ADR-003](docs/adr/003-registre-et-serveur-local.md).
 - **Les tests bout-en-bout exigent l'extension Claude authentifiée** : ils sont donc impossibles en CI publique. La CI couvre lint, typecheck et tests unitaires avec seuils de couverture. Les tests d'intégration — une **vraie fenêtre VSCode**, via `@vscode/test-electron` — existent et tournent, mais **localement** : la CI publique devrait télécharger un éditeur complet et disposer d'un affichage. Leurs logs sont joints en preuve aux PR. Le **packaging** est outillé depuis l'incrément **C3** (`npm run package:all`), et sa vérification — le contenu réel des deux archives, `cmgr --version` lancé depuis le tarball — est **locale** au même titre, pour la même raison : elle exige des artefacts bâtis (`npm run verify:packaging`). La **publication** sur npm et sur le Marketplace, elle, n'est pas outillée : elle relève du lot **E**.
 
 ## Architecture

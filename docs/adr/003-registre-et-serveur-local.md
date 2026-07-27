@@ -282,7 +282,8 @@ l'utilisateur peut faire résoudre un nom qu'elle contrôle vers `127.0.0.1` et 
 
 - aucune route n'est accessible sans le **jeton porteur**, et l'authentification passe **avant le
   routage** (tableau ci-dessus) ;
-- ce jeton n'existe que dans un fichier du disque, en `0600` : un navigateur ne peut pas le lire ;
+- ce jeton n'existe que dans un fichier du disque — en `0600` sous POSIX, sous l'ACL du compte
+  sous Windows (voir le tableau ci-dessus) : un navigateur ne peut pas le lire ;
 - **aucun en-tête CORS n'est émis**, donc une page ne lit pas les réponses qu'elle provoquerait.
 
 **Cela change au lot C**, qui ajoutera des routes à **effet de bord** — ouvrir et fermer des
