@@ -42,36 +42,61 @@ import {
   LIST_ROUTE,
   readClosedConversation,
   readWindowConversations,
+  WINDOW_CLOSE_BUDGET_MS,
   type ClosedConversation,
   type ListedConversation,
   type WindowTransport,
 } from './protocol.js';
 
 /**
- * DELAI DE L'ENUMERATION — celui d'une lecture, parce que c'en est une.
+ * LA MARGE, ET ELLE EST LA MEME POUR LES DEUX DELAIS CI-DESSOUS.
  *
- * La route ne fait que parcourir `tabGroups` en memoire et attribuer des poignees : aucune
- * attente, aucun processus, aucun disque. C'est le meme ordre de grandeur que `/health`, et le
- * delai est la pour la meme raison — l'occupant SILENCIEUX du port ephemere (alerte n.41), qui
- * accepte la connexion et ne repond jamais. Rien ne doit pendre sur une lecture.
+ * Ce qu'elle couvre est ce qu'aucune arithmetique ne sait chiffrer : deux allers-retours sur la
+ * boucle locale, et un poste charge qui n'est pas le poste de mesure. Elle ne couvre PAS une
+ * seconde fermeture concurrente — cela, c'est le calcul qui s'en charge.
  */
-export const LIST_TIMEOUT_MS = 5_000;
+const QUEUE_MARGIN_MS = 5_000;
+
+/**
+ * DELAI DE L'ENUMERATION — CELUI D'UNE LECTURE QUI PEUT ATTENDRE SON TOUR, et c'est tout le
+ * defaut G3 du gate final.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * IL VALAIT 5 000 MS, AU MOTIF QUE LA ROUTE NE FAIT QUE PARCOURIR `tabGroups` EN MEMOIRE. C'est
+ * vrai du TRAVAIL de la route, et faux de son DELAI : les deux routes de conversation partagent
+ * une file d'un seul rang (`packages/vscode/src/tabs.ts`), et une fermeture y retient la place
+ * pendant `WINDOW_CLOSE_BUDGET_MS`. Une enumeration arrivee derriere une fermeture sortait donc
+ * en `WINDOW_UNREACHABLE` — sur une fenetre parfaitement vivante, et en DESIGNANT LA MAUVAISE
+ * CAUSE : « son serveur local n'a pas repondu », quand il repondait, en son temps.
+ *
+ * Le calcul est desormais ECRIT, et il est DERIVE des budgets de la fenetre plutot que recopie :
+ * une fermeture devant soi, plus la marge. Il suit tout seul le jour ou la fenetre change les
+ * siens — c'est la raison pour laquelle ces trois nombres vivent dans `protocol.ts`.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * CE QU'IL NE COUVRE PAS, ET C'EST NOMME : deux fermetures deja en file devant l'enumeration.
+ * C'est le meme presuppose d'appel que celui de `CLAUDE.md` — « les deux operations
+ * s'enchainent, elles ne se chevauchent pas » —, et une file plus longue que cela suppose deux
+ * appelants dans la meme fenetre, ce qu'aucun montage du produit ne fait.
+ */
+export const LIST_TIMEOUT_MS = WINDOW_CLOSE_BUDGET_MS + QUEUE_MARGIN_MS;
 
 /**
  * DELAI DE LA FERMETURE — calcule sur ce que la FENETRE se donne, comme celui de l'ouverture.
  *
- * La route de fermeture borne son propre travail (`packages/vscode/src/tabs.ts`) : un appel a
- * `tabGroups.close`, puis une CONFIRMATION par re-enumeration, bornee a **5 s**. S'y ajoute la
- * file d'un seul rang que les deux routes de conversation partagent — une enumeration
- * concurrente est instantanee, une fermeture concurrente consomme au pire ses 5 s.
+ * La route de fermeture borne son propre travail (`packages/vscode/src/tabs.ts`), et depuis la
+ * correction du gate final elle le borne EN ENTIER : l'appel a `tabGroups.close` — qui n'etait
+ * borne par rien, defaut G4 — puis la CONFIRMATION par re-enumeration. Leur somme est
+ * `WINDOW_CLOSE_BUDGET_MS`, et c'est ce qu'une fermeture retient au pire la file d'un rang que
+ * les deux routes partagent.
  *
- * 15 s couvrent donc deux fermetures serialisees au pire cas, et laissent 5 s de marge. On ne
- * va pas plus loin : abandonner une fermeture N'EMPECHE RIEN — l'onglet peut partir apres coup
- * —, et la relance est sure (un second appel ne peut que constater `CONVERSATION_ALREADY_CLOSED`).
- * C'est ce qui distingue cette borne de celle de l'ouverture, ou l'abandon laisse une
- * conversation orpheline.
+ * Ce delai couvre donc UNE fermeture devant soi, LA SIENNE, et la marge. On ne va pas plus loin :
+ * abandonner une fermeture N'EMPECHE RIEN — l'onglet peut partir apres coup —, et la relance ne
+ * peut RIEN fermer depuis que la poignee est depensee des que l'editeur a ete sollicite. C'est ce
+ * qui distingue cette borne de celle de l'ouverture, ou l'abandon laisse une conversation
+ * orpheline.
  */
-export const CLOSE_TIMEOUT_MS = 15_000;
+export const CLOSE_TIMEOUT_MS = 2 * WINDOW_CLOSE_BUDGET_MS + QUEUE_MARGIN_MS;
 
 export interface ConversationsListing {
   /** L'entree du registre, MASQUEE — c'est la seule forme affichable (jeton, chemins). */

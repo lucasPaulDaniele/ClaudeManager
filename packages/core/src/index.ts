@@ -58,7 +58,21 @@ export {
   redactWindowEntry,
   type RedactedWindowEntry,
 } from './registry/redaction.node.js';
+/**
+ * LES BORNES DE LA FERMETURE ET DU CORPS Y FIGURENT DEPUIS LA CORRECTION DU GATE FINAL, et elles
+ * respectent la regle du fichier : chacune a un consommateur HORS des tests. Les trois budgets
+ * sont lus par `packages/vscode/src/tabs.ts` (a travers `./core.js`) et par le calcul de delai de
+ * `conversations.node.ts` ; `MAX_BODY_BYTES` l'est par le serveur de la fenetre et par le
+ * transport du client. C'est ce qui empeche les deux cotes de diverger en silence.
+ *
+ * `WINDOW_CLOSE_BUDGET_MS` n'y figure PAS : sa somme n'est lue que par le calcul de delai du
+ * client, qui la prend a son module. Un symbole sans consommateur hors des tests n'entre pas
+ * dans ce contrat (V2-12).
+ */
 export {
+  CLOSE_CALL_BUDGET_MS,
+  CLOSE_CONFIRMATION_BUDGET_MS,
+  CLOSE_POLL_INTERVAL_MS,
   CLOSE_ROUTE,
   CONVERSATION_CLOSE_PATH,
   CONVERSATION_HANDLE_SHAPE,
@@ -66,6 +80,7 @@ export {
   HEALTH_PATH,
   HEALTH_ROUTE,
   LIST_ROUTE,
+  MAX_BODY_BYTES,
   OPEN_ROUTE,
   readClosedConversation,
   readHealth,

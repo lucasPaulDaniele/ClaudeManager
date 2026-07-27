@@ -20,7 +20,7 @@ export const CLI_NAME = 'cmgr';
  * test unitaire la confronte au manifeste, sur le modele de `tests/unit/vscode/manifest.test.ts` :
  * les deux ne peuvent pas se desolidariser en silence.
  */
-export const CLI_VERSION = '0.4.0';
+export const CLI_VERSION = '0.5.0';
 
 export interface UsageEntry {
   readonly name: string;

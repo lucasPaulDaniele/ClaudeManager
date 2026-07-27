@@ -80,9 +80,14 @@ interface CapturedResponses {
   readonly listConversations: CapturedExchange;
   readonly listConversationsEmpty: CapturedExchange;
   readonly closeConversation: CapturedExchange;
+  /**
+   * LES TROIS REFUS CAPTURES, et les deux premiers sont ceux du defaut G1 : avant la correction
+   * du gate final, ils fermaient la conversation du VOISIN au lieu de refuser.
+   */
   readonly closeRefusals: {
     readonly alreadyClosed: CapturedExchange;
     readonly handleStale: CapturedExchange;
+    readonly handleStaleLabelChanged: CapturedExchange;
   };
 }
 
@@ -167,6 +172,18 @@ export function conversationTab(
   };
 }
 
+/** Renumerote les onglets par groupe, comme l'editeur le fait apres une fermeture. */
+export function reindexed(
+  tabs: readonly ConversationTabLike[]
+): readonly ConversationTabLike[] {
+  const ranks = new Map<number, number>();
+  return tabs.map((item) => {
+    const rank = ranks.get(item.viewColumn) ?? 0;
+    ranks.set(item.viewColumn, rank + 1);
+    return { ...item, indexInGroup: rank };
+  });
+}
+
 export interface Companion {
   readonly entry: WindowEntry;
   readonly registryDir: string;
@@ -235,7 +252,11 @@ export async function startCompanion(options: CompanionOptions = {}): Promise<Co
     listTabs: () => state.tabs,
     closeTab: (target) => {
       closed.push(target);
-      state.tabs = state.tabs.filter((item) => item !== target);
+      // IL REINDEXE, COMME L'EDITEUR — correction d'un angle mort du gate final : fermer un
+      // onglet fait GLISSER d'un rang tous ceux qui le suivent dans son groupe. Un double qui
+      // laisse les rangs inchanges ment sur le seul point ou la fermeture peut se tromper de
+      // conversation.
+      state.tabs = reindexed(state.tabs.filter((item) => item !== target));
       return Promise.resolve(true);
     },
   };

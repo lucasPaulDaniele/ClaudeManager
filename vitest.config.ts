@@ -72,32 +72,34 @@ export default defineConfig({
          * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
          * que rien ne configurait.
          *
-         * MESURE DU 2026-07-27 (increment C4), les QUATRE metriques, SUR LES DEUX PLATEFORMES :
+         * MESURE DU 2026-07-27 (correction du gate C final, volet 1), les QUATRE metriques,
+         * SUR LES DEUX PLATEFORMES :
          *
-         *   Windows, poste de reference : 99,61 instructions · 99,18 branches · 98,98 fonctions · 99,61 lignes
-         *   Linux, CI GitHub (execution 30264426122) : 99,61 · 99,18 · 98,98 · 99,61 — IDENTIQUES
+         *   Windows, poste de reference : 99,63 instructions · 99,21 branches · 99,00 fonctions · 99,63 lignes
+         *   Linux, CI GitHub (execution 30295846984) : 99,63 · 99,21 · 99,00 · 99,63 — IDENTIQUES
          *
-         * Plancher retenu : 99 / 98 / 98 / 99 — INCHANGE. Marges : 0,61 · 1,18 · 0,98 · 0,61 point.
+         * Plancher retenu : 99 / 98 / 98 / 99 — INCHANGE. Marges : 0,63 · 1,21 · 1,00 · 0,63 point.
          *
          * ─────────────────────────────────────────────────────────────────────────────────
          * POURQUOI LES BRANCHES NE PASSENT TOUJOURS PAS A 99, ALORS QUE LA REGLE LE DEMANDERAIT.
          *
-         * La regle dit « au plancher entier de ce qui est reellement atteint », et 99,18
+         * La regle dit « au plancher entier de ce qui est reellement atteint », et 99,21
          * appellerait donc 99. LE COMPTE ABSOLU DIT AUTRE CHOSE, et c'est le meme raisonnement
-         * qu'au 2026-07-27 (volet 2), refait sur les nouveaux chiffres : **972 branches couvertes
-         * sur 980**, quand `ceil(0,99 x 980) = 971`. LA MARGE SERAIT D'UNE BRANCHE — elle etait
-         * de ZERO au volet precedent (832/840 pour 832 exigees), elle a donc gagne exactement une
-         * unite. Une branche pese 0,102 point, soit l'ecart entier au seuil : deux branches non
-         * couvertes ajoutees n'importe ou dans le depot feraient tomber la CI.
+         * qu'a l'increment C4, refait sur les nouveaux chiffres : **1 006 branches couvertes sur
+         * 1 014**, quand `ceil(0,99 x 1014) = 1004`. LA MARGE SERAIT DE DEUX BRANCHES — elle etait
+         * d'UNE a la mesure precedente (972/980 pour 971 exigees), et de ZERO a celle d'avant.
+         * Elle progresse, mais une branche pese encore 0,099 point : trois branches non couvertes
+         * ajoutees n'importe ou dans le depot feraient tomber la CI.
          *
          * C'est exactement le « seuil qu'on n'atteint pas est un seuil qu'on desactivera »
          * que cette regle existe pour empecher, atteint par l'autre bout : un plancher exact
          * mais intenable se contourne au premier incident, et c'est alors la regle entiere
          * qui perd son autorite. Un plancher tenable vaut mieux qu'un plancher exact.
          *
-         * LES FONCTIONS SONT DANS LE MEME CAS, ET IL FAUT LE DIRE : 195 sur 197, soit 98,98 %.
-         * Un seuil a 99 exigerait 196 — il n'est donc PAS atteint, la question ne se pose meme
-         * pas. Au seuil de 98, il en faut 194 : la marge est d'UNE fonction.
+         * LES FONCTIONS SONT DANS LE MEME CAS, ET LE LEUR EST PLUS NET ENCORE : 200 sur 202, soit
+         * 99,00 % — le pourcentage atteint tout juste 99, et `ceil(0,99 x 202) = 200` : la marge
+         * y serait de ZERO. Un seuil qu'UNE SEULE fonction non couverte ferait tomber n'est pas
+         * un plancher, c'est un piege. Au seuil de 98, il en faut 198 : la marge est de DEUX.
          *
          * CE QU'IL FAUDRAIT POUR RELEVER L'UN OU L'AUTRE : couvrir les branches et les fonctions
          * restantes, qui sont toutes des chemins de defaillance QU'UNE VRAIE SOCKET NE PRODUIT
@@ -119,7 +121,12 @@ export default defineConfig({
          * l'un ni l'autre — et la MESURE aussi s'y met a jour ensemble, y compris quand elle
          * ne fait pas bouger le seuil, comme le 2026-07-27.
          *
-         * Mesure precedente (2026-07-27, correction du gate C volet 2) :
+         * Mesure precedente (2026-07-27, increment C4) :
+         *   99,61 instructions · 99,18 branches · 98,98 fonctions · 99,61 lignes
+         *   (Linux, CI GitHub, execution 30264426122 : identiques). Plancher : 99 / 98 / 98 / 99.
+         *   Comptes absolus d'alors : 972 branches sur 980, marge d'UNE au seuil de 99.
+         *
+         * Mesure encore precedente (2026-07-27, correction du gate C volet 2) :
          *   99,53 instructions · 99,04 branches · 98,75 fonctions · 99,53 lignes
          *   (Linux, CI GitHub, execution 30244910972 : identiques). Plancher : 99 / 98 / 98 / 99.
          *   Comptes absolus d'alors : 832 branches sur 840, marge de ZERO au seuil de 99.
@@ -138,7 +145,9 @@ export default defineConfig({
          * desormais citees — un chiffre configure sans mesure en regard est la divergence
          * meme que ce commentaire existe pour empecher.
          *
-         * OU SONT LES 8 BRANCHES ET LES 2 FONCTIONS QUI MANQUENT, RELEVE LE 2026-07-27 (C4) :
+         * OU SONT LES 8 BRANCHES ET LES 2 FONCTIONS QUI MANQUENT — RELEVE AU 2026-07-27 (C4),
+         * INCHANGE A LA CORRECTION DU GATE FINAL : les lignes ajoutees depuis sont couvertes,
+         * et les huit branches sont exactement les memes :
          *   - `server.ts` (4 branches, 1 fonction) : « la socket ecoute sans port TCP
          *     resoluble » — `listen(0, host)` rend toujours une adresse TCP — et le rejet au
          *     demarrage — un port ephemere n'entre jamais en conflit ;
@@ -157,7 +166,10 @@ export default defineConfig({
          * branches ont ete SUPPRIMEES plutot que couvertes : une seconde recherche de poignee et
          * un `iterator.done` qu'aucun chemin ne pouvait atteindre. Un repli inatteignable laisse
          * croire qu'un cas a ete prevu et ne se verifie jamais ; le retirer valait mieux que de
-         * fabriquer un test pour l'atteindre.
+         * fabriquer un test pour l'atteindre. LA CORRECTION DU GATE FINAL L'Y A MAINTENU, par le
+         * meme moyen : les deux transitions d'etat d'une poignee sont rendues AVEC la resolution
+         * plutot qu'offertes en methodes du registre, ce qui evite une seconde recherche — donc
+         * un `handle === undefined` qu'aucun chemin ne peut produire.
          *
          * Le seuil se releve quand la couverture monte, jamais l'inverse sans justification.
          */

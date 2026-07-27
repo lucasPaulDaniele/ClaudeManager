@@ -20,8 +20,31 @@
  * retient l'etat qu'elle a releve, et EXIGE — au moment de fermer — que l'onglet designe
  * corresponde encore a ce releve. Sinon elle refuse, sans rien fermer.
  *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * ET « CORRESPONDRE » A DEUX SENS, PARCE QU'UN SEUL NE SUFFISAIT PAS. Le gate final du lot C a
+ * montre, EN L'EXECUTANT, que les quatre champs d'un onglet ne le designent pas : deux panneaux
+ * Claude fraichement attaches ne different que par leur RANG, et fermer le premier fait GLISSER
+ * le second sur le rang libere. La poignee du mort devenait alors, dans ses quatre champs, celle
+ * du vivant — et le produit fermait la conversation du voisin en rendant `ok: true`.
+ *
+ * DEUX REGLES LE FERMENT, et elles se lisent chacune en une phrase :
+ *
+ *   - LE RELEVE D'ENSEMBLE. Une poignee ne designe pas un onglet, elle designe UNE PLACE DANS UN
+ *     ARRANGEMENT : elle retient le placement de TOUTES les conversations, et la fermeture exige
+ *     qu'il n'ait pas bouge. Voir `IssuedHandle.layout` ;
+ *   - UNE POIGNEE NE FERME QU'UNE FOIS. Des que l'editeur a ete sollicite avec elle, elle est
+ *     DEPENSEE — que la fermeture aboutisse ou non. Voir `HandleState`.
+ *
+ * CE QUE CELA COUTE : les poignees sont plus fragiles. Toute conversation qui parait, disparait
+ * ou se deplace les perime toutes. C'est le prix d'un identifiant qui ne mente pas, et c'est le
+ * bon sens de l'echange — un aller-retour de plus contre une conversation qu'on ne tue pas.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
  * CE QUE CELA IMPOSE A L'APPELANT, et qui est ecrit partout ou il le lira : `cmgr close` exige
- * un `cmgr conversations` prealable, dans la meme session de fenetre. Un contrat en DEUX TEMPS.
+ * un `cmgr conversations` prealable, dans la meme session de fenetre, ET SANS QUE RIEN NE
+ * CHANGE ENTRE LES DEUX. Corollaire pour le renouvellement de conversation de `/orchestrer` :
+ * on ouvre la neuve, PUIS on liste, PUIS on ferme l'ancienne — lister avant d'ouvrir rendrait
+ * une poignee que l'ouverture perimerait aussitot.
  *
  * LES CINQ INVARIANTS QUE CE MODULE PORTE, et que deux tests garde-fous eprouvent :
  *
@@ -56,7 +79,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { ClaudeManagerError, ERROR_CODES, type ListedConversation } from './core.js';
+import {
+  ClaudeManagerError,
+  CLOSE_CALL_BUDGET_MS,
+  CLOSE_CONFIRMATION_BUDGET_MS,
+  CLOSE_POLL_INTERVAL_MS,
+  ERROR_CODES,
+  type ListedConversation,
+} from './core.js';
 import { isClaudePanel, type PanelTabLike } from './seed.js';
 
 /** Un onglet de CETTE fenetre, reduit a ce que l'identification demande. */
@@ -86,8 +116,8 @@ export interface ConversationTabsPort<T extends ConversationTabLike> {
   closeTab(tab: T): Promise<boolean>;
 }
 
-/** L'etat identifiant releve au moment de lister — ce que la fermeture doit retrouver. */
-interface IssuedHandle {
+/** L'etat identifiant d'UN onglet, releve au moment de lister. */
+interface TabIdentity {
   readonly viewType: string;
   readonly label: string;
   readonly viewColumn: number;
@@ -95,9 +125,65 @@ interface IssuedHandle {
 }
 
 /**
+ * OU EN EST UNE POIGNEE — et c'est la SECONDE moitie de la correction du defaut G1.
+ *
+ * `'listed'` — emise par une enumeration, jamais employee : la seule qui puisse fermer.
+ * `'closing'` — l'editeur a ete SOLLICITE avec elle, sans que la disparition ait ete confirmee.
+ * `'closed'` — la disparition a ete CONSTATEE : elle a ferme sa conversation.
+ *
+ * UNE POIGNEE NE FERME QU'UNE FOIS, et la transition est posee AVANT l'appel a l'editeur, pas
+ * apres : ce qui doit etre impossible est qu'une seconde demande ferme quoi que ce soit, et cela
+ * vaut que la premiere ait abouti ou non. Sans cette regle, une poignee survivait a la fermeture
+ * qu'elle avait declenchee et redevenait fermable des que l'etat de la fenetre revenait — par
+ * hasard — a ce qu'elle avait releve : un voisin qui glisse, ou une conversation neuve ouverte au
+ * meme rang avec le meme libelle. C'est l'un des deux chemins par lesquels le gate final a fait
+ * fermer la conversation du VOISIN.
+ */
+type HandleState = 'listed' | 'closing' | 'closed';
+
+/** Ce que la fenetre retient d'une poignee emise. */
+interface IssuedHandle {
+  readonly identity: TabIdentity;
+  /**
+   * LE RELEVE D'ENSEMBLE — le PLACEMENT de toutes les conversations au moment de lister.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * C'EST LA PREMIERE MOITIE DE LA CORRECTION DU DEFAUT G1, ET LE RAISONNEMENT TIENT EN UNE
+   * PHRASE : une poignee ne designe pas un onglet, elle designe UNE PLACE DANS UN ARRANGEMENT —
+   * et c'est l'arrangement qui fait qu'une place designe un onglet.
+   *
+   * Les quatre champs de `TabIdentity` NE DISCRIMINENT PAS a eux seuls : le `viewType` est le
+   * meme pour tous les panneaux Claude (D2), le libelle vaut `Claude Code` sur tout panneau
+   * fraichement attache (D24), et fermer un onglet fait GLISSER son voisin sur le rang libere.
+   * Le voisin devient alors, dans ses quatre champs, IDENTIQUE a la poignee du mort — mesure par
+   * le gate final, qui a vu la poignee de A fermer B en rendant `ok: true`.
+   *
+   * Exiger que le placement soit INCHANGE ferme ce chemin : si aucune conversation n'a paru,
+   * disparu ni bouge depuis l'enumeration, l'onglet qui occupe la coordonnee relevee EST celui
+   * qui y avait ete liste.
+   *
+   * CE QUE LE RELEVE RETIENT, ET CE QU'IL LAISSE DEHORS — le libelle des AUTRES onglets n'y
+   * entre PAS, et c'est un choix, pas un oubli. Un libelle change tout seul quelques centaines
+   * de millisecondes apres l'attachement (D24) : l'y faire entrer perimerait toutes les poignees
+   * pendant qu'une conversation voisine repond, c'est-a-dire exactement pendant le
+   * renouvellement de conversation de `/orchestrer` — ouvrir la neuve, PUIS fermer l'ancienne.
+   * Le libelle de l'onglet DESIGNE, lui, reste compare (`matches`) : c'est la verification que
+   * D24 impose, et elle porte sur ce qu'on ferme, jamais sur ce qu'on laisse.
+   *
+   * CE QUI RESTE OUVERT, NOMME PLUTOT QUE TU : deux onglets de conversation identiques en tous
+   * leurs champs releves et qui PERMUTENT sans que le placement change — un glisser-deposer de
+   * l'humain entre les deux temps. Aucun champ ne les separe, c'est le fait de l'en-tete de
+   * module, et aucune regle batie sur `vscode.Tab` ne peut le fermer. PROPRIETAIRE : lot E.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  readonly layout: string;
+  readonly state: HandleState;
+}
+
+/**
  * Combien de poignees la fenetre retient au plus.
  *
- * LES POIGNEES NE SONT PAS PURGEES A CHAQUE ENUMERATION, et c'est deliberе : c'est le SOUVENIR
+ * LES POIGNEES NE SONT PAS PURGEES A CHAQUE ENUMERATION, et c'est delibere : c'est le SOUVENIR
  * d'une poignee dont l'onglet a disparu qui permet de repondre `CONVERSATION_ALREADY_CLOSED`
  * — « il n'y a rien a fermer » — plutot que d'envoyer relister pour rien. Il faut donc une
  * borne, sans quoi une fenetre qui liste mille fois pendant qu'un libelle evolue accumulerait
@@ -111,22 +197,21 @@ interface IssuedHandle {
 const MAX_ISSUED_HANDLES = 256;
 
 /**
- * DELAI ACCORDE A L'ONGLET POUR QUITTER `tabGroups`.
+ * LES DEUX BUDGETS DE LA FERMETURE VIENNENT DU COEUR, ET ILS N'Y SONT DECLARES QU'UNE FOIS.
  *
- * `tabGroups.close` rend un thenable, mais ce qu'il resout est un BOOLEEN, pas la disparition :
- * l'enumeration est la seule preuve (invariant n.5). Elle n'est pas instantanee — la fermeture
- * traverse le processus principal de l'editeur et revient par un evenement.
+ * `CLOSE_CALL_BUDGET_MS` borne l'APPEL a l'editeur, `CLOSE_CONFIRMATION_BUDGET_MS` borne la
+ * CONFIRMATION par re-enumeration. Le sens de chacun est ci-dessous, a l'endroit ou il agit.
  *
- * 5 s, ET CE CHIFFRE N'EST PAS MESURE — il est assume comme tel, et le dire vaut mieux que de
- * laisser croire a une mesure : ce que la mesure du 2026-07-27 donne est bien plus bas (voir la
- * preuve d'execution), mais un poste charge n'est pas le poste de mesure. La borne existe pour
- * la meme raison que toutes les autres de ce depot : un onglet qu'une invite de sauvegarde
- * retient ne partira JAMAIS, et une route non bornee pendrait indefiniment.
+ * POURQUOI DANS `protocol.ts` PLUTOT QU'ICI : le CLIENT en derive ses propres delais
+ * (`conversations.node.ts`) au lieu de les recopier. Les garder locaux obligeait a redire leur
+ * valeur dans un commentaire d'un autre paquet — et c'est precisement ce qui a produit le defaut
+ * G3 du gate final, un `LIST_TIMEOUT_MS` a marge ZERO en face de ce budget-ci.
+ *
+ * NI L'UN NI L'AUTRE N'EST MESURE, et le dire vaut mieux que de laisser croire a une mesure :
+ * ce que la mesure du 2026-07-27 donne est bien plus bas, mais un poste charge n'est pas le
+ * poste de mesure. Ils existent pour la raison de toutes les bornes de ce depot : un onglet
+ * qu'une invite de sauvegarde retient ne partira JAMAIS, et une route non bornee pendrait.
  */
-const CLOSE_CONFIRMATION_BUDGET_MS = 5_000;
-
-/** Granularite du sondage de la disparition. */
-const CLOSE_POLL_INTERVAL_MS = 100;
 
 export interface ListConversationsResult {
   readonly ok: true;
@@ -200,7 +285,7 @@ function conversationTabs<T extends ConversationTabLike>(
     .sort((a, b) => a.viewColumn - b.viewColumn || a.indexInGroup - b.indexInGroup);
 }
 
-function handleOf(tab: ConversationTabLike & { readonly viewType: string }): IssuedHandle {
+function identityOf(tab: ConversationTabLike & { readonly viewType: string }): TabIdentity {
   return {
     viewType: tab.viewType,
     label: tab.label,
@@ -210,20 +295,45 @@ function handleOf(tab: ConversationTabLike & { readonly viewType: string }): Iss
 }
 
 /**
+ * LE PLACEMENT DE TOUTES LES CONVERSATIONS, en une chaine comparable — voir `IssuedHandle.layout`.
+ *
+ * `viewType` ET coordonnee, jamais le libelle : ce qui doit perimer une poignee est ce qui
+ * DEPLACE quelque chose, pas ce qu'une conversation voisine ecrit dans son titre. `JSON.stringify`
+ * plutot qu'une concatenation : il echappe, donc aucun `viewType` ne peut se faire passer pour
+ * deux entrees en portant le separateur.
+ */
+function layoutOf(tabs: readonly (ConversationTabLike & { readonly viewType: string })[]): string {
+  return JSON.stringify(tabs.map((tab) => [tab.viewType, tab.viewColumn, tab.indexInGroup]));
+}
+
+/**
  * L'onglet est-il, DANS TOUS SES CHAMPS RELEVES, celui qui avait ete liste ?
  *
- * Le parametre est type `IssuedHandle` DES DEUX COTES, et ce n'est pas un raccourci : les quatre
+ * Le parametre est type `TabIdentity` DES DEUX COTES, et ce n'est pas un raccourci : les quatre
  * champs compares sont exactement ceux que la poignee retient, et le typage interdit d'en
  * comparer un cinquieme par inadvertance — `isActive`, par exemple, qui change au moindre clic
  * de l'humain et ferait perimer une poignee sans qu'aucun onglet n'ait bouge.
+ *
+ * IL NE SUFFIT PAS, ET C'EST LE DEFAUT G1 : deux panneaux Claude fraichement attaches sont
+ * identiques dans ces quatre champs a l'exception du rang, et le rang GLISSE. C'est le releve
+ * d'ensemble qui rend cette comparaison concluante, jamais elle seule.
  */
-function matches(candidate: IssuedHandle, handle: IssuedHandle): boolean {
+function matches(candidate: TabIdentity, identity: TabIdentity): boolean {
   return (
-    candidate.viewType === handle.viewType &&
-    candidate.label === handle.label &&
-    candidate.viewColumn === handle.viewColumn &&
-    candidate.indexInGroup === handle.indexInGroup
+    candidate.viewType === identity.viewType &&
+    candidate.label === identity.label &&
+    candidate.viewColumn === identity.viewColumn &&
+    candidate.indexInGroup === identity.indexInGroup
   );
+}
+
+/** Combien d'onglets de conversation portent le releve `viewType` + `label` que voici. */
+function bearing<T extends ConversationTabLike & { readonly viewType: string }>(
+  tabs: readonly T[],
+  identity: TabIdentity
+): number {
+  return tabs.filter((tab) => tab.viewType === identity.viewType && tab.label === identity.label)
+    .length;
 }
 
 /**
@@ -238,15 +348,30 @@ type Resolution<T> =
   | {
       readonly kind: 'close';
       readonly tab: T & { readonly viewType: string };
-      readonly handle: IssuedHandle;
+      readonly identity: TabIdentity;
       /**
-       * Combien d'onglets de conversation la fenetre portait AU MOMENT DE LA RESOLUTION.
+       * CE QUE LA FENETRE PORTAIT AU MOMENT DE LA RESOLUTION — les deux comptes que la
+       * confirmation compare.
        *
-       * C'est la seconde moitie de la confirmation — voir `removalConfirmed`. Il est releve ICI,
-       * sur l'enumeration qui a servi a resoudre, et non redemande apres coup : entre les deux, un
-       * onglet peut deja avoir bouge, et le compte ne dirait plus « avant la fermeture ».
+       * Ils sont releves ICI, sur l'enumeration qui a servi a resoudre, et non redemandes apres
+       * coup : entre les deux, un onglet peut deja avoir bouge, et le compte ne dirait plus
+       * « avant la fermeture ». Voir `removalConfirmed` pour ce que chacun etablit.
        */
-      readonly conversationsBefore: number;
+      readonly before: { readonly conversations: number; readonly bearing: number };
+      /**
+       * LES DEUX TRANSITIONS D'ETAT DE LA POIGNEE, rendues avec la resolution plutot qu'offertes
+       * en methodes du registre.
+       *
+       * Meme motif que le releve rendu ci-dessus : elles sont CAPTUREES sur l'entree qu'on vient
+       * de lire. Une methode `markAsked(id)` devrait rechercher la poignee une seconde fois et
+       * prevoir son absence — un cas qu'aucun chemin ne produit, donc un repli inatteignable, ce
+       * que ce module refuse d'ecrire.
+       *
+       * `spend` : l'editeur va etre sollicite — la poignee ne fermera plus jamais rien.
+       * `confirmClosed` : la disparition a ete CONSTATEE — la poignee le dira desormais.
+       */
+      readonly spend: () => void;
+      readonly confirmClosed: () => void;
     }
   | { readonly kind: 'refuse'; readonly error: ClaudeManagerError };
 
@@ -269,11 +394,15 @@ export class ConversationHandles {
    * evite de faire perimer la poignee d'un agent qui liste deux fois avant d'agir.
    */
   list<T extends ConversationTabLike>(tabs: readonly T[]): readonly ListedConversation[] {
+    const claude = conversationTabs(tabs);
+    // LE RELEVE D'ENSEMBLE, CALCULE UNE FOIS ET DONNE A TOUTES LES POIGNEES DE CETTE
+    // ENUMERATION : elles designent des places dans le MEME arrangement.
+    const layout = layoutOf(claude);
     const claimed = new Set<string>();
     const listed: ListedConversation[] = [];
 
-    for (const tab of conversationTabs(tabs)) {
-      const id = this.reuseOrMint(tab, claimed);
+    for (const tab of claude) {
+      const id = this.reuseOrMint(tab, layout, claimed);
       claimed.add(id);
       listed.push({
         id,
@@ -298,8 +427,17 @@ export class ConversationHandles {
    *   1. la poignee n'a jamais ete emise ici → STALE. Elle vient d'une autre fenetre, ou
    *      l'extension host a redemarre depuis (les poignees ne survivent pas), ou elle a ete
    *      evincee. On ne peut RIEN affirmer de l'onglet : relister est la seule conduite.
+   *   1 bis. LA POIGNEE A DEJA SERVI (correction du gate final, defaut G1) :
+   *      - l'editeur a ete sollicite avec elle sans que la disparition soit confirmee → STALE.
+   *        On ne peut plus rien affirmer, et surtout pas refermer ce qui occupe la place ;
+   *      - la disparition a ete CONSTATEE → DEJA FERME, et c'est une preuve POSITIVE de premiere
+   *        main : c'est nous qui l'avons fermee, on ne le deduit plus de ce qu'on ne voit plus.
    *   2. un onglet de conversation occupe la coordonnee relevee :
-   *      - il correspond en TOUS points → on ferme celui-la, et lui seul ;
+   *      - il correspond en tous points ET le PLACEMENT D'ENSEMBLE n'a pas bouge → on ferme
+   *        celui-la, et lui seul. Les deux conditions, jamais la premiere seule : c'est
+   *        exactement la ou le gate final a vu la poignee de A fermer B (voir `IssuedHandle`) ;
+   *      - il correspond mais le placement a change → STALE. Quelque chose a paru, disparu ou
+   *        bouge depuis l'enumeration : la coordonnee ne prouve plus rien ;
    *      - il ne correspond pas → STALE. Quelque chose est bien la, ce n'est pas provablement
    *        ce qui avait ete designe : refuser. C'est ce cas qui couvre le libelle qui CHANGE
    *        sur place, et le refuser plutot que de le fermer est tout l'objet du dispositif.
@@ -354,13 +492,49 @@ export class ConversationHandles {
         ),
       };
     }
+    if (handle.state !== 'listed') {
+      return {
+        kind: 'refuse',
+        error:
+          handle.state === 'closed'
+            ? new ClaudeManagerError(
+                ERROR_CODES.CONVERSATION_ALREADY_CLOSED,
+                'That handle has already closed its conversation tab',
+                details
+              )
+            : new ClaudeManagerError(
+                ERROR_CODES.CONVERSATION_HANDLE_STALE,
+                'That handle was already used to ask the editor to close a conversation tab',
+                details
+              ),
+      };
+    }
 
+    const { identity } = handle;
     const atCoordinate = claude.find(
-      (tab) => tab.viewColumn === handle.viewColumn && tab.indexInGroup === handle.indexInGroup
+      (tab) =>
+        tab.viewColumn === identity.viewColumn && tab.indexInGroup === identity.indexInGroup
     );
     if (atCoordinate !== undefined) {
-      if (matches(atCoordinate, handle)) {
-        return { kind: 'close', tab: atCoordinate, handle, conversationsBefore: claude.length };
+      if (matches(identityOf(atCoordinate), identity)) {
+        if (layoutOf(claude) !== handle.layout) {
+          return {
+            kind: 'refuse',
+            error: new ClaudeManagerError(
+              ERROR_CODES.CONVERSATION_HANDLE_STALE,
+              "The window's conversation tabs are no longer arranged as they were listed",
+              details
+            ),
+          };
+        }
+        return {
+          kind: 'close',
+          tab: atCoordinate,
+          identity,
+          before: { conversations: claude.length, bearing: bearing(claude, identity) },
+          spend: () => void this.issued.set(id, { ...handle, state: 'closing' }),
+          confirmClosed: () => void this.issued.set(id, { ...handle, state: 'closed' }),
+        };
       }
       return {
         kind: 'refuse',
@@ -373,7 +547,7 @@ export class ConversationHandles {
     }
 
     const movedElsewhere = claude.some(
-      (tab) => tab.viewType === handle.viewType && tab.label === handle.label
+      (tab) => tab.viewType === identity.viewType && tab.label === identity.label
     );
     return {
       kind: 'refuse',
@@ -393,14 +567,33 @@ export class ConversationHandles {
 
   private reuseOrMint(
     tab: ConversationTabLike & { readonly viewType: string },
+    layout: string,
     claimed: ReadonlySet<string>
   ): string {
-    const wanted = handleOf(tab);
+    const identity = identityOf(tab);
     // DU PLUS RECENT AU PLUS ANCIEN : deux poignees peuvent porter un releve identique — un
     // onglet ferme puis rouvert au meme rang avec le meme libelle —, et rien ne les distingue.
     // La plus recente est alors celle que l'appelant vient de voir.
     for (const [id, handle] of [...this.issued].reverse()) {
-      if (claimed.has(id) || !matches(wanted, handle)) continue;
+      // TROIS CONDITIONS, ET LES DEUX DERNIERES SONT DES CORRECTIONS DU GATE FINAL :
+      //
+      //   - UNE POIGNEE DEPENSEE N'EST JAMAIS REATTRIBUEE. Elle a servi a fermer, ou a essayer.
+      //     La reutiliser rendrait a l'appelant un identifiant que la fermeture refusera — et
+      //     lui ferait croire que relister n'a rien change, alors que c'est le geste prescrit ;
+      //   - LE RELEVE D'ENSEMBLE DOIT ETRE LE MEME. Sans cette condition, la poignee emise pour
+      //     A serait REATTRIBUEE au voisin qui a glisse sur sa place : le meme identifiant
+      //     designerait deux conversations differentes a deux instants, et un appelant qui
+      //     reliste — le geste prescrit — retrouverait « son » identifiant sur la conversation
+      //     de quelqu'un d'autre. Un arrangement qui a bouge rend donc des poignees NEUVES, et
+      //     les anciennes refusent, ce qui est exactement ce qu'on veut leur faire dire.
+      if (
+        claimed.has(id) ||
+        handle.state !== 'listed' ||
+        handle.layout !== layout ||
+        !matches(identity, handle.identity)
+      ) {
+        continue;
+      }
       // Reinsertion : la poignee redevient la plus RECEMMENT VUE, donc la derniere a etre
       // evincee. Sans cela, une poignee vivante sortirait avant une poignee morte plus jeune.
       this.issued.delete(id);
@@ -409,7 +602,7 @@ export class ConversationHandles {
     }
 
     const id = randomUUID();
-    this.issued.set(id, wanted);
+    this.issued.set(id, { identity, layout, state: 'listed' });
     return id;
   }
 
@@ -444,17 +637,25 @@ export class ConversationHandles {
  * cesse d'etre observable.
  *
  * LA REGLE RETENUE AJOUTE UNE CONJONCTION, ELLE N'EN REMPLACE AUCUNE : le nombre d'onglets de
- * conversation doit avoir DIMINUE depuis le releve de resolution, ET plus rien ne doit correspondre.
- * La propriete qui compte se lit en une ligne : ce qu'elle confirme est un SOUS-ENSEMBLE STRICT de
- * ce que confirmait la regle precedente. Elle ne peut donc introduire AUCUN faux succes nouveau —
- * elle ne peut que refuser de confirmer plus souvent.
+ * conversation doit avoir DIMINUE depuis le releve de resolution, ET il doit y avoir UN DE MOINS
+ * portant le releve `viewType` + `label` de celui qu'on a ferme.
+ *
+ * LE SECOND TERME A CHANGE A LA CORRECTION DU GATE FINAL, ET IL LE FALLAIT. Il exigeait que plus
+ * AUCUN onglet ne corresponde a la poignee — COORDONNEE COMPRISE —, ce qui echouait sur le cas le
+ * plus ordinaire du produit : deux conversations fraichement attachees portent le meme libelle
+ * (D24), et fermer la premiere fait GLISSER la seconde sur sa coordonnee. La confirmation voyait
+ * alors « quelque chose qui correspond encore » et rendait `CONVERSATION_CLOSE_FAILED` sur une
+ * fermeture parfaitement REUSSIE — apres 5 s d'attente inutile, et en invitant a une relance qui,
+ * avant la regle de la poignee depensee, fermait la conversation du VOISIN.
+ *
+ * Compter plutot que chercher retire la coordonnee de l'equation sans rien perdre : un onglet de
+ * moins portant ce libelle est un fait que le glissement ne peut pas fabriquer.
  *
  * LES DEUX AUTRES REGLES CANDIDATES SONT CHACUNE PIRE, et il faut dire pourquoi :
  *
- *   - COMPARER SANS LE LIBELLE (coordonnee + `viewType` seuls) : le cas ORDINAIRE d'une fermeture
- *     est qu'un voisin GLISSE d'un rang sur la coordonnee liberee. La confirmation y verrait un
- *     onglet « toujours la » et rendrait `CONVERSATION_CLOSE_FAILED` sur une fermeture parfaitement
- *     REUSSIE — apres 5 s d'attente inutile, et sur le chemin nominal. Inacceptable ;
+ *   - LE SEUL COMPTE D'ONGLETS DE CONVERSATION, sans le second terme : il suffirait qu'un AUTRE
+ *     onglet se ferme pendant l'attente pour confirmer une fermeture qui n'a pas eu lieu. C'est
+ *     un faux succes a DEUX evenements, quand le second terme en exige trois ;
  *   - `onDidChangeTabs`, dont l'evenement porte `closed: readonly Tab[]` : ce serait la preuve
  *     positive ideale, mais elle exige de comparer des `vscode.Tab` PAR IDENTITE D'OBJET. Or ce
  *     paquet a deja DECIDE l'inverse, et l'a ecrit dans `selectNewPanel` : « rien ne documente que
@@ -466,14 +667,16 @@ export class ConversationHandles {
  *
  * CE QUI RESTE, NOMME PLUTOT QUE TU — deux trous, et ils sont dans des directions differentes :
  *
- *   (a) FAUX SUCCES RESIDUEL, strictement plus etroit qu'avant : il faut desormais que `close`
- *       echoue silencieusement, QUE le libelle change, ET qu'un AUTRE onglet de conversation se
- *       ferme dans la meme fenetre de 5 s. Trois evenements au lieu de deux ;
- *   (b) FAUX ECHEC NOUVEAU : si la fermeture reussit mais qu'une conversation s'OUVRE dans la meme
+ *   (a) FAUX SUCCES RESIDUEL : il faut que `close` echoue silencieusement, QUE le libelle de
+ *       l'onglet non ferme change, ET qu'un AUTRE onglet de conversation se ferme dans la meme
+ *       fenetre de 5 s. Trois evenements, dont un — la defaillance muette de `tabGroups.close` —
+ *       n'a jamais ete observe ;
+ *   (b) FAUX ECHEC : si la fermeture reussit mais qu'une conversation s'OUVRE dans la meme
  *       fenetre pendant l'attente, le compte ne diminue pas et la route rend
  *       `CONVERSATION_CLOSE_FAILED` sur une fermeture reussie. C'est atteignable — les ouvertures
- *       et les fermetures ont des files distinctes —, mais c'est la direction SURE : relancer est
- *       sans danger, `cmgr conversations` dit l'etat reel, et la remediation le dit.
+ *       et les fermetures ont des files distinctes —, mais c'est la direction SURE : la poignee
+ *       est depensee, la relance ne peut RIEN fermer, `cmgr conversations` dit l'etat reel, et la
+ *       remediation porte les deux.
  *
  * PROPRIETAIRE DE CES DEUX TROUS : le **lot E**, dont l'E2E multi-fenetres est le seul cadre ou
  * une ouverture et une fermeture concurrentes s'observent sur du reel. Aucun montage unitaire ne
@@ -482,12 +685,12 @@ export class ConversationHandles {
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 function removalConfirmed<T extends ConversationTabLike>(
-  handle: IssuedHandle,
-  conversationsBefore: number,
+  identity: TabIdentity,
+  before: { readonly conversations: number; readonly bearing: number },
   tabs: readonly T[]
 ): boolean {
   const claude = conversationTabs(tabs);
-  return claude.length < conversationsBefore && !claude.some((tab) => matches(tab, handle));
+  return claude.length < before.conversations && bearing(claude, identity) < before.bearing;
 }
 
 /**
@@ -544,8 +747,53 @@ export function createConversationRoutes<T extends ConversationTabLike>(
       isActive: resolution.tab.isActive,
     };
 
-    // UN SEUL ONGLET, celui que la resolution a prouve, et le port n'en prend pas d'autre.
-    const editorReportedClosed = await port.closeTab(resolution.tab);
+    // LA POIGNEE EST DEPENSEE AVANT MEME QUE L'EDITEUR NE SOIT SOLLICITE, jamais apres : entre
+    // les deux, une seconde demande porterait sur une poignee que la premiere a deja engagee.
+    resolution.spend();
+
+    /**
+     * UN SEUL ONGLET, celui que la resolution a prouve — et l'attente EST BORNEE (defaut G4).
+     *
+     * `await port.closeTab(...)` ne l'etait par rien, alors que le danger meme qui justifie le
+     * budget de confirmation — « un onglet qu'une invite de sauvegarde retient ne partira
+     * JAMAIS » — est precisement celui qui peut faire pendre cet appel. La route entiere
+     * annoncait « je borne mon propre travail », et c'est sur cette annonce que le client
+     * calcule ses delais.
+     *
+     * LE SONDAGE PASSE PAR LA MEME ATTENTE INJECTEE que la confirmation, et c'est delibere : un
+     * second point d'injection — ou un `setTimeout` en dur — rendrait ce chemin ininspectable
+     * sans patienter cinq secondes pour de vrai. La course rend la main DES que l'editeur
+     * repond : le cas nominal ne paie aucun tour d'attente.
+     */
+    let answered: boolean | undefined;
+    const call = port.closeTab(resolution.tab).then((reported) => {
+      answered = reported;
+    });
+    // Le rejet est traite par la course ci-dessous tant qu'on l'attend encore ; ce garde couvre
+    // le cas ou l'on a DEJA abandonne — sans lui, un rejet tardif remonterait en exception non
+    // capturee dans l'extension host, c'est-a-dire dans l'editeur de l'utilisateur.
+    void call.catch(() => undefined);
+
+    let askedMs = 0;
+    while (answered === undefined) {
+      if (askedMs >= CLOSE_CALL_BUDGET_MS) {
+        throw new ClaudeManagerError(
+          ERROR_CODES.CONVERSATION_CLOSE_FAILED,
+          'The editor never answered the request to close the conversation tab',
+          // `editorAnswered: false` — et non un `editorReportedClosed` fabrique : l'editeur n'a
+          // rien resolu du tout, le dire autrement serait inventer un releve.
+          {
+            editorAnswered: false,
+            waitedMs: askedMs,
+            conversationsBefore: resolution.before.conversations,
+            conversationsAfter: conversationTabs(port.listTabs()).length,
+          }
+        );
+      }
+      await Promise.race([call, wait(CLOSE_POLL_INTERVAL_MS)]);
+      askedMs += CLOSE_POLL_INTERVAL_MS;
+    }
+    const editorReportedClosed = answered;
 
     // ---- INVARIANT n.5 : l'ENUMERATION fait foi, jamais le booleen ------------------------
     //
@@ -554,19 +802,20 @@ export function createConversationRoutes<T extends ConversationTabLike>(
     // `remaining` mentirait sur celui qu'on vient de constater.
     let waitedMs = 0;
     let tabs = port.listTabs();
-    while (!removalConfirmed(resolution.handle, resolution.conversationsBefore, tabs)) {
+    while (!removalConfirmed(resolution.identity, resolution.before, tabs)) {
       if (waitedMs >= CLOSE_CONFIRMATION_BUDGET_MS) {
         throw new ClaudeManagerError(
           ERROR_CODES.CONVERSATION_CLOSE_FAILED,
           'The conversation tab was not observed leaving tabGroups after the editor was asked to close it',
-          // DES NOMBRES ET UN BOOLEEN, jamais un libelle. Les deux comptes sont rendus parce
+          // DES NOMBRES ET DES BOOLEENS, jamais un libelle. Les deux comptes sont rendus parce
           // qu'ils DISCRIMINENT : `conversationsAfter` egal a `conversationsBefore` designe une
           // fenetre ou rien n'a disparu, un compte plus bas designe l'ouverture concurrente que
           // `removalConfirmed` documente comme faux echec possible.
           {
+            editorAnswered: true,
             editorReportedClosed,
             waitedMs,
-            conversationsBefore: resolution.conversationsBefore,
+            conversationsBefore: resolution.before.conversations,
             conversationsAfter: conversationTabs(tabs).length,
           }
         );
@@ -576,10 +825,16 @@ export function createConversationRoutes<T extends ConversationTabLike>(
       tabs = port.listTabs();
     }
 
+    // CONSTATEE, donc DITE : la poignee repondra desormais « deja fermee » en le SACHANT, plutot
+    // que de le deduire de ce qu'elle ne retrouve plus.
+    resolution.confirmClosed();
     const remaining = conversationTabs(tabs).length;
+    // LES DEUX ATTENTES SONT DITES SEPAREMENT : elles ont des causes differentes — un editeur
+    // lent a repondre n'est pas un onglet lent a partir —, et ce journal est ce qui reste pour
+    // en juger quand la duree deviendra suspecte.
     log(
-      `closed one conversation tab after ~${waitedMs} ms ` +
-        `(editorReportedClosed=${String(editorReportedClosed)}, ${remaining} left)`
+      `closed one conversation tab after ~${askedMs} ms of editor call and ~${waitedMs} ms of ` +
+        `confirmation (editorReportedClosed=${String(editorReportedClosed)}, ${remaining} left)`
     );
     return { ok: true, extHostPid, closed, remaining, editorReportedClosed };
   };

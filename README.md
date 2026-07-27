@@ -128,8 +128,8 @@ npm run package:all
 `artifacts/` contient alors exactement deux fichiers :
 
 ```
-artifacts/claudemanager-vscode-0.5.0.vsix    # l'extension compagnon
-artifacts/claudemanager-cli-0.4.0.tgz        # le binaire cmgr
+artifacts/claudemanager-vscode-0.6.0.vsix    # l'extension compagnon
+artifacts/claudemanager-cli-0.5.0.tgz        # le binaire cmgr
 ```
 
 Pour contrôler que ces archives portent bien ce qu'il faut — les **deux** racines compilées,
@@ -142,11 +142,11 @@ npm run verify:packaging
 ### 2. Installer l'extension compagnon
 
 ```bash
-code --install-extension artifacts/claudemanager-vscode-0.5.0.vsix
+code --install-extension artifacts/claudemanager-vscode-0.6.0.vsix
 code --list-extensions --show-versions | grep claudemanager
 ```
 
-La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.5.0`.
+La seconde commande doit afficher `claudemanager.claudemanager-vscode@0.6.0`.
 
 > **⚠️ Une fenêtre DÉJÀ OUVERTE ne prend pas cette installation — ni une première, ni une mise à
 > jour. Il faut une fenêtre NEUVE.** Le seul `activationEvents` de l'extension est
@@ -201,7 +201,7 @@ VSCode l'ignore, il n'est ni chargé ni listé par `code --list-extensions`.
 la version installée est bien celle attendue, puis supprimez le vestige à la main :
 
 ```bash
-code --list-extensions --show-versions | grep claudemanager   # doit dire @0.5.0
+code --list-extensions --show-versions | grep claudemanager   # doit dire @0.6.0
 rm -rf ~/.vscode/extensions/claudemanager.claudemanager-vscode-0.1.0
 ```
 
@@ -211,8 +211,8 @@ discriminant dans le nom de ce répertoire.
 ### 3. Installer la CLI
 
 ```bash
-npm install -g ./artifacts/claudemanager-cli-0.4.0.tgz
-cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.4.0"}
+npm install -g ./artifacts/claudemanager-cli-0.5.0.tgz
+cmgr --version     # {"command":"version","ok":true,"name":"cmgr","version":"0.5.0"}
 cmgr windows       # les fenêtres pilotables, jeton masqué
 ```
 
@@ -227,7 +227,7 @@ ce qu'il exécute est dedans.
 |---|---|
 | **Précondition — le CLI `claude` doit avoir été autorisé, ET le dossier approuvé** | `cmgr open` joue le tour 1 dans un terminal masqué. Le CLI interactif franchit deux portes avant d'écrire quoi que ce soit : l'**autorisation OAuth**, que seul le propriétaire du compte peut accorder, et la **confiance du dossier** (`Quick safety check…`), posée **par répertoire** et **jamais héritée d'un dossier voisin**. **Mesuré le 2026-07-26** sur une machine dont l'OAuth était accordé : dans un dossier **neuf**, le CLI reste dans son écran d'accueil et n'écrit **aucun** transcript — observé 180 s durant ; dans un dossier déjà approuvé, le même prompt écrit son transcript en **2,5 s**. `cmgr open` ne se laisse plus abuser : il **refuse en nommant** `SEED_TRANSCRIPT_NOT_FOUND` au lieu d'ouvrir un panneau vide. Remède : lancer `claude` **une fois à la main dans ce dossier**, accorder l'autorisation et approuver le dossier. |
 | **Fermer une conversation TUE son processus** | **Mesuré le 2026-07-27** : le `claude.exe` de la conversation meurt avec son onglet. Ce n'est pas une perte de données — le **transcript survit intact**, et une réouverture sur le même `sessionId` retrouve la conversation *et son historique*. Mais c'est un **ordre d'opérations** : pour renouveler une conversation, **ouvrir la neuve d'abord, fermer l'ancienne ensuite**. Une conversation qui fermerait son propre onglet tuerait le processus même qui attend la réponse de `cmgr close`. |
-| **Une poignée de conversation périme** | `cmgr close` exige un `cmgr conversations` **préalable**, dans la même session de fenêtre : aucun onglet Claude ne porte d'identifiant stable, et la fermeture refuse plutôt que de fermer au plus probable. Si l'onglet a bougé ou si son libellé a changé, le refus est nommé (`CONVERSATION_HANDLE_STALE`) et **rien n'est fermé** — relister, puis vérifier que la conversation visée est bien encore là avant de retenter. |
+| **Une poignée de conversation périme — vite** | `cmgr close` exige un `cmgr conversations` **préalable**, dans la même session de fenêtre, **et sans que rien ne change entre les deux** : une poignée désigne une **place dans un arrangement**, et toute conversation qui s'ouvre, se ferme ou se déplace les périme **toutes**. Une poignée déjà employée pour fermer ne ferme jamais deux fois. Aucun onglet Claude ne porte d'identifiant stable, et la fermeture refuse plutôt que de fermer au plus probable : le refus est nommé (`CONVERSATION_HANDLE_STALE`) et **rien n'est fermé** — relister, puis vérifier que la conversation visée est bien encore là avant de retenter. |
 | **Pas de lecture de réponse** | Le tour 1 est **vérifié** — `firstTurnVerified: true` atteste que le transcript de la session **existe** —, mais son **contenu** n'est pas lu : la réponse elle-même n'est pas restituée. Il faudra le transcript ou le hook `Stop` (lot D, `cmgr open --wait`). |
 | **Pas de `cmgr doctor`** | Le diagnostic des présupposés ci-dessus relève du lot D. En attendant, ils se vérifient à la main.  |
 
@@ -297,13 +297,30 @@ route ([mesuré](docs/compatibilite.md), D24), la position bouge au premier dép
 
 ```bash
 cmgr conversations                    # 1. lister — la sortie porte les poignées
-cmgr close 8d1f4f0e-6d2f-4a63-…       # 2. fermer celle qu'on a choisie
+cmgr close 8d1f4f0e-6d2f-4a63-…       # 2. fermer celle qu'on a choisie, sans rien changer entre
 ```
 
-Le prix est un refus (`CONVERSATION_HANDLE_STALE`) quand la conversation a bougé entre les deux ;
-le gain est qu'**aucun onglet n'est jamais fermé sans preuve**. Après un refus : relister, et
-**vérifier que la conversation visée y figure encore** — si elle n'y est plus, elle est déjà
-fermée, et il ne faut surtout pas fermer celle qui a pris sa place.
+**Une poignée désigne une place dans un arrangement, pas un onglet — et c'est la correction du
+gate final du lot C.** Les quatre champs d'un onglet ne le distinguent pas : deux panneaux Claude
+fraîchement attachés ne diffèrent que par leur **rang**, et fermer le premier fait **glisser** le
+second sur le rang libéré. Le voisin devenait alors, champ pour champ, la poignée du disparu — et
+le produit fermait *sa* conversation en annonçant un succès. Deux règles ferment ce chemin :
+
+- **le relevé d'ensemble** — la poignée retient le placement de **toutes** les conversations, et la
+  fermeture exige qu'il n'ait pas bougé. Toute conversation qui **s'ouvre, se ferme ou se déplace**
+  périme donc **toutes** les poignées de la fenêtre ;
+- **une poignée ne ferme qu'une fois** — dès que l'éditeur a été sollicité avec elle, elle est
+  dépensée, que la fermeture ait abouti ou non.
+
+Conséquence pratique, et elle vaut d'être lue avant d'écrire un script : **fermer aussitôt après
+avoir listé**, et, pour renouveler une conversation, **ouvrir la neuve → lister → fermer
+l'ancienne**. Lister avant d'ouvrir rend une poignée que l'ouverture périme aussitôt.
+
+Le prix est un refus (`CONVERSATION_HANDLE_STALE`) chaque fois que quelque chose a bougé entre les
+deux temps ; le gain est qu'**aucun onglet n'est jamais fermé sans preuve**, et que **relancer une
+fermeture ne peut plus rien fermer**. Après un refus : relister, et **vérifier que la conversation
+visée y figure encore** — si elle n'y est plus, elle est déjà fermée, et il ne faut surtout pas
+fermer celle qui a pris sa place.
 
 **Cible, pas encore livré** — chaque ligne renvoie au lot qui la porte :
 

@@ -132,6 +132,55 @@ describe('createLoopbackTransport', () => {
     expect(response.body).not.toContain('�');
   });
 
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * G5 — LE CORPS DE LA REPONSE EST BORNE, COMME CELUI DE LA REQUETE L'EST COTE SERVEUR.
+   *
+   * Le serveur borne ce qu'il LIT depuis le lot B, au motif ecrit : ne pas se faire epuiser la
+   * memoire par une seule requete mal formee. Le client, lui, accumulait sans borne — et le
+   * producteur du corps n'est meme pas forcement notre serveur (alerte n.41).
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('un corps DEMESURE est coupe, et le refus porte un code systeme', async () => {
+    // Un mega-octet et demi, servi en morceaux, `content-length` menteur : rien n'oblige un
+    // occupant du port a s'arreter, et c'est le seul cas ou la borne agit.
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    raw = await startRawServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      const flood = (remaining: number): void => {
+        if (remaining === 0) {
+          response.end();
+          return;
+        }
+        response.write(chunk, () => flood(remaining - 1));
+      };
+      flood(24);
+    });
+
+    const failure = await transport(specFor(raw.port, 'peu-importe')).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    // La demande est ABANDONNEE, avec un code systeme plutot qu'un `UNKNOWN` : c'est ce que
+    // l'appelant lira dans `WINDOW_UNREACHABLE.details.cause`.
+    expect(failure).toBeDefined();
+    expect(systemErrorCode(failure)).toBe('EMSGSIZE');
+  });
+
+  it('un corps SOUS la borne passe entier — la garde ne coupe pas ce qui est legitime', async () => {
+    // Le controle positif : sans lui, une borne posee a zero passerait le test precedent.
+    const payload = JSON.stringify({ ok: true, texte: 'a'.repeat(900_000) });
+    raw = await startRawServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(payload);
+    });
+
+    const response = await transport(specFor(raw.port, 'peu-importe'));
+
+    expect(response.body).toHaveLength(payload.length);
+  });
+
   it('une reponse interrompue en cours de corps leve, plutot que de rester en suspens', async () => {
     raw = await startRawServer((_request, response) => {
       // Un `content-length` que le corps ne tiendra pas, puis la socket meurt.

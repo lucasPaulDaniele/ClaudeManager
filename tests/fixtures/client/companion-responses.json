@@ -92,36 +92,43 @@
     "route": "GET /conversations",
     "status": 200,
     "capturedOn": "2026-07-27",
-    "companionVersion": "0.5.0",
-    "note": "Capture C4, vraie fenetre, scenario close-conversation. Les LIBELLES sont ceux des panneaux que LE HARNAIS a crees ('Conversation A', 'Conversation B') : un libelle de vraie conversation est derive de son CONTENU (D24) et n'a rien a faire dans un depot public. Le viewType, lui, est celui que VSCode a REELLEMENT rendu — prefixe, comme sur un vrai panneau Claude.",
-    "body": "{\"ok\":true,\"extHostPid\":22376,\"conversations\":[{\"id\":\"f1c29ec4-6098-4077-a8f9-083ade4df927\",\"label\":\"Conversation A\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbeA\",\"viewColumn\":1,\"indexInGroup\":1,\"isActive\":false},{\"id\":\"b5511483-ea7a-4c72-8abf-d60c6e8fb7ac\",\"label\":\"Conversation B\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbeB\",\"viewColumn\":1,\"indexInGroup\":2,\"isActive\":false}]}"
+    "companionVersion": "code de la correction du gate C final (volet 1), publie en 0.6.0 — a l instant de la capture le manifeste portait encore 0.5.0, le numero ayant ete releve ensuite dans le meme increment",
+    "note": "Capture de la correction du gate C final, vraie fenetre, scenario close-conversation. TROIS conversations, et le MEME viewType pour toutes : c'est ce que rend une vraie fenetre (D2), et l'ancienne capture — deux viewType distincts — rendait le montage moins adverse que le reel. Les LIBELLES sont ceux des panneaux que LE HARNAIS a crees : un libelle de vraie conversation est derive de son CONTENU (D24) et n'a rien a faire dans un depot public. Le viewType, lui, est celui que VSCode a REELLEMENT rendu — prefixe, comme sur un vrai panneau Claude.",
+    "body": "{\"ok\":true,\"extHostPid\":5700,\"conversations\":[{\"id\":\"f19fbda2-d702-4b86-bf3d-866b1f8e77a8\",\"label\":\"Conversation A\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbe\",\"viewColumn\":1,\"indexInGroup\":1,\"isActive\":false},{\"id\":\"f92f9f38-02b3-42ec-bddb-4e27c9cf648f\",\"label\":\"Conversation B\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbe\",\"viewColumn\":1,\"indexInGroup\":2,\"isActive\":false},{\"id\":\"71eb93b5-9170-45a3-bec4-395ee478d717\",\"label\":\"Conversation C\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbe\",\"viewColumn\":1,\"indexInGroup\":3,\"isActive\":false}]}"
   },
   "listConversationsEmpty": {
     "route": "GET /conversations",
     "status": 200,
     "capturedOn": "2026-07-27",
-    "companionVersion": "0.5.0",
-    "note": "La MEME route apres la fermeture des deux onglets : une liste VIDE, en 200. Elle est conservee parce que ce n'est PAS une erreur, et qu'un client qui la refuserait casserait sur l'etat le plus ordinaire d'une fenetre.",
-    "body": "{\"ok\":true,\"extHostPid\":22376,\"conversations\":[]}"
+    "companionVersion": "code de la correction du gate C final (volet 1), publie en 0.6.0 — a l instant de la capture le manifeste portait encore 0.5.0, le numero ayant ete releve ensuite dans le meme increment",
+    "note": "La MEME route apres la fermeture de toutes les conversations : une liste VIDE, en 200. Elle est conservee parce que ce n'est PAS une erreur, et qu'un client qui la refuserait casserait sur l'etat le plus ordinaire d'une fenetre.",
+    "body": "{\"ok\":true,\"extHostPid\":5700,\"conversations\":[]}"
   },
   "closeConversation": {
     "route": "POST /conversations/close",
     "status": 200,
     "capturedOn": "2026-07-27",
-    "companionVersion": "0.5.0",
-    "note": "`editorReportedClosed` est un RELEVE de ce que tabGroups.close a resolu ; la fenetre n'a rendu ce succes qu'apres avoir CONSTATE par re-enumeration que l'onglet avait quitte tabGroups. L'onglet actif etait identique avant et apres (preserveFocus: true).",
-    "body": "{\"ok\":true,\"extHostPid\":22376,\"closed\":{\"id\":\"b5511483-ea7a-4c72-8abf-d60c6e8fb7ac\",\"label\":\"Conversation B\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbeB\",\"viewColumn\":1,\"indexInGroup\":2,\"isActive\":false},\"remaining\":1,\"editorReportedClosed\":true}"
+    "companionVersion": "code de la correction du gate C final (volet 1), publie en 0.6.0 — a l instant de la capture le manifeste portait encore 0.5.0, le numero ayant ete releve ensuite dans le meme increment",
+    "note": "La fermeture porte sur l'onglet du MILIEU — celui qui a un voisin de chaque cote —, et c'est le cas ou le defaut G1 se produisait : le voisin glisse sur la coordonnee liberee. `editorReportedClosed` est un RELEVE de ce que tabGroups.close a resolu ; la fenetre n'a rendu ce succes qu'apres avoir CONSTATE par re-enumeration que l'onglet avait quitte tabGroups. L'onglet actif etait identique avant et apres (preserveFocus: true).",
+    "body": "{\"ok\":true,\"extHostPid\":5700,\"closed\":{\"id\":\"f92f9f38-02b3-42ec-bddb-4e27c9cf648f\",\"label\":\"Conversation B\",\"viewType\":\"mainThreadWebview-claudeVSCodePanelCloseProbe\",\"viewColumn\":1,\"indexInGroup\":2,\"isActive\":false},\"remaining\":2,\"editorReportedClosed\":true}"
   },
   "closeRefusals": {
     "capturedOn": "2026-07-27",
-    "companionVersion": "0.5.0",
-    "note": "Les corps sont recopies SANS leur champ `remediation`, qui est du texte de plusieurs lignes que le client NE LIT JAMAIS : il relit la remediation dans sa propre table (ClaudeManagerError). Ce qui fait contrat ici est `error` et `details` — et `details` ne porte que des NOMBRES, jamais un libelle.",
+    "companionVersion": "code de la correction du gate C final (volet 1), publie en 0.6.0 — a l instant de la capture le manifeste portait encore 0.5.0, le numero ayant ete releve ensuite dans le meme increment",
+    "note": "Les corps sont recopies SANS leur champ `remediation`, qui est du texte de plusieurs lignes que le client NE LIT JAMAIS : il relit la remediation dans sa propre table (ClaudeManagerError). Ce qui fait contrat ici est `error` et `details` — et `details` ne porte que des NOMBRES, jamais un libelle. LES TROIS SONT DES REFUS QUI, AVANT LA CORRECTION DU GATE FINAL, FERMAIENT LA CONVERSATION DU VOISIN pour les deux premiers.",
     "alreadyClosed": {
       "status": 500,
-      "body": "{\"ok\":false,\"error\":\"CONVERSATION_ALREADY_CLOSED\",\"message\":\"No conversation tab matches that handle any more\",\"details\":{\"conversations\":1}}"
+      "note": "LA RELANCE : une poignee DEJA employee, presentee alors que le voisin a glisse sur la place liberee et porte desormais le libelle du disparu. La fenetre se SOUVIENT d'avoir ferme cet onglet — preuve positive de premiere main.",
+      "body": "{\"ok\":false,\"error\":\"CONVERSATION_ALREADY_CLOSED\",\"message\":\"That handle has already closed its conversation tab\",\"details\":{\"conversations\":2}}"
     },
     "handleStale": {
       "status": 500,
+      "note": "L'ARRANGEMENT A CHANGE : poignee JAMAIS employee, presentee apres que l'humain a ferme un onglet a la main et que le voisin a glisse sur sa coordonnee en portant son libelle.",
+      "body": "{\"ok\":false,\"error\":\"CONVERSATION_HANDLE_STALE\",\"message\":\"The window's conversation tabs are no longer arranged as they were listed\",\"details\":{\"conversations\":1}}"
+    },
+    "handleStaleLabelChanged": {
+      "status": 500,
+      "note": "LE LIBELLE A CHANGE SUR PLACE (D24), sans que rien n'ait bouge : c'est le cas qui justifie tout le dispositif de verification, et le refus porte ici sur le seul libelle.",
       "body": "{\"ok\":false,\"error\":\"CONVERSATION_HANDLE_STALE\",\"message\":\"The tab at that position is no longer the one that was listed\",\"details\":{\"conversations\":1}}"
     }
   }

@@ -73,6 +73,30 @@ interface PortOptions {
   readonly leaves?: boolean;
 }
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * LE DOUBLE REINDEXE, ET C'EST LA CORRECTION D'UN ANGLE MORT, PAS UN DETAIL DE MONTAGE.
+ *
+ * Jusqu'au gate final du lot C, `closeTab` retirait l'onglet et laissait les `indexInGroup` de
+ * ses voisins INCHANGES. Le reel fait l'inverse : fermer un onglet fait GLISSER d'un rang tous
+ * ceux qui le suivent dans son groupe. Tant que le double ment sur ce point, AUCUN test de ce
+ * fichier ne peut voir la classe de defaut ou un voisin glisse sur la coordonnee liberee et
+ * devient, dans ses quatre champs releves, indiscernable de l'onglet qui vient de partir.
+ *
+ * C'est exactement ce qui a laisse passer le defaut G1. Le double reindexe donc PAR GROUPE,
+ * comme l'editeur — `indexInGroup` compte TOUS les onglets du groupe, pas les seules
+ * conversations.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+function reindexed(tabs: readonly TestTab[]): readonly TestTab[] {
+  const ranks = new Map<number, number>();
+  return tabs.map((item) => {
+    const rank = ranks.get(item.viewColumn) ?? 0;
+    ranks.set(item.viewColumn, rank + 1);
+    return { ...item, indexInGroup: rank };
+  });
+}
+
 function portOf(tabs: readonly TestTab[], options: PortOptions = {}): TestPort {
   const closed: TestTab[] = [];
   let reads = 0;
@@ -86,7 +110,9 @@ function portOf(tabs: readonly TestTab[], options: PortOptions = {}): TestPort {
     },
     closeTab: (target) => {
       closed.push(target);
-      if (options.leaves !== false) port.tabs = port.tabs.filter((item) => item !== target);
+      if (options.leaves !== false) {
+        port.tabs = reindexed(port.tabs.filter((item) => item !== target));
+      }
       return Promise.resolve(options.reports ?? true);
     },
   };
@@ -117,6 +143,22 @@ async function refusalOf(
     return { code: named.code, details: named.details, remediation: named.remediation };
   }
   throw new Error('aucune erreur levee, alors que le test en attendait une');
+}
+
+/**
+ * L'issue d'une demande, SANS lever — succes ou code de refus, dans une seule forme comparable.
+ *
+ * Elle existe pour les scenarios de G1, et pour une raison precise : le releve du gate porte sur
+ * l'ENCHAINEMENT de deux fermetures, dont la premiere echouait. Une assertion qui interromprait le
+ * test des la premiere ne montrerait jamais ce que la SECONDE a ferme — c'est-a-dire le defaut.
+ */
+async function verdictOf(promise: Promise<{ ok: true }>): Promise<Record<string, unknown>> {
+  try {
+    return { ok: (await promise).ok };
+  } catch (error) {
+    expect(isClaudeManagerError(error), `erreur nue : ${String(error)}`).toBe(true);
+    return { refus: (error as { code: string }).code };
+  }
 }
 
 describe('GET /conversations — enumerer', () => {
@@ -312,6 +354,64 @@ describe('POST /conversations/close — la voie nominale', () => {
 
   /**
    * ─────────────────────────────────────────────────────────────────────────────────────────
+   * G4 — L'APPEL A L'EDITEUR EST BORNE, LUI AUSSI.
+   *
+   * `await port.closeTab(...)` ne l'etait par rien, alors que le danger cite pour justifier le
+   * budget de confirmation — une invite de sauvegarde qui retient l'onglet — est precisement
+   * celui qui peut faire pendre cet appel. C'est le meme defaut que le `await
+   * terminal.processId()` non borne du gate precedent, et le client CALCULE ses propres delais
+   * sur l'annonce « la route borne son propre travail ».
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  describe("l'appel a l'editeur est BORNE", () => {
+    it('un editeur qui ne repond JAMAIS sort en CONVERSATION_CLOSE_FAILED, borne', async () => {
+      const port = portOf([tab({ tag: 'A' })]);
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      // Le thenable de `tabGroups.close` ne se resout pas : c'est ce que produit un onglet que
+      // l'editeur retient. Sans borne, la route pendrait — et le client avec elle.
+      port.closeTab = (): Promise<boolean> => new Promise<boolean>(() => undefined);
+
+      const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+      expect(refusal.code).toBe('CONVERSATION_CLOSE_FAILED');
+      // `editorAnswered: false` — et non un `editorReportedClosed` fabrique : l'editeur n'a rien
+      // resolu du tout, et inventer un releve serait exactement ce que ce module refuse.
+      expect(refusal.details).toMatchObject({ editorAnswered: false, conversationsBefore: 1 });
+      expect((refusal.details as { waitedMs: number }).waitedMs).toBeGreaterThan(0);
+      expect(port.tabs).toHaveLength(1);
+    });
+
+    it("un editeur qui REJETTE ne laisse pas de rejet non gere derriere lui", async () => {
+      // Le rejet remonte tel quel — le serveur le reduit a son seul code systeme. Ce que ce test
+      // garde EN PLUS : la promesse abandonnee est captee, sans quoi un rejet tardif remonterait
+      // en exception non capturee DANS L'EXTENSION HOST, c'est-a-dire dans l'editeur de l'humain.
+      const port = portOf([tab({ tag: 'A' })]);
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      port.closeTab = (): Promise<boolean> =>
+        Promise.reject(Object.assign(new Error('the editor refused'), { code: 'EEDITOR' }));
+
+      await expect(routes.close({ id: a?.id ?? '' })).rejects.toThrow('the editor refused');
+      // La file d'un rang n'est pas rompue : la demande suivante est servie.
+      expect((await routes.list()).conversations).toHaveLength(1);
+    });
+
+    it('la poignee est DEPENSEE meme quand l editeur n a jamais repondu', async () => {
+      const port = portOf([tab({ tag: 'A' })]);
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      port.closeTab = (): Promise<boolean> => new Promise<boolean>(() => undefined);
+
+      await refusalOf(routes.close({ id: a?.id ?? '' }));
+      const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+      expect(refusal.code).toBe('CONVERSATION_HANDLE_STALE');
+    });
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
    * LA CONFIRMATION, ET LE FAUX SUCCES QU'ELLE A LAISSE PASSER (reprise 1 de C4).
    *
    * `removalConfirmed` exige DEUX faits : plus rien ne correspond au releve, ET le nombre
@@ -452,6 +552,165 @@ describe('POST /conversations/close — la voie nominale', () => {
     expect(log.join('\n')).not.toContain('un secret de conversation');
     expect(log.join('\n')).toContain('enumerated 1 conversation tab(s)');
     expect(log.join('\n')).toContain('closed one conversation tab');
+  });
+});
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * G1 — LE DEFAUT DU GATE FINAL : DEUX ONGLETS ADJACENTS AUX LIBELLES IDENTIQUES.
+ *
+ * C'est la configuration ORDINAIRE de `/orchestrer` : un panneau fraichement attache porte
+ * `Claude Code` (mesure M1 du 2026-07-27) et le suivant aussi, tant que leur libelle n'est pas
+ * devenu derive du contenu (D24). Les quatre champs releves — `viewType` identique pour tous les
+ * panneaux Claude (D2), libelle identique, coordonnee — ne les distinguent alors QUE par le rang.
+ *
+ * Or fermer un onglet fait GLISSER son voisin sur le rang libere : le voisin devient, dans ses
+ * quatre champs, identique a la poignee du mort. Les deux scenarios ci-dessous sont ceux que le
+ * gate a executes contre le code de production, et ils ont rendu :
+ *
+ *   scenario 1 — {"ok":true,"ferme":["B"]}      : la poignee de A a ferme B, en annoncant un succes ;
+ *   scenario 2 — CONVERSATION_CLOSE_FAILED sur une fermeture REUSSIE, puis la relance — que la
+ *                remediation prescrivait comme SURE — fermait la conversation du voisin.
+ *
+ * Fermer un onglet TUE le `claude.exe` de sa session (M1) : on tuait donc une conversation
+ * vivante que personne n'avait demande de fermer.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+describe('G1 — deux conversations adjacentes aux libelles IDENTIQUES', () => {
+  /** Deux panneaux fraichement attaches : meme `viewType`, meme libelle, rangs voisins. */
+  function twoFreshPanels(): TestPort {
+    return portOf([
+      tab({ tag: 'A', label: 'Claude Code', indexInGroup: 0 }),
+      tab({ tag: 'B', label: 'Claude Code', indexInGroup: 1 }),
+    ]);
+  }
+
+  it("SCENARIO 1 — l'humain ferme A entre les deux temps : REFUS, et B est intact", async () => {
+    const port = twoFreshPanels();
+    const routes = routesOn(port);
+    const [a] = (await routes.list()).conversations;
+
+    // L'humain ferme A a la main. B glisse du rang 1 au rang 0 : il porte desormais le MEME
+    // `viewType`, le MEME libelle et la MEME coordonnee que ce que la poignee de A avait releve.
+    port.tabs = [tab({ tag: 'B', label: 'Claude Code', indexInGroup: 0 })];
+
+    const verdict = await verdictOf(routes.close({ id: a?.id ?? '' }));
+
+    // LE RELEVE DU GATE, DANS SA FORME : avant correctif, il valait `{ok: true, ferme: ['B']}` —
+    // la poignee de A fermait B, et la route annoncait un succes. La conversation du voisin doit
+    // rester VIVANTE, et son `claude.exe` avec elle.
+    expect({ ...verdict, ferme: port.closed.map((t) => t.tag) }).toEqual({
+      refus: 'CONVERSATION_HANDLE_STALE',
+      ferme: [],
+    });
+    expect(port.tabs.map((t) => t.tag)).toEqual(['B']);
+  });
+
+  it('SCENARIO 2 — fermer A reussit, et la RELANCE ne ferme rien', async () => {
+    const port = twoFreshPanels();
+    const routes = routesOn(port);
+    const [a] = (await routes.list()).conversations;
+    const id = a?.id ?? '';
+
+    // Premier temps : la fermeture designee doit REUSSIR. Le voisin glisse sur la coordonnee
+    // liberee — c'est le cas ordinaire, il ne doit pas faire echouer une fermeture reussie.
+    const premiere = await verdictOf(routes.close({ id }));
+    // Second temps : la relance sur la MEME poignee. C'est le geste que la remediation de
+    // `CONVERSATION_CLOSE_FAILED` prescrivait ; il ne doit RIEN fermer, jamais.
+    const relance = await verdictOf(routes.close({ id }));
+
+    // LES TROIS FAITS EN UNE SEULE ASSERTION, et c'est delibere : une assertion par etape
+    // s'arreterait a la premiere et ne montrerait jamais ce que la RELANCE a ferme. Avant
+    // correctif, ce releve valait
+    // `{premiere: {refus: 'CONVERSATION_CLOSE_FAILED'}, relance: {ok: true}, ferme: ['A', 'B']}`.
+    expect({ premiere, relance, ferme: port.closed.map((t) => t.tag) }).toEqual({
+      premiere: { ok: true },
+      relance: { refus: 'CONVERSATION_ALREADY_CLOSED' },
+      ferme: ['A'],
+    });
+    expect(port.tabs.map((t) => t.tag)).toEqual(['B']);
+  });
+
+  it('UNE POIGNEE NE FERME QU UNE FOIS, meme quand la fermeture a ECHOUE', async () => {
+    // La seconde moitie de la regle. Une poignee dont l'editeur n'a pas confirme la fermeture est
+    // DEPENSEE elle aussi : sans cela, un voisin qui viendrait occuper la place — ou une
+    // conversation neuve ouverte au meme rang avec le meme libelle — redeviendrait fermable par
+    // une poignee qui ne le designe plus. Le refus envoie relister, ce que la remediation dit.
+    const port = portOf([tab({ tag: 'A', label: 'Claude Code' })], { leaves: false });
+    const routes = routesOn(port);
+    const [a] = (await routes.list()).conversations;
+
+    expect((await refusalOf(routes.close({ id: a?.id ?? '' }))).code).toBe(
+      'CONVERSATION_CLOSE_FAILED'
+    );
+    const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+    expect(refusal.code).toBe('CONVERSATION_HANDLE_STALE');
+    // L'editeur n'a ete sollicite QU'UNE FOIS : la seconde demande n'a rien tente du tout.
+    expect(port.closed).toHaveLength(1);
+  });
+
+  it('APRES avoir reliste, la poignee FRAICHE ferme ce que la perimee a refuse de fermer', async () => {
+    // Le controle positif de la regle : sans lui, une regle qui refuserait TOUT passerait les
+    // trois tests ci-dessus. C'est le contrat en deux temps, joue jusqu'au bout.
+    const port = twoFreshPanels();
+    const routes = routesOn(port);
+    const [a] = (await routes.list()).conversations;
+    port.tabs = [tab({ tag: 'B', label: 'Claude Code', indexInGroup: 0 })];
+    await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+    const [fresh] = (await routes.list()).conversations;
+    // La poignee est NEUVE : celle de A ne pouvait pas etre reattribuee a B.
+    expect(fresh?.id).not.toBe(a?.id);
+    const closed = await routes.close({ id: fresh?.id ?? '' });
+
+    expect(closed.ok).toBe(true);
+    expect(port.closed.map((t) => t.tag)).toEqual(['B']);
+  });
+
+  it("le RELEVE D'ENSEMBLE perime les poignees, et le libelle d'un VOISIN n'y entre pas", async () => {
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // LA LIMITE EXACTE DE LA REGLE, ET ELLE EST CHOISIE. Le releve retient le PLACEMENT de
+    // toutes les conversations — leur `viewType` et leur coordonnee —, jamais le libelle des
+    // AUTRES. Un libelle de voisin change tout seul, quelques centaines de millisecondes apres
+    // son attachement (D24) : l'y faire entrer perimerait toutes les poignees pendant que la
+    // conversation voisine repond, c'est-a-dire exactement pendant le renouvellement de
+    // conversation de `/orchestrer` — ouvrir la neuve, PUIS fermer l'ancienne.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    const port = portOf([
+      tab({ tag: 'ancienne', label: 'Lot C, increment 4', indexInGroup: 0 }),
+      tab({ tag: 'neuve', label: 'Claude Code', indexInGroup: 1 }),
+    ]);
+    const routes = routesOn(port);
+    const [ancienne] = (await routes.list()).conversations;
+    // La conversation NEUVE repond : son libelle devient derive de son contenu.
+    port.tabs = [
+      tab({ tag: 'ancienne', label: 'Lot C, increment 4', indexInGroup: 0 }),
+      tab({ tag: 'neuve', label: 'Corriger le gate C', indexInGroup: 1 }),
+    ];
+
+    const closed = await routes.close({ id: ancienne?.id ?? '' });
+
+    expect(closed.ok).toBe(true);
+    expect(port.closed.map((t) => t.tag)).toEqual(['ancienne']);
+  });
+
+  it('mais un onglet de conversation qui APPARAIT, lui, perime tout', async () => {
+    // Le pendant du precedent : ce qui change le PLACEMENT perime, sans exception. Une
+    // conversation de plus decale les rangs et rend le releve faux — refuser est la seule
+    // conduite, la poignee ne designant plus provablement rien.
+    const port = portOf([tab({ tag: 'A', label: 'Claude Code' })]);
+    const routes = routesOn(port);
+    const [a] = (await routes.list()).conversations;
+    port.tabs = [
+      tab({ tag: 'A', label: 'Claude Code', indexInGroup: 0 }),
+      tab({ tag: 'neuve', label: 'Claude Code', indexInGroup: 1 }),
+    ];
+
+    const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+    expect(refusal.code).toBe('CONVERSATION_HANDLE_STALE');
+    expect(port.closed).toEqual([]);
   });
 });
 

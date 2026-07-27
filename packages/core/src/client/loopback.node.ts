@@ -24,7 +24,7 @@
  */
 
 import { request as httpRequest } from 'node:http';
-import type { WindowRequest, WindowResponse, WindowTransport } from './protocol.js';
+import { MAX_BODY_BYTES, type WindowRequest, type WindowResponse, type WindowTransport } from './protocol.js';
 
 /**
  * BOUCLE LOCALE EXCLUSIVEMENT, en miroir de l'ecoute du serveur.
@@ -81,7 +81,38 @@ export function createLoopbackTransport(): WindowTransport {
         },
         (incoming) => {
           const chunks: Buffer[] = [];
-          incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
+          /**
+           * LE CORPS EST BORNE, ET AU FIL DE L'EAU — accumuler puis mesurer serait exactement
+           * l'epuisement qu'on veut empecher.
+           *
+           * ─────────────────────────────────────────────────────────────────────────────────
+           * LE SERVEUR BORNE DEJA CE QU'IL LIT (`readBoundedBody`), au motif ecrit : « un
+           * serveur qui accumule un corps non borne se fait epuiser la memoire […] par une
+           * seule requete mal formee ». Le CLIENT accumulait la reponse sans borne, alors que
+           * le motif vaut a l'identique dans ce sens-la — et qu'ici le producteur du corps
+           * n'est meme pas forcement notre serveur (alerte n.41 : le port ephemere repris).
+           * Le plafond est le MEME valeur, et il n'est declare qu'une fois (`protocol.ts`).
+           *
+           * ON DETRUIT AVEC UN CODE SYSTEME, comme le delai d'inactivite plus bas : `send` ne
+           * garde de ce qui est leve que `systemErrorCode`, et l'appelant lit alors `EMSGSIZE`
+           * plutot que `UNKNOWN`. Le code nomme reste `WINDOW_UNREACHABLE` — sa remediation,
+           * « le port a peut-etre ete repris par un autre processus local », est precisement la
+           * conduite qu'appelle une reponse d'un megaoctet a un `GET /health`.
+           * ─────────────────────────────────────────────────────────────────────────────────
+           */
+          let size = 0;
+          incoming.on('data', (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > MAX_BODY_BYTES) {
+              outgoing.destroy(
+                Object.assign(new Error('the owning window answered with an oversized body'), {
+                  code: 'EMSGSIZE',
+                })
+              );
+              return;
+            }
+            chunks.push(chunk);
+          });
           // Le corps est concatene AVANT d'etre decode : un caractere multi-octets peut etre
           // coupe en deux par une frontiere de paquet, et le decoder morceau par morceau le
           // mutilerait.

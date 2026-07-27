@@ -18,6 +18,11 @@ import {
 } from '../../../packages/core/src/client/conversations.node.js';
 import { HEALTH_TIMEOUT_MS } from '../../../packages/core/src/client/channel.node.js';
 import {
+  CLOSE_CALL_BUDGET_MS,
+  CLOSE_CONFIRMATION_BUDGET_MS,
+  WINDOW_CLOSE_BUDGET_MS,
+} from '../../../packages/core/src/client/protocol.js';
+import {
   CALLER_PID,
   conversationTab,
   copyLegacyEntriesInto,
@@ -256,6 +261,60 @@ describe('cmgr close — le contrat en DEUX TEMPS', () => {
     expect(companion.closed).toEqual([]);
   });
 
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * G1 — DE BOUT EN BOUT : la poignee de l'une ne ferme JAMAIS l'autre.
+   *
+   * La chaine traversee est complete — client, vrai transport, vrai serveur, vraies routes. Ce
+   * que ces deux tests ajoutent aux garde-fous unitaires de `tests/unit/vscode/tabs.test.ts` :
+   * que le REFUS arrive jusqu'a l'appelant avec son code, et que rien n'est ferme en chemin.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  describe('deux conversations adjacentes aux libelles IDENTIQUES', () => {
+    function twoFreshPanels(): readonly ReturnType<typeof conversationTab>[] {
+      return [
+        conversationTab('Claude Code', { indexInGroup: 0 }),
+        conversationTab('Claude Code', { indexInGroup: 1 }),
+      ];
+    }
+
+    it("l'humain ferme la premiere entre les deux temps : REFUS, et la seconde est intacte", async () => {
+      const companion = await companionIn({ tabs: twoFreshPanels() });
+      const listing = await listConversationsInWindow(context(companion.registryDir));
+      // L'humain ferme la premiere a la main : la seconde glisse sur sa coordonnee et devient,
+      // dans ses quatre champs, identique a ce que la poignee de la premiere avait releve.
+      companion.tabs = [conversationTab('Claude Code', { indexInGroup: 0 })];
+
+      const error = await caught(
+        closeConversationInWindow(
+          { id: listing.conversations[0]?.id ?? '' },
+          context(companion.registryDir)
+        )
+      );
+
+      expect(error.code).toBe('CONVERSATION_HANDLE_STALE');
+      expect(companion.closed).toEqual([]);
+      expect(companion.tabs).toHaveLength(1);
+    });
+
+    it('fermer la premiere REUSSIT, et la relance ne ferme pas la seconde', async () => {
+      const companion = await companionIn({ tabs: twoFreshPanels() });
+      const listing = await listConversationsInWindow(context(companion.registryDir));
+      const id = listing.conversations[0]?.id ?? '';
+
+      const closing = await closeConversationInWindow({ id }, context(companion.registryDir));
+      const error = await caught(
+        closeConversationInWindow({ id }, context(companion.registryDir))
+      );
+
+      expect(closing.closed.remaining).toBe(1);
+      expect(error.code).toBe('CONVERSATION_ALREADY_CLOSED');
+      // L'editeur n'a ete sollicite QU'UNE FOIS, et la conversation survivante est vivante.
+      expect(companion.closed).toHaveLength(1);
+      expect(companion.tabs).toHaveLength(1);
+    });
+  });
+
   it('fermer DEUX FOIS : succes, puis ALREADY_CLOSED — une relance ne peut RIEN creer', async () => {
     const companion = await companionIn({ tabs: [conversationTab('A')] });
     const listing = await listConversationsInWindow(context(companion.registryDir));
@@ -365,7 +424,31 @@ describe('cmgr close — le contrat en DEUX TEMPS', () => {
 });
 
 describe('les delais, tels qu ils partent reellement sur la socket', () => {
-  it('5 s pour la confirmation et pour la lecture, 15 s pour la fermeture', async () => {
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * G3 — LES DEUX DELAIS SONT DES CALCULS, PLUS DES CHIFFRES.
+   *
+   * `LIST_TIMEOUT_MS` valait 5 000 ms en face d'un budget de confirmation de 5 000 ms : une
+   * marge de ZERO. Or les deux routes de conversation partagent une file d'un seul rang cote
+   * fenetre — une enumeration arrivee derriere une fermeture sortait donc en
+   * `WINDOW_UNREACHABLE`, sur une fenetre parfaitement vivante et en DESIGNANT la mauvaise
+   * cause. Les deux delais sont desormais DERIVES des budgets de la fenetre, qui vivent dans
+   * `protocol.ts` : ils suivent tout seuls le jour ou l'un d'eux change.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  it('sont CALCULES sur ce que la fenetre se donne, avec une marge non nulle', () => {
+    // Ce qu'une fermeture retient au pire la file d'un rang : l'appel a l'editeur, PUIS la
+    // confirmation. Les deux sont bornes depuis la correction du gate final (G4).
+    expect(WINDOW_CLOSE_BUDGET_MS).toBe(CLOSE_CALL_BUDGET_MS + CLOSE_CONFIRMATION_BUDGET_MS);
+    // UNE fermeture devant soi, et de la marge — c'est ce que le defaut G3 n'avait pas.
+    expect(LIST_TIMEOUT_MS).toBeGreaterThan(WINDOW_CLOSE_BUDGET_MS);
+    // UNE fermeture devant soi, LA SIENNE, et de la marge.
+    expect(CLOSE_TIMEOUT_MS).toBeGreaterThan(2 * WINDOW_CLOSE_BUDGET_MS);
+    // La confirmation de canal, elle, ne partage aucune file : elle reste courte (alerte n.41).
+    expect(HEALTH_TIMEOUT_MS).toBeLessThan(LIST_TIMEOUT_MS);
+  });
+
+  it('partent tels quels sur la socket, sur les quatre demandes', async () => {
     const companion = await companionIn({ tabs: [conversationTab('A')] });
     const sent: WindowRequest[] = [];
     // SONDE, pas double : elle releve ce qui passe puis delegue au VRAI transport.
@@ -389,9 +472,6 @@ describe('les delais, tels qu ils partent reellement sur la socket', () => {
     expect(sent[0]?.timeoutMs).toBe(HEALTH_TIMEOUT_MS);
     expect(sent[1]?.timeoutMs).toBe(LIST_TIMEOUT_MS);
     expect(sent[3]?.timeoutMs).toBe(CLOSE_TIMEOUT_MS);
-    // La fermeture doit depasser ce que la fenetre se donne a elle-meme : 5 s de confirmation,
-    // et une file d'un seul rang partagee par les deux routes.
-    expect(CLOSE_TIMEOUT_MS).toBeGreaterThan(10_000);
     // Le jeton part sur les QUATRE demandes, relu sur l'entree a chaque fois (alerte n.41).
     expect(sent.every((request) => request.token === companion.token)).toBe(true);
     // ET AUCUNE demande ne porte un hote : il n'y a pas de champ pour cela.
