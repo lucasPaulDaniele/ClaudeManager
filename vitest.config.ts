@@ -72,9 +72,10 @@ export default defineConfig({
          * c'est exactement ce qui est arrive au « 90 % global » que le CLAUDE.md annoncait et
          * que rien ne configurait.
          *
-         * MESURE DU 2026-07-27 (increment C4), les QUATRE metriques :
+         * MESURE DU 2026-07-27 (increment C4), les QUATRE metriques, SUR LES DEUX PLATEFORMES :
          *
          *   Windows, poste de reference : 99,61 instructions · 99,18 branches · 98,98 fonctions · 99,61 lignes
+         *   Linux, CI GitHub (execution 30264426122) : 99,61 · 99,18 · 98,98 · 99,61 — IDENTIQUES
          *
          * Plancher retenu : 99 / 98 / 98 / 99 — INCHANGE. Marges : 0,61 · 1,18 · 0,98 · 0,61 point.
          *
