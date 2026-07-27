@@ -425,10 +425,30 @@ export async function runOpenConversation(context: ScenarioContext): Promise<voi
     // interdit au produit, est de LIRE ce fichier : ses enregistrements, la fin de tour,
     // l'extraction de la reponse. Ce test, lui, en lit les TYPES — c'est ainsi qu'il verifie que
     // la route ne ment pas.
+    /**
+     * ─────────────────────────────────────────────────────────────────────────────────────
+     * L'IDENTIFIANT REELLEMENT TENTE, MEME EN CAS DE REFUS — et il n'etait pas connaissable.
+     *
+     * Ce scenario cherchait `aucune-session` sur la voie de refus : un fichier qui ne peut pas
+     * exister, dont l'absence ne prouvait donc RIEN de la session reellement tentee. Depuis la
+     * correction du gate C, `SEED_TRANSCRIPT_NOT_FOUND` porte son `sessionId` dans ses details —
+     * c'est ce qui permet a un appelant de ne pas relancer a l'aveugle, et c'est ce qui rend
+     * l'assertion ci-dessous portante : aucun transcript sous L'IDENTIFIANT QU'ON A AMORCE.
+     * ─────────────────────────────────────────────────────────────────────────────────────
+     */
+    const refusalDetails = openedBody['details'] as Record<string, unknown> | undefined;
+    const attemptedSessionId =
+      typeof openedBody['sessionId'] === 'string'
+        ? openedBody['sessionId']
+        : refusalDetails?.['sessionId'];
+    assert.equal(
+      typeof attemptedSessionId,
+      'string',
+      `the attempted session id must be knowable, in success as in refusal; got ${mask(opened.body)}`
+    );
+
     const turn = await lookForFirstTurn(
-      // En cas de refus il n'y a pas de `sessionId` : on cherche alors un fichier qui ne peut
-      // pas exister, et c'est exactement ce que l'assertion ci-dessous demande de constater.
-      typeof openedBody['sessionId'] === 'string' ? openedBody['sessionId'] : 'aucune-session',
+      attemptedSessionId as string,
       cwd,
       // 45 s SUFFISENT ET NE PROUVENT PLUS RIEN A ELLES SEULES : quand la route rend `true`, le
       // fichier est deja la — c'est elle qui l'a attendu. Ce delai ne sert plus qu'au cas de
