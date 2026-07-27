@@ -206,6 +206,10 @@ function relayedDetails(raw: unknown): Readonly<Record<string, unknown>> | undef
   for (const [key, value] of Object.entries(raw as Readonly<Record<string, unknown>>)) {
     const keeps =
       DETAIL_KEY.test(key) &&
+      // NOTRE PROPRE CLEF EST RESERVEE : elle vient d'une socket comme les autres, et un
+      // `detailsOmitted` forge mentirait sur ce que ce filtre a fait — le compte qu'on rend
+      // doit etre le notre, jamais celui d'en face.
+      key !== OMITTED_DETAILS &&
       ((typeof value === 'number' && Number.isFinite(value)) ||
         typeof value === 'boolean' ||
         (key === DETAIL_SESSION_ID && typeof value === 'string' && DETAIL_UUID.test(value)));

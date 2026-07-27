@@ -323,6 +323,23 @@ describe('les refus, tels que le vrai serveur les rend', () => {
       expect(JSON.stringify(error.toJSON())).not.toContain('quelqu-un');
     });
 
+    it('ne laisse pas forger son propre compte d ecartes', () => {
+      // `detailsOmitted` est le compte que NOUS rendons. Le recopier depuis la reponse ferait
+      // mentir le filtre sur ce qu'il a fait — et c'est la seule chose que ce champ affirme.
+      const error = caught(() =>
+        readOpenedConversation({
+          status: 500,
+          body: JSON.stringify({
+            ok: false,
+            error: 'WORKSPACE_NOT_TRUSTED',
+            details: { detailsOmitted: 0, waitedMs: 3 },
+          }),
+        })
+      );
+
+      expect(error.details).toEqual({ waitedMs: 3, detailsOmitted: 1 });
+    });
+
     it('ne fabrique aucun details quand la fenetre n en envoie aucun', () => {
       for (const details of ['{}', 'null', '"PROMPT_TOO_LARGE"', '7']) {
         const error = caught(() =>
