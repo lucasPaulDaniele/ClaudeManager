@@ -435,7 +435,7 @@ export async function conversationsCommand(
   diagnostics.notes = [
     conversations.length === 0
       ? "aucune conversation ouverte dans cette fenetre — ce n est pas une erreur, et le code de sortie reste 0."
-      : `${conversations.length} conversation(s) ouverte(s). Les identifiants rendus ici sont exiges par cmgr close, et ils PERIMENT : si l onglet bouge, change de libelle, ou si la fenetre redemarre son extension host, relister avant de fermer.`,
+      : `${conversations.length} conversation(s) ouverte(s). Les identifiants rendus ici sont exiges par cmgr close, et ils PERIMENT — plus vite qu'on ne le croit : ils designent une PLACE DANS L ARRANGEMENT que voici, et toute conversation qui s ouvre, se ferme ou se deplace dans cette fenetre les perime TOUS. Le libelle de l onglet vise, un deplacement, un redemarrage de l extension host les periment aussi, et une poignee deja employee pour fermer ne ferme jamais deux fois. Fermer aussitot apres avoir liste ; sinon, relister d abord.`,
   ];
 
   return {

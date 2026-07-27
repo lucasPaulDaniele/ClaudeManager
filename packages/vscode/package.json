@@ -2,7 +2,7 @@
   "name": "claudemanager-vscode",
   "displayName": "ClaudeManager",
   "description": "Rend la fenetre VSCode courante joignable par un agent, sans jamais voler le focus.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "claudemanager",
   "license": "MIT",
   "repository": {

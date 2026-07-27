@@ -88,6 +88,46 @@ export const CONVERSATIONS_PATH = '/conversations';
 export const CONVERSATION_CLOSE_PATH = '/conversations/close';
 
 /**
+ * TAILLE MAXIMALE D'UN CORPS, EN OCTETS — LA MEME DES DEUX COTES, ET ELLE N'EST DECLAREE QU'ICI.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * Le serveur bornait le corps qu'il LIT (`packages/vscode/src/server.ts`), au motif ecrit :
+ * « un serveur qui accumule un corps non borne se fait epuiser la memoire […] par une seule
+ * requete authentifiee mal formee ». Le CLIENT, lui, accumulait la REPONSE sans aucune borne —
+ * et le motif vaut a l'identique dans ce sens-la : ce qui occupe le port ephemere n'est pas
+ * forcement notre serveur (alerte n.41), et rien n'oblige un occupant a s'arreter.
+ *
+ * La borne vit donc ICI, comme les libelles de route, et pour la meme raison : deux
+ * declarations de la meme valeur, dans deux paquets qui se parlent, divergent le jour ou l'une
+ * est corrigee. Voir `loopback.node.ts` pour ce que le client en fait.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+export const MAX_BODY_BYTES = 1_048_576;
+
+/**
+ * CE QUE LA FENETRE S'ACCORDE POUR FERMER UN ONGLET — declare ici, et pas chez elle.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * CES TROIS NOMBRES SONT LA PREMISSE DES DELAIS DU CLIENT (`conversations.node.ts`), qui les
+ * calcule au lieu de les redire. Les laisser dans `packages/vscode/src/tabs.ts` obligerait le
+ * client a en recopier la valeur dans un commentaire — c'est exactement ce qui a produit le
+ * defaut G3 du gate final : `LIST_TIMEOUT_MS` valait 5 000 ms en face d'un budget de
+ * confirmation de 5 000 ms, soit une marge de ZERO, et une enumeration en attente derriere une
+ * fermeture sortait en `WINDOW_UNREACHABLE` sur une fenetre parfaitement vivante.
+ *
+ * Le sens de chacun est dans `tabs.ts`, qui les consomme ; ce qui compte ici est qu'ils
+ * s'ADDITIONNENT : une fermeture retient la file d'un rang que les deux routes de conversation
+ * partagent pendant, au pire, l'appel a l'editeur PUIS la confirmation.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+export const CLOSE_CALL_BUDGET_MS = 5_000;
+export const CLOSE_CONFIRMATION_BUDGET_MS = 5_000;
+/** Granularite du sondage, cote fenetre — de l'appel a l'editeur comme de la confirmation. */
+export const CLOSE_POLL_INTERVAL_MS = 100;
+/** Ce qu'UNE fermeture retient au pire la file d'un rang de la fenetre. */
+export const WINDOW_CLOSE_BUDGET_MS = CLOSE_CALL_BUDGET_MS + CLOSE_CONFIRMATION_BUDGET_MS;
+
+/**
  * LA FORME D'UNE POIGNEE DE CONVERSATION — un uuid, et rien d'autre.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────
@@ -280,10 +320,18 @@ function relayedDetails(raw: unknown): Readonly<Record<string, unknown>> | undef
  * effet de bord, et la validation lui est POSTERIEURE : on pouvait donc croire qu'il fallait un
  * troisieme code. Ce qui tranche n'est pas « y a-t-il eu un effet de bord » mais « que doit
  * faire l'appelant » — le critere de ce depot. Or une seconde fermeture sur la MEME poignee ne
- * peut pas produire un second effet : au pire l'onglet est deja parti, et la fenetre repond
- * `CONVERSATION_ALREADY_CLOSED`. La conduite est donc identique a celle d'une route de lecture,
- * et un troisieme code aurait fait porter au canal de decision une nuance qui n'en change
- * aucune. C'est l'inverse exact de l'ouverture, ou une relance ouvre une SECONDE conversation.
+ * peut RIEN fermer : la poignee est DEPENSEE des que l'editeur a ete sollicite, et la fenetre
+ * repond `CONVERSATION_ALREADY_CLOSED` ou `CONVERSATION_HANDLE_STALE` sans toucher a un onglet.
+ * La conduite est donc identique a celle d'une route de lecture, et un troisieme code aurait
+ * fait porter au canal de decision une nuance qui n'en change aucune. C'est l'inverse exact de
+ * l'ouverture, ou une relance ouvre une SECONDE conversation.
+ *
+ * CE MOTIF ETAIT FAUX AVANT LA CORRECTION DU GATE FINAL, et il faut le dire plutot que de le
+ * reecrire en silence : « au pire l'onglet est deja parti » supposait qu'une seconde fermeture
+ * ne puisse rien atteindre. Le gate l'a refute en l'executant — le voisin qui avait glisse sur
+ * la place liberee etait, dans ses quatre champs, la poignee du mort, et la relance le fermait.
+ * Ce n'est plus la conclusion qui porte l'argument, c'est la regle de la poignee depensee
+ * (`packages/vscode/src/tabs.ts`, `HandleState`), qui la rend vraie par construction.
  * ─────────────────────────────────────────────────────────────────────────────────────────
  */
 function unreadable(route: string, missing: string): ClaudeManagerError {
@@ -610,8 +658,16 @@ export function readOpenedConversation(response: WindowResponse): OpenedConversa
 export interface ListedConversation {
   /** Poignee OPAQUE emise par la fenetre — voir `CONVERSATION_HANDLE_SHAPE`. */
   readonly id: string;
+  /**
+   * BORNE A 120 CARACTERES ET NEUTRALISE A LA LECTURE — voir `relayedText`.
+   *
+   * Ce que la FENETRE met dans ce champ est le libelle brut de l'onglet ; ce que le CLIENT en
+   * rend est ce libelle debarrasse de tout ce qui n'est pas du texte affichable sur une ligne,
+   * et tronque avec un `…` final s'il depassait. Les deux transformations SE VOIENT — un `�`
+   * ou un `…` — parce qu'une degradation muette est ce que l'en-tete de ce module interdit.
+   */
   readonly label: string;
-  /** Releve TEL QUEL : VSCode le prefixe, on ne le devine pas (D2). */
+  /** Releve TEL QUEL par la fenetre (D2), puis borne et neutralise a la lecture comme `label`. */
   readonly viewType: string;
   readonly viewColumn: number;
   readonly indexInGroup: number;
@@ -639,6 +695,87 @@ export interface ClosedConversation {
    * d'erreur ne prouve jamais l'attachement » (D10, D19), appliquee a l'autre bout.
    */
   readonly editorReportedClosed: boolean;
+}
+
+/**
+ * LES DEUX TEXTES QUI TRAVERSENT LA SOCKET SUR UN CHEMIN DE SUCCES — BORNES ET NEUTRALISES.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * LE DEFAUT G2 DU GATE FINAL. `label` et `viewType` etaient acceptes tels quels, de n'importe
+ * quelle longueur, et relayes jusque dans le contexte de l'agent appelant. La regle etait
+ * pourtant posee, motivee et appliquee au champ VOISIN, sept lignes plus bas (`requireHandle`) :
+ * « cette valeur ressort telle quelle dans la sortie d'un agent […] accepter n'importe quel
+ * texte reviendrait a laisser ce qui occupe le port ecrire dans l'entree de l'appelant ». Une
+ * regle appliquee a une branche et pas a sa jumelle — la classe exacte du finding G4 du gate
+ * precedent, qui portait sur `relayedDetails`.
+ *
+ * CE QUI REND CE CAS DIFFERENT, ET QU'IL FAUT TRAITER HONNETEMENT : le libelle est du CONTENU de
+ * conversation (D24) et il est UTILE — c'est lui qui permet a un agent de choisir quelle
+ * conversation fermer. Le reduire a une forme stricte, comme la poignee, detruirait son usage ;
+ * le REFUSER rendrait toute une enumeration illisible pour un seul onglet mal luné, donc
+ * empecherait de fermer quoi que ce soit. On BORNE et on NEUTRALISE, sans jeter.
+ *
+ * LES TROIS CHOSES QU'UN TEXTE VENU D'UNE SOCKET NE DOIT PAS POUVOIR FAIRE, et ce qui les ferme :
+ *
+ *   1. FORGER UNE LIGNE DE SORTIE — une fausse ligne `cmgr: …` sur `stderr` se fabrique avec un
+ *      saut de ligne. Tout caractere de commande (C0, C1), tout separateur de ligne ou de
+ *      paragraphe est remplace par `�`, qui SE VOIT ;
+ *   2. RETOURNER CE QU'UN HUMAIN LIT — les caracteres de direction bidirectionnelle
+ *      (`U+202A`..`U+202E`, `U+2066`..`U+2069`, `U+200E`, `U+200F`, `U+061C`) reordonnent
+ *      visuellement un texte sans en changer un octet. Meme traitement ;
+ *   3. FAIRE EXPLOSER UNE SORTIE — la borne de longueur, et elle est la SECONDE : la premiere est
+ *      celle du transport (`MAX_BODY_BYTES`), qui empeche le corps d'arriver.
+ *
+ * CE QUI EST PRESERVE, parce que c'est l'usage : le DEBUT du libelle, qui est ce qui discrimine
+ * deux conversations. Une troncature laisse `…` (`U+2026`) en derniere position — elle SE VOIT,
+ * elle aussi, plutot que de mentir par omission. Les emoji et les accents traversent intacts :
+ * la regle ne vise que ce qui n'est pas du texte affichable sur une ligne.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ */
+const NOT_PLAIN_TEXT =
+  // C0 et DEL · C1 · bidi (ALM, LRM/RLM, LRE..RLO/PDF, isolats) · separateurs de ligne
+  //
+  // `no-control-regex` EST DESACTIVEE ICI, ET C'EST LE SEUL ENDROIT DU DEPOT : la regle existe
+  // pour attraper un caractere de commande ecrit par megarde dans une expression rationnelle.
+  // Ceux-ci sont l'OBJET meme du motif — ne pas la desactiver ici rendrait la garde
+  // inecrivable.
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u2028\u2029]/gu;
+const NEUTRALIZED = '\uFFFD';
+const TRUNCATED = '\u2026';
+
+/**
+ * Longueur maximale d'un LIBELLE relaye, en unites UTF-16.
+ *
+ * Un onglet de VSCode n'affiche pas 120 caracteres, et un libelle derive du contenu d'une
+ * conversation est une phrase courte : la borne ne coupe rien de ce qui sert a choisir.
+ */
+const LABEL_MAX = 120;
+/**
+ * Longueur maximale d'un `viewType` relaye.
+ *
+ * C'est un identifiant de webview — `mainThreadWebview-claudeVSCodePanel` en fait 35 —, mais
+ * RIEN n'en contraint la forme : n'importe quelle extension de la fenetre en enregistre un, et
+ * la fenetre ne l'invente pas, elle le releve (D2). D'ou la meme neutralisation que le libelle
+ * plutot qu'un motif strict, qui ferait echouer l'enumeration entiere sur une webview tierce.
+ */
+const VIEW_TYPE_MAX = 128;
+
+/**
+ * Borne et neutralise un texte venu de la socket, sans jamais lever.
+ *
+ * La borne est appliquee AVANT le remplacement, et ce n'est pas cosmetique : le remplacement est
+ * caractere pour caractere, il ne change donc pas la longueur — et le faire d'abord obligerait a
+ * parcourir un mega-octet pour n'en garder que 120.
+ */
+function relayedText(raw: string, max: number): string {
+  if (raw.length <= max) return raw.replace(NOT_PLAIN_TEXT, NEUTRALIZED);
+
+  const kept = raw.slice(0, max - 1);
+  // Une coupe a l'aveugle peut trancher une paire de substitution en deux et laisser un
+  // demi-caractere, que l'encodage UTF-8 de la sortie mutilerait a son tour.
+  const whole = /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
+  return `${whole.replace(NOT_PLAIN_TEXT, NEUTRALIZED)}${TRUNCATED}`;
 }
 
 /** Un texte, de longueur quelconque — un libelle d'onglet peut etre vide. */
@@ -670,8 +807,10 @@ function readListedConversation(
 ): ListedConversation {
   return {
     id: requireHandle(route, raw, 'id'),
-    label: requireText(route, raw, 'label'),
-    viewType: requireString(route, raw, 'viewType'),
+    // BORNES ET NEUTRALISES, tous les deux — voir `relayedText`. Ce sont les deux seuls textes
+    // libres qu'un chemin de SUCCES relaie jusqu'a l'appelant.
+    label: relayedText(requireText(route, raw, 'label'), LABEL_MAX),
+    viewType: relayedText(requireString(route, raw, 'viewType'), VIEW_TYPE_MAX),
     viewColumn: requireInteger(route, raw, 'viewColumn'),
     indexInGroup: requireInteger(route, raw, 'indexInGroup'),
     isActive: requireBoolean(route, raw, 'isActive'),

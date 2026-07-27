@@ -21,6 +21,7 @@ import {
   HEALTH_ROUTE,
   isClaudeManagerError,
   LIST_ROUTE,
+  MAX_BODY_BYTES,
   OPEN_ROUTE,
   systemErrorCode,
 } from './core.js';
@@ -166,15 +167,19 @@ const EPHEMERAL_PORT = 0;
  */
 
 /**
- * Taille maximale du corps LU, en octets.
+ * Taille maximale du corps LU, en octets — DECLAREE DANS LE COEUR, et pas ici.
  *
  * Un serveur qui accumule un corps non borne se fait epuiser la memoire de l'extension host
  * par une seule requete authentifiee mal formee — et c'est l'editeur de l'utilisateur qui
  * tombe avec lui. La borne est LARGE au regard du besoin : le prompt utile plafonne bien plus
  * bas (~32 Ko, voir la garde de plafond du coeur), et c'est ELLE qui rend le refus PRECIS.
  * Celle-ci ne protege que la memoire, elle ne juge pas le prompt.
+ *
+ * ELLE A REMONTE DANS `protocol.ts` A LA CORRECTION DU GATE FINAL, exactement comme les libelles
+ * de route avant elle : le CLIENT borne desormais le corps qu'il lit avec la MEME valeur
+ * (defaut G5), et deux declarations d'un meme plafond dans deux paquets qui se parlent divergent
+ * le jour ou l'une est corrigee.
  */
-const MAX_BODY_BYTES = 1_048_576;
 
 /**
  * Le `Host` designe-t-il la boucle locale, sur NOTRE port ?
