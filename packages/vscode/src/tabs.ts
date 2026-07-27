@@ -33,6 +33,10 @@
  *   5. CONFIRMER par re-enumeration que l'onglet a REELLEMENT quitte `tabGroups` avant de
  *      rendre un succes — `close` resout un booleen, et le relever ne suffit pas. C'est la
  *      meme discipline que « l'absence d'erreur ne prouve jamais l'attachement » (D10, D19).
+ *      LA CONFIRMATION EXIGE DEUX FAITS, ET LE SECOND A ETE AJOUTE SUR FINDING : que plus rien
+ *      ne corresponde au releve NE SUFFIT PAS, le libelle pouvant changer tout seul (D24) — il
+ *      faut EN PLUS que le nombre d'onglets de conversation ait diminue. Le detail, les deux
+ *      regles candidates ecartees et les deux trous residuels sont dans `removalConfirmed`.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────
  * AUCUN IMPORT DE `vscode`, et c'est ce qui rend les cinq invariants verifiables sans editeur.
@@ -235,6 +239,14 @@ type Resolution<T> =
       readonly kind: 'close';
       readonly tab: T & { readonly viewType: string };
       readonly handle: IssuedHandle;
+      /**
+       * Combien d'onglets de conversation la fenetre portait AU MOMENT DE LA RESOLUTION.
+       *
+       * C'est la seconde moitie de la confirmation — voir `removalConfirmed`. Il est releve ICI,
+       * sur l'enumeration qui a servi a resoudre, et non redemande apres coup : entre les deux, un
+       * onglet peut deja avoir bouge, et le compte ne dirait plus « avant la fermeture ».
+       */
+      readonly conversationsBefore: number;
     }
   | { readonly kind: 'refuse'; readonly error: ClaudeManagerError };
 
@@ -347,7 +359,9 @@ export class ConversationHandles {
       (tab) => tab.viewColumn === handle.viewColumn && tab.indexInGroup === handle.indexInGroup
     );
     if (atCoordinate !== undefined) {
-      if (matches(atCoordinate, handle)) return { kind: 'close', tab: atCoordinate, handle };
+      if (matches(atCoordinate, handle)) {
+        return { kind: 'close', tab: atCoordinate, handle, conversationsBefore: claude.length };
+      }
       return {
         kind: 'refuse',
         error: new ClaudeManagerError(
@@ -409,16 +423,71 @@ export class ConversationHandles {
 }
 
 /**
- * La poignee relevee designe-t-elle encore un onglet ? C'est la CONFIRMATION de la fermeture.
+ * LA FERMETURE EST-ELLE CONFIRMEE ? Deux conditions, et il en faut DEUX.
  *
  * Fonction libre, et non methode du registre : elle ne consulte RIEN — on lui donne le releve que
  * la resolution a rendu. C'est ce qui evite une seconde recherche, donc un cas d'echec de plus.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ * POURQUOI L'ABSENCE DE CORRESPONDANCE NE SUFFIT PAS — C'ETAIT UN FAUX SUCCES.
+ *
+ * La premiere version de cette confirmation demandait seulement « plus aucun onglet ne correspond
+ * au releve ». Or `matches` compare les QUATRE champs, LIBELLE COMPRIS, et le libelle d'un panneau
+ * Claude change tout seul (D24). Un onglet qui n'aurait PAS ete ferme — `close` echouant
+ * silencieusement — et dont le libelle changeait pendant les 5 s d'attente cessait donc de
+ * correspondre, et la route rendait un SUCCES sur un onglet toujours ouvert.
+ *
+ * Cas etroit — il faut la conjonction de deux evenements —, mais c'est la DIRECTION DANGEREUSE, et
+ * c'est la classe de defaut qui a deja coute deux corrections a ce chantier : « succes rendu sur un
+ * panneau vide » (C3-FIX) et « le tour est prouve demarre, pas termine » (D20). Un invariant qui
+ * annonce « CONSTATER que l'onglet a quitte tabGroups » ne peut pas se contenter d'un fait qui
+ * cesse d'etre observable.
+ *
+ * LA REGLE RETENUE AJOUTE UNE CONJONCTION, ELLE N'EN REMPLACE AUCUNE : le nombre d'onglets de
+ * conversation doit avoir DIMINUE depuis le releve de resolution, ET plus rien ne doit correspondre.
+ * La propriete qui compte se lit en une ligne : ce qu'elle confirme est un SOUS-ENSEMBLE STRICT de
+ * ce que confirmait la regle precedente. Elle ne peut donc introduire AUCUN faux succes nouveau —
+ * elle ne peut que refuser de confirmer plus souvent.
+ *
+ * LES DEUX AUTRES REGLES CANDIDATES SONT CHACUNE PIRE, et il faut dire pourquoi :
+ *
+ *   - COMPARER SANS LE LIBELLE (coordonnee + `viewType` seuls) : le cas ORDINAIRE d'une fermeture
+ *     est qu'un voisin GLISSE d'un rang sur la coordonnee liberee. La confirmation y verrait un
+ *     onglet « toujours la » et rendrait `CONVERSATION_CLOSE_FAILED` sur une fermeture parfaitement
+ *     REUSSIE — apres 5 s d'attente inutile, et sur le chemin nominal. Inacceptable ;
+ *   - `onDidChangeTabs`, dont l'evenement porte `closed: readonly Tab[]` : ce serait la preuve
+ *     positive ideale, mais elle exige de comparer des `vscode.Tab` PAR IDENTITE D'OBJET. Or ce
+ *     paquet a deja DECIDE l'inverse, et l'a ecrit dans `selectNewPanel` : « rien ne documente que
+ *     `tabGroups.all` rende les MEMES instances d'un releve a l'autre ». S'y fier ici contredirait
+ *     cette decision, ferait dependre l'invariant d'un comportement non documente, et deplacerait
+ *     la comparaison dans `extension.ts` — la seule couche que la mesure de couverture exclut, et
+ *     dont l'en-tete de ce module exige qu'elle ne porte AUCUNE decision. Le jour ou l'identite
+ *     cesserait de tenir, plus AUCUNE fermeture ne se confirmerait.
+ *
+ * CE QUI RESTE, NOMME PLUTOT QUE TU — deux trous, et ils sont dans des directions differentes :
+ *
+ *   (a) FAUX SUCCES RESIDUEL, strictement plus etroit qu'avant : il faut desormais que `close`
+ *       echoue silencieusement, QUE le libelle change, ET qu'un AUTRE onglet de conversation se
+ *       ferme dans la meme fenetre de 5 s. Trois evenements au lieu de deux ;
+ *   (b) FAUX ECHEC NOUVEAU : si la fermeture reussit mais qu'une conversation s'OUVRE dans la meme
+ *       fenetre pendant l'attente, le compte ne diminue pas et la route rend
+ *       `CONVERSATION_CLOSE_FAILED` sur une fermeture reussie. C'est atteignable — les ouvertures
+ *       et les fermetures ont des files distinctes —, mais c'est la direction SURE : relancer est
+ *       sans danger, `cmgr conversations` dit l'etat reel, et la remediation le dit.
+ *
+ * PROPRIETAIRE DE CES DEUX TROUS : le **lot E**, dont l'E2E multi-fenetres est le seul cadre ou
+ * une ouverture et une fermeture concurrentes s'observent sur du reel. Aucun montage unitaire ne
+ * peut etablir a quelle frequence (b) se produit ; il peut seulement, et il le fait ci-dessous,
+ * EPINGLER le comportement pour qu'il soit un choix constate.
+ * ─────────────────────────────────────────────────────────────────────────────────────────
  */
-function stillOpen<T extends ConversationTabLike>(
+function removalConfirmed<T extends ConversationTabLike>(
   handle: IssuedHandle,
+  conversationsBefore: number,
   tabs: readonly T[]
 ): boolean {
-  return conversationTabs(tabs).some((tab) => matches(tab, handle));
+  const claude = conversationTabs(tabs);
+  return claude.length < conversationsBefore && !claude.some((tab) => matches(tab, handle));
 }
 
 /**
@@ -479,20 +548,35 @@ export function createConversationRoutes<T extends ConversationTabLike>(
     const editorReportedClosed = await port.closeTab(resolution.tab);
 
     // ---- INVARIANT n.5 : l'ENUMERATION fait foi, jamais le booleen ------------------------
+    //
+    // UNE enumeration par tour, et c'est celle qui CONFIRME qui sert ensuite a compter ce qui
+    // reste : deux releves distincts pourraient decrire deux etats differents de la fenetre, et
+    // `remaining` mentirait sur celui qu'on vient de constater.
     let waitedMs = 0;
-    while (stillOpen(resolution.handle, port.listTabs())) {
+    let tabs = port.listTabs();
+    while (!removalConfirmed(resolution.handle, resolution.conversationsBefore, tabs)) {
       if (waitedMs >= CLOSE_CONFIRMATION_BUDGET_MS) {
         throw new ClaudeManagerError(
           ERROR_CODES.CONVERSATION_CLOSE_FAILED,
-          'The conversation tab is still enumerated after the editor was asked to close it',
-          { editorReportedClosed, waitedMs }
+          'The conversation tab was not observed leaving tabGroups after the editor was asked to close it',
+          // DES NOMBRES ET UN BOOLEEN, jamais un libelle. Les deux comptes sont rendus parce
+          // qu'ils DISCRIMINENT : `conversationsAfter` egal a `conversationsBefore` designe une
+          // fenetre ou rien n'a disparu, un compte plus bas designe l'ouverture concurrente que
+          // `removalConfirmed` documente comme faux echec possible.
+          {
+            editorReportedClosed,
+            waitedMs,
+            conversationsBefore: resolution.conversationsBefore,
+            conversationsAfter: conversationTabs(tabs).length,
+          }
         );
       }
       await wait(CLOSE_POLL_INTERVAL_MS);
       waitedMs += CLOSE_POLL_INTERVAL_MS;
+      tabs = port.listTabs();
     }
 
-    const remaining = conversationTabs(port.listTabs()).length;
+    const remaining = conversationTabs(tabs).length;
     log(
       `closed one conversation tab after ~${waitedMs} ms ` +
         `(editorReportedClosed=${String(editorReportedClosed)}, ${remaining} left)`

@@ -106,13 +106,15 @@ function routesOn(port: TestPort, log: string[] = []): ReturnType<typeof createC
   });
 }
 
-async function refusalOf(promise: Promise<unknown>): Promise<{ code: string; details: unknown }> {
+async function refusalOf(
+  promise: Promise<unknown>
+): Promise<{ code: string; details: unknown; remediation: string }> {
   try {
     await promise;
   } catch (error) {
     expect(isClaudeManagerError(error), `erreur nue : ${String(error)}`).toBe(true);
-    const named = error as { code: string; details: unknown };
-    return { code: named.code, details: named.details };
+    const named = error as { code: string; details: unknown; remediation: string };
+    return { code: named.code, details: named.details, remediation: named.remediation };
   }
   throw new Error('aucune erreur levee, alors que le test en attendait une');
 }
@@ -306,6 +308,138 @@ describe('POST /conversations/close — la voie nominale', () => {
     // Le sondage est a 100 ms : une attente REELLE a eu lieu, elle n'a pas ete court-circuitee.
     expect(elapsed).toBeGreaterThanOrEqual(50);
     expect(polls).toBeGreaterThanOrEqual(4);
+  });
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   * LA CONFIRMATION, ET LE FAUX SUCCES QU'ELLE A LAISSE PASSER (reprise 1 de C4).
+   *
+   * `removalConfirmed` exige DEUX faits : plus rien ne correspond au releve, ET le nombre
+   * d'onglets de conversation a DIMINUE. La premiere version n'exigeait que le premier — et
+   * `matches` comparant le LIBELLE, un onglet non ferme dont le libelle changeait pendant les 5 s
+   * d'attente cessait de correspondre : la route rendait un SUCCES sur un onglet toujours ouvert.
+   *
+   * Les quatre cas ci-dessous couvrent le carre complet : le nominal, le voisin qui glisse (le cas
+   * ORDINAIRE, qui ne doit surtout pas devenir un faux echec), le defaut corrige, et les deux trous
+   * residuels — epingles pour qu'ils soient un choix constate plutot qu'un angle mort.
+   * ─────────────────────────────────────────────────────────────────────────────────────────
+   */
+  describe('la confirmation exige DEUX faits', () => {
+    /**
+     * Remplace l'etat de la fenetre AVANT le n-ieme releve, COMPTE A PARTIR DE LA POSE.
+     *
+     * Les tests posent ce crochet APRES `list()`, si bien que le releve n.1 est celui de la
+     * RESOLUTION et le n.2 la PREMIERE verification de confirmation. C'est donc `2` qu'ils
+     * emploient tous : l'etat doit avoir change quand la confirmation regarde pour la
+     * premiere fois, faute de quoi elle conclurait sur l'etat d'avant.
+     */
+    function scheduleTabs(port: TestPort, at: number, tabs: readonly TestTab[]): void {
+      const enumerate = port.listTabs.bind(port);
+      let polls = 0;
+      port.listTabs = (): readonly TestTab[] => {
+        polls += 1;
+        if (polls === at) port.tabs = tabs;
+        return enumerate();
+      };
+    }
+
+    it("LE DEFAUT CORRIGE : un onglet NON FERME dont le libelle change n'est plus un succes", async () => {
+      // GARDE-FOU DE NON-REGRESSION. Avec la regle precedente — « plus rien ne correspond » —, ce
+      // test rendait `ok: true` sur un onglet parfaitement ouvert. C'est le seul cas ou ce fichier
+      // fabriquait un faux succes, et c'est la direction dangereuse.
+      const port = portOf([tab({ tag: 'Claude Code' })], { leaves: false });
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      // Le libelle change AVANT la premiere verification, comme le fait la vraie extension
+      // Claude quelques centaines de millisecondes apres l'attachement (D24).
+      scheduleTabs(port, 2, [tab({ tag: 'Confirm session response' })]);
+
+      const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+      expect(refusal.code).toBe('CONVERSATION_CLOSE_FAILED');
+      // Les deux comptes DISCRIMINENT : egaux, ils disent que rien n'a disparu de la fenetre.
+      expect(refusal.details).toMatchObject({ conversationsBefore: 1, conversationsAfter: 1 });
+    });
+
+    it("LE CAS ORDINAIRE reste un succes : le voisin qui GLISSE ne fait pas echouer", async () => {
+      // C'est la contrainte qui elimine la regle « comparer sans le libelle » : fermer un onglet
+      // fait glisser ses voisins d'un rang, et une confirmation positionnelle verrait la place
+      // « toujours occupee ». Ici, le compte a diminue et plus rien ne correspond : c'est un succes.
+      const port = portOf([tab({ tag: 'A', indexInGroup: 0 }), tab({ tag: 'B', indexInGroup: 1 })]);
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      // L'editeur reindexe : B prend le rang 0, celui que A occupait.
+      scheduleTabs(port, 2, [tab({ tag: 'B', indexInGroup: 0 })]);
+
+      const closed = await routes.close({ id: a?.id ?? '' });
+
+      expect(closed.ok).toBe(true);
+      expect(closed.remaining).toBe(1);
+      expect(port.closed.map((t) => t.tag)).toEqual(['A']);
+    });
+
+    it("UN AUTRE onglet ferme pendant l'attente ne confirme rien : le notre correspond encore", async () => {
+      // La seconde condition seule ne suffirait pas davantage : le compte diminue, mais c'est un
+      // AUTRE onglet qui est parti. La correspondance, elle, tient toujours.
+      const port = portOf(
+        [tab({ tag: 'A', indexInGroup: 0 }), tab({ tag: 'B', indexInGroup: 1 })],
+        { leaves: false }
+      );
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      // L'humain ferme B a la main ; A, que la route croit avoir ferme, est intact.
+      scheduleTabs(port, 2, [tab({ tag: 'A', indexInGroup: 0 })]);
+
+      const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+      expect(refusal.code).toBe('CONVERSATION_CLOSE_FAILED');
+      expect(refusal.details).toMatchObject({ conversationsBefore: 2, conversationsAfter: 1 });
+    });
+
+    it('TROU RESIDUEL (a) — faux succes, desormais a TROIS evenements au lieu de deux', async () => {
+      // EPINGLE PLUTOT QUE TU. Il faut que `close` echoue silencieusement, QUE le libelle change,
+      // ET qu'un autre onglet de conversation se ferme dans la meme fenetre de 5 s. La regle
+      // precedente n'exigeait que les deux premiers : le trou s'est strictement retreci, il n'a
+      // pas disparu. Aucun champ stable ne permet de le fermer — c'est le fait de l'en-tete de
+      // module. PROPRIETAIRE : lot E (E2E multi-fenetres).
+      const port = portOf(
+        [tab({ tag: 'Claude Code', indexInGroup: 0 }), tab({ tag: 'B', indexInGroup: 1 })],
+        { leaves: false }
+      );
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      // Notre onglet est toujours la, renomme ; B est parti.
+      scheduleTabs(port, 2, [tab({ tag: 'Confirm session response', indexInGroup: 0 })]);
+
+      const closed = await routes.close({ id: a?.id ?? '' });
+
+      // CE COMPORTEMENT EST UN CONSTAT, PAS UNE PROMESSE : si un incrément ultérieur le rend
+      // detectable, ce test doit CHANGER, et c'est precisement pourquoi il existe.
+      expect(closed.ok).toBe(true);
+      // L'onglet, lui, est toujours ouvert — la fenetre en compte encore un.
+      expect(port.tabs).toHaveLength(1);
+    });
+
+    it("TROU RESIDUEL (b) — faux echec quand une conversation s'OUVRE pendant l'attente", async () => {
+      // La direction SURE, et elle est atteignable : ouvertures et fermetures ont des files
+      // distinctes. La fermeture a REUSSI, mais le compte est revenu a son point de depart, donc
+      // la confirmation n'a rien pu constater. Relancer est sans danger — un second appel sortira
+      // en `CONVERSATION_ALREADY_CLOSED` —, et la remediation le dit.
+      const port = portOf([tab({ tag: 'A', indexInGroup: 0 })]);
+      const routes = routesOn(port);
+      const [a] = (await routes.list()).conversations;
+      // A est bien parti, mais une conversation neuve a pris sa place dans le compte.
+      scheduleTabs(port, 2, [tab({ tag: 'Neuve', indexInGroup: 0 })]);
+
+      const refusal = await refusalOf(routes.close({ id: a?.id ?? '' }));
+
+      expect(refusal.code).toBe('CONVERSATION_CLOSE_FAILED');
+      expect(refusal.details).toMatchObject({ conversationsBefore: 1, conversationsAfter: 1 });
+      // L'onglet designe a REELLEMENT ete ferme : c'est bien un faux echec, pas un vrai.
+      expect(port.closed.map((t) => t.tag)).toEqual(['A']);
+      // Et la remediation prepare le lecteur a ce cas precis.
+      expect(refusal.remediation).toContain('FERMETURE POURTANT REUSSIE');
+    });
   });
 
   it('journalise le COMPTE, jamais les libelles — le journal part dans une PR', async () => {
